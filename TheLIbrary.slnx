@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="thelibrary.client/thelibrary.client.esproj">
+    <Build />
+    <Deploy />
+  </Project>
+  <Project Path="TheLIbrary.Server/TheLIbrary.Server.csproj" />
+  <Project Path="TheLIbrary.Server.Tests/TheLIbrary.Server.Tests.csproj" />
+</Solution>

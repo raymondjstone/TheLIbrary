@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet --version)",
+      "Bash(dotnet ef *)",
+      "Bash(dotnet add *)",
+      "Bash(dotnet build *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(timeout 25 dotnet run --no-build --no-launch-profile --urls=http://localhost:5199)",
+      "Bash(timeout 15 dotnet run --no-build --no-launch-profile --urls=http://localhost:5199)",
+      "Bash(timeout 20 dotnet run --no-launch-profile --urls=http://localhost:5199)",
+      "Bash(taskkill //F //IM TheLIbrary.Server.exe)",
+      "Bash(taskkill //F //IM dotnet.exe)",
+      "Bash(dotnet user-secrets *)",
+      "Bash(tasklist //FI \"IMAGENAME eq TheLIbrary.Server.exe\")",
+      "Bash(curl.exe -k -s -o /dev/null -w \"HTTP %{http_code} - time %{time_total}s\\\\n\" https://localhost:7047/api/authors)",
+      "Bash(curl.exe -k -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:5043/api/authors)",
+      "Bash(curl.exe -k -s -o /dev/null -w \"IPv6 [::1]: %{http_code}\\\\n\" \"https://[::1]:7047/api/authors\")",
+      "Bash(curl.exe -k -s -o /dev/null -w \"IPv4 127.0.0.1: %{http_code}\\\\n\" \"https://127.0.0.1:7047/api/authors\")",
+      "Bash(dotnet restore *)",
+      "Bash(npx eslint *)",
+      "Bash(npx vite *)",
+      "Bash(dotnet test *)",
+      "WebSearch",
+      "WebFetch(domain:akeil.de)",
+      "Bash(dotnet msbuild *)",
+      "Bash(xargs sed *)"
+    ]
+  }
+}

@@ -1,0 +1,55 @@
+# .NET build output
+bin/
+obj/
+out/
+*.dll
+*.pdb
+*.exe
+
+# User-specific files (may contain local paths, secrets, IDE state)
+*.user
+*.suo
+*.userprefs
+*.rsuser
+*.userosscache
+.vs/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Rider
+_ReSharper*/
+*.DotSettings.user
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+
+# Secrets — never commit these
+appsettings.*.Local.json
+appsettings.Local.json
+appsettings.Production.json
+secrets.json
+.env
+.env.*
+
+# ASP.NET
+ASP.NETCoreIdentityDB*.mdf
+ASP.NETCoreIdentityDB*.ldf
+
+# Logs
+*.log
+
+# Node / client
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# OS
+Thumbs.db
+.DS_Store
