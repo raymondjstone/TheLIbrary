@@ -25,7 +25,10 @@
       "WebSearch",
       "WebFetch(domain:akeil.de)",
       "Bash(dotnet msbuild *)",
-      "Bash(xargs sed *)"
+      "Bash(xargs sed *)",
+      "Bash(git check-ignore *)",
+      "Bash(powershell.exe -Command '\\(Get-ChildItem -Path '\\\\''C:\\\\$Recycle.Bin'\\\\'' -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '\\\\''*README*'\\\\'' } | Select-Object FullName, LastWriteTime, Length | Format-List\\) 2>&1')",
+      "Bash(grep -n '\"file_path\":\"C:\\\\\\\\\\\\\\\\Code\\\\\\\\\\\\\\\\TheLibrary\\\\\\\\\\\\\\\\README.md\"' /c/Users/passp/.claude/projects/C--Code-TheLibrary/116d1a55-818d-4b3c-b9f8-b1397365e436.jsonl)"
     ]
   }
 }
