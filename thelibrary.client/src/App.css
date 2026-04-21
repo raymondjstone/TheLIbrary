@@ -87,3 +87,15 @@ code { font-family: Consolas, Menlo, monospace; background: #f0f0f2; padding: 0 
     border-radius: 3px;
     letter-spacing: 0.05em;
 }
+
+.star-rating { display: inline-flex; align-items: center; line-height: 1; }
+.star-rating .star {
+    background: none; border: 0; padding: 0 0.05rem; margin: 0;
+    color: #d0d0d4; cursor: pointer; line-height: 1;
+}
+.star-rating .star.star-on { color: #f0ad00; }
+.star-rating .star:disabled { cursor: default; }
+.star-rating-sm .star { font-size: 1rem; }
+.star-rating-md .star { font-size: 1.2rem; }
+.star-rating-lg .star { font-size: 1.5rem; }
+.star-readonly .star { cursor: default; }

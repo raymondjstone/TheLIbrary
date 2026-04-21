@@ -20,15 +20,36 @@ public sealed class AuthorMatcher
     private readonly Dictionary<string, AuthorIndexEntry> _index = new(StringComparer.Ordinal);
 
     public AuthorMatcher(IEnumerable<AuthorIndexEntry> entries)
+        : this(entries, null) { }
+
+    // `blacklistedNormalized` is a set of NormalizeAuthor()'d names that
+    // must never resolve — any entry whose display name or folder name
+    // normalizes to one of these keys is silently skipped at index time,
+    // so blacklisted authors behave as if they didn't exist in any catalog.
+    public AuthorMatcher(IEnumerable<AuthorIndexEntry> entries, IEnumerable<string>? blacklistedNormalized)
     {
+        var blacklist = blacklistedNormalized is null
+            ? new HashSet<string>(StringComparer.Ordinal)
+            : new HashSet<string>(blacklistedNormalized.Where(s => !string.IsNullOrEmpty(s)), StringComparer.Ordinal);
+
         // Tracked entries win any collision — they have routing intent
         // (a real folder on disk); OL entries are just reference data.
         var ordered = entries.OrderByDescending(e => e.IsTracked);
         foreach (var e in ordered)
         {
+            if (blacklist.Count > 0 && IsBlacklisted(e, blacklist)) continue;
             foreach (var v in AuthorKeyVariants(e.DisplayName)) _index.TryAdd(v, e);
             foreach (var v in AuthorKeyVariants(e.FolderName)) _index.TryAdd(v, e);
         }
+    }
+
+    private static bool IsBlacklisted(AuthorIndexEntry entry, HashSet<string> blacklist)
+    {
+        var nd = TitleNormalizer.NormalizeAuthor(entry.DisplayName);
+        if (!string.IsNullOrEmpty(nd) && blacklist.Contains(nd)) return true;
+        var nf = TitleNormalizer.NormalizeAuthor(entry.FolderName);
+        if (!string.IsNullOrEmpty(nf) && blacklist.Contains(nf)) return true;
+        return false;
     }
 
     public int IndexedKeyCount => _index.Count;

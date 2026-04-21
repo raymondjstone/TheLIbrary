@@ -30,6 +30,11 @@ public class Author
 
     public int? WorkCount { get; set; }
 
+    // 0–5 priority rating the user assigns in the UI. Zero is a deliberate
+    // rating ("lowest"), not "unrated" — the user confirmed all six values
+    // are meaningful. Defaults to 0 on creation.
+    public int Priority { get; set; }
+
     public DateTime? LastSyncedAt { get; set; }
 
     // When null the author is due immediately (treated as a new author).

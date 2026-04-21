@@ -104,6 +104,16 @@ public sealed class SyncService
             .GroupBy(e => e.AuthorFolder, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        // Blacklist wins over Calibre auto-registration. If the user deleted
+        // an author and their files still exist on disk (e.g. Calibre hadn't
+        // been scrubbed yet), we must not silently re-create the Author row —
+        // otherwise the delete→incoming flow would be undone on the next sync.
+        var blacklistedNormalized = (await db.AuthorBlacklist
+            .AsNoTracking()
+            .Select(b => b.NormalizedName)
+            .ToListAsync(ct))
+            .ToHashSet(StringComparer.Ordinal);
+
         // Load once; candidate set for this phase is (db rows) ∪ (Added entries in this run).
         var dbAuthors = await db.Authors.ToListAsync(ct);
         foreach (var group in folderGroups)
@@ -112,6 +122,12 @@ public sealed class SyncService
             var folder = group.Key;
             var folderKey = TitleNormalizer.NormalizeAuthor(folder);
             MutateState(s => { s.Phase = SyncPhase.ResolvingAuthors; s.Message = $"Registering authors from Calibre folders - {group.Key}"; });
+
+            if (blacklistedNormalized.Contains(folderKey))
+            {
+                _log.LogDebug("Skipping blacklisted author folder {Folder}", folder);
+                continue;
+            }
 
             // Include locally-tracked Added entities so two folder spellings in
             // the same run (e.g. "Kyle Mills" and "Mills, Kyle") collapse to one.

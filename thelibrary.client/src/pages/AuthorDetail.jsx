@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import StarRating from '../components/StarRating.jsx'
 
 export default function AuthorDetail() {
     const { id } = useParams()
@@ -62,6 +63,23 @@ export default function AuthorDetail() {
 
     const canSend = (formats) => !!formats?.length
     const needsConvert = (formats) => !!formats?.length && !formats.some(f => f === 'epub' || f === 'pdf')
+
+    const setPriority = async (value) => {
+        if (!data) return
+        const previous = data.priority ?? 0
+        setData(prev => prev ? { ...prev, priority: value } : prev)
+        try {
+            const r = await fetch(`/api/authors/${id}/priority`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ priority: value })
+            })
+            if (!r.ok) throw new Error(r.statusText)
+        } catch (e) {
+            setData(prev => prev ? { ...prev, priority: previous } : prev)
+            alert(`Failed to save priority: ${e.message ?? e}`)
+        }
+    }
 
     const toggleManual = async (book) => {
         const next = !book.manuallyOwned
@@ -163,7 +181,13 @@ export default function AuthorDetail() {
     return (
         <section>
             <p><Link to="/authors">&larr; All authors</Link></p>
-            <h2>{data.name}</h2>
+            <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                <span>{data.name}</span>
+                <StarRating
+                    value={data.priority ?? 0}
+                    size="lg"
+                    onChange={setPriority} />
+            </h2>
             <p className="subtle">
                 {data.openLibraryKey
                     ? <a href={`https://openlibrary.org/authors/${data.openLibraryKey}`} target="_blank" rel="noreferrer">OpenLibrary: {data.openLibraryKey}</a>

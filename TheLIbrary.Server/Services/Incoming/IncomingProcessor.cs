@@ -101,17 +101,30 @@ public sealed class IncomingProcessor
 
         Report("Loading configuration");
 
+        // Blacklist is the "this author is banished" list — populated when the
+        // user deletes an author from the watchlist. We feed it both to the
+        // matcher (so blacklisted entries are never indexed) and to the OL
+        // lookup paths (so a catalog hit that happens to name a banished
+        // author is ignored and the file goes to __unknown instead).
+        var blacklistedNormalized = await _db.AuthorBlacklist
+            .AsNoTracking()
+            .Select(b => b.NormalizedName)
+            .ToListAsync(ct);
+        var blacklistSet = new HashSet<string>(blacklistedNormalized, StringComparer.Ordinal);
+
         // Build an in-memory matcher over the watchlist. The full OpenLibrary
         // catalog (millions of rows post-seed) is too big to preload — instead
         // we query it per unmatched file via LookupOpenLibraryAsync below.
         var tracked = await _db.Authors
             .Select(a => new { a.Name, a.CalibreFolderName })
             .ToListAsync(ct);
-        var matcher = new AuthorMatcher(tracked.Select(a => new AuthorIndexEntry(
-            DisplayName: a.Name,
-            FolderName: string.IsNullOrWhiteSpace(a.CalibreFolderName) ? a.Name : a.CalibreFolderName!,
-            IsTracked: true)));
-        Report($"Indexed {tracked.Count} watchlist authors; scanning {sourcePath}");
+        var matcher = new AuthorMatcher(
+            tracked.Select(a => new AuthorIndexEntry(
+                DisplayName: a.Name,
+                FolderName: string.IsNullOrWhiteSpace(a.CalibreFolderName) ? a.Name : a.CalibreFolderName!,
+                IsTracked: true)),
+            blacklistedNormalized);
+        Report($"Indexed {tracked.Count} watchlist authors, {blacklistSet.Count} blacklisted; scanning {sourcePath}");
 
         // Stream the tree folder-by-folder instead of enumerating the whole
         // thing up-front. RecurseSubdirectories over SMB is slow and any
@@ -172,7 +185,7 @@ public sealed class IncomingProcessor
             if (folderEntry is null)
             {
                 (folderEntry, folderTitle) = await ResolveFolderLayoutViaOpenLibraryAsync(
-                    dir, sourcePath, olFolderCache, ct);
+                    dir, sourcePath, olFolderCache, blacklistSet, ct);
             }
 
             var allMoved = true;
@@ -217,7 +230,7 @@ public sealed class IncomingProcessor
                         // still be identified. We still route it under
                         // __unknown/<AuthorName>/ so a later reprocess-unknown
                         // picks it up once the user promotes that author.
-                        var olMatch = await LookupOpenLibraryAsync(matcher, meta, file, ct);
+                        var olMatch = await LookupOpenLibraryAsync(matcher, meta, file, blacklistSet, ct);
                         if (olMatch is not null)
                         {
                             matchedEntry = olMatch.Entry;
@@ -302,7 +315,8 @@ public sealed class IncomingProcessor
                     }
 
                     MoveAndWait(file, destPath, overwrite: false);
-                    Report($"Moved {Path.GetFileName(file)} → {matchedEntry!.FolderName}",
+                    var destFolderLabel = matchedEntry?.FolderName ?? CalibreScanner.UnknownAuthorFolder;
+                    Report($"Moved {Path.GetFileName(file)} → {destFolderLabel}",
                         $"moved: {file} → {destPath}");
                 }
                 catch (Exception ex)
@@ -363,6 +377,7 @@ public sealed class IncomingProcessor
         string folderPath,
         string sourceRoot,
         Dictionary<string, AuthorIndexEntry?> cache,
+        HashSet<string> blacklist,
         CancellationToken ct)
     {
         var root = Path.TrimEndingDirectorySeparator(sourceRoot);
@@ -376,6 +391,17 @@ public sealed class IncomingProcessor
             if (!string.IsNullOrWhiteSpace(name)
                 && !string.Equals(name, CalibreScanner.UnknownAuthorFolder, StringComparison.OrdinalIgnoreCase))
             {
+                // Don't even ask OL about folders whose name normalizes to a
+                // blacklisted author — that's the whole point of the list.
+                var nameKey = TitleNormalizer.NormalizeAuthor(name);
+                if (blacklist.Contains(nameKey))
+                {
+                    cache[name] = null;
+                    nearestBelow = name;
+                    current = Path.GetDirectoryName(current);
+                    continue;
+                }
+
                 if (!cache.TryGetValue(name, out var cached))
                 {
                     cached = null;
@@ -389,8 +415,15 @@ public sealed class IncomingProcessor
                             .FirstOrDefaultAsync(ct);
                         if (hit is not null)
                         {
-                            cached = new AuthorIndexEntry(hit.Name, hit.Name, IsTracked: false);
-                            break;
+                            // OL knew about this name but the user banished
+                            // them — treat as miss so the file lands in
+                            // __unknown exactly as the user asked.
+                            var hitKey = TitleNormalizer.NormalizeAuthor(hit.Name);
+                            if (!blacklist.Contains(hitKey))
+                            {
+                                cached = new AuthorIndexEntry(hit.Name, hit.Name, IsTracked: false);
+                                break;
+                            }
                         }
                     }
                     cache[name] = cached;
@@ -409,10 +442,14 @@ public sealed class IncomingProcessor
     // reach here on a miss; an OL hit gets wrapped as an untracked entry so
     // the caller routes it to __unknown/<AuthorName>/.
     private async Task<AuthorMatchResult?> LookupOpenLibraryAsync(
-        AuthorMatcher matcher, EpubMetadata? meta, string file, CancellationToken ct)
+        AuthorMatcher matcher, EpubMetadata? meta, string file, HashSet<string> blacklist, CancellationToken ct)
     {
         foreach (var (key, rewrittenTitle) in matcher.GetProbeKeys(meta?.Author, meta?.AuthorSort, file))
         {
+            // Short-circuit on blacklisted probe keys — the user doesn't want
+            // this author resurrected even if OL knows them.
+            if (blacklist.Contains(key)) continue;
+
             var hit = await _db.OpenLibraryAuthors
                 .AsNoTracking()
                 .Where(a => a.NormalizedName == key)
@@ -421,6 +458,8 @@ public sealed class IncomingProcessor
                 .FirstOrDefaultAsync(ct);
             if (hit is not null)
             {
+                var hitKey = TitleNormalizer.NormalizeAuthor(hit.Name);
+                if (blacklist.Contains(hitKey)) continue;
                 return new AuthorMatchResult(
                     new AuthorIndexEntry(hit.Name, hit.Name, IsTracked: false),
                     rewrittenTitle);

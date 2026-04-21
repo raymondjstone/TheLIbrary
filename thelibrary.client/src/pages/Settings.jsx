@@ -7,6 +7,9 @@ export default function Settings() {
     const [newLabel, setNewLabel] = useState('')
     const [ignored, setIgnored] = useState([])
     const [newIgnore, setNewIgnore] = useState('')
+    const [blacklist, setBlacklist] = useState([])
+    const [newBlName, setNewBlName] = useState('')
+    const [newBlReason, setNewBlReason] = useState('')
     const [incoming, setIncoming] = useState({ path: '', exists: false })
     const [incomingEdit, setIncomingEdit] = useState('')
     const [remarkable, setRemarkable] = useState(null)
@@ -28,6 +31,12 @@ export default function Settings() {
             if (!r.ok) throw new Error(r.statusText)
             setIgnored(await r.json())
         } catch (e) { setIgnored([]); setError(prev => prev ?? String(e)) }
+
+        try {
+            const r = await fetch('/api/author-blacklist')
+            if (!r.ok) throw new Error(r.statusText)
+            setBlacklist(await r.json())
+        } catch (e) { setBlacklist([]); setError(prev => prev ?? String(e)) }
 
         try {
             const r = await fetch('/api/settings/incoming')
@@ -70,6 +79,33 @@ export default function Settings() {
     const removeIgnored = async (id) => {
         setError(null)
         const r = await fetch(`/api/ignored-folders/${id}`, { method: 'DELETE' })
+        if (!r.ok) { setError(r.statusText); return }
+        load()
+    }
+
+    const addBlacklist = async () => {
+        setError(null)
+        const name = newBlName.trim()
+        if (!name) return
+        const r = await fetch('/api/author-blacklist', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, reason: newBlReason.trim() || null })
+        })
+        if (!r.ok) {
+            const body = await r.json().catch(() => ({}))
+            setError(body.error || r.statusText)
+            return
+        }
+        setNewBlName('')
+        setNewBlReason('')
+        load()
+    }
+
+    const removeBlacklist = async (id) => {
+        if (!window.confirm('Remove this author from the blacklist? They can be added back to the watchlist after this.')) return
+        setError(null)
+        const r = await fetch(`/api/author-blacklist/${id}`, { method: 'DELETE' })
         if (!r.ok) { setError(r.statusText); return }
         load()
     }
@@ -334,6 +370,56 @@ export default function Settings() {
                         </td>
                         <td></td>
                         <td><button onClick={addIgnored} disabled={!newIgnore.trim()}>Add</button></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h2 style={{ marginTop: '1.5rem' }}>Author blacklist</h2>
+            <p className="subtle">
+                Authors here are never added to the watchlist — incoming scans and Calibre sync treat them as
+                &quot;author not found&quot;, so their files go to <code>__unknown</code> instead of silently
+                re-creating the author. The list is populated when you delete an author from the Authors page;
+                you can also add entries manually.
+            </p>
+
+            <table className="grid" style={{ maxWidth: 720 }}>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Folder</th>
+                        <th>Reason</th>
+                        <th>Added</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {blacklist.map(b => (
+                        <tr key={b.id}>
+                            <td>{b.name}</td>
+                            <td className="subtle"><code>{b.folderName ?? '—'}</code></td>
+                            <td className="subtle">{b.reason ?? '—'}</td>
+                            <td className="subtle">{new Date(b.addedAt).toLocaleDateString()}</td>
+                            <td><button className="btn-danger" onClick={() => removeBlacklist(b.id)}>Remove</button></td>
+                        </tr>
+                    ))}
+                    <tr>
+                        <td>
+                            <input
+                                value={newBlName}
+                                onChange={e => setNewBlName(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && addBlacklist()}
+                                placeholder="Author name" />
+                        </td>
+                        <td></td>
+                        <td>
+                            <input
+                                value={newBlReason}
+                                onChange={e => setNewBlReason(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && addBlacklist()}
+                                placeholder="Reason (optional)" />
+                        </td>
+                        <td></td>
+                        <td><button onClick={addBlacklist} disabled={!newBlName.trim()}>Add</button></td>
                     </tr>
                 </tbody>
             </table>

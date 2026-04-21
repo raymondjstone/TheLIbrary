@@ -36,19 +36,34 @@ public class AuthorsController : ControllerBase
         string? OpenLibraryKey,
         string Status,
         string? ExclusionReason,
+        int Priority,
         int BookCount,
         int OwnedCount,
+        int EbookOwnedCount,
+        int PhysicalOwnedCount,
         DateTime? LastSyncedAt);
 
+    // Sorting is done in-memory after projection because the counts aren't
+    // actual columns — translating the full set into a stable SQL ORDER BY
+    // across all these dimensions isn't worth the complexity for the size of
+    // the author table.
     [HttpGet]
-    public async Task<IReadOnlyList<AuthorListItem>> List([FromQuery] string? status, CancellationToken ct)
+    public async Task<IReadOnlyList<AuthorListItem>> List(
+        [FromQuery] string? status,
+        [FromQuery] int? minPriority,
+        [FromQuery] string? sort,
+        [FromQuery] string? dir,
+        CancellationToken ct)
     {
         IQueryable<Author> q = _db.Authors.AsNoTracking();
         if (!string.IsNullOrWhiteSpace(status) && Enum.TryParse<AuthorStatus>(status, true, out var s))
             q = q.Where(a => a.Status == s);
+        if (minPriority is int mp && mp > 0)
+            q = q.Where(a => a.Priority >= mp);
 
+        // Ebook-owned = any LocalBookFile present. Physical-owned = user
+        // flagged ManuallyOwned but no file on disk (per project memory).
         var rows = await q
-            .OrderBy(a => a.Name)
             .Select(a => new
             {
                 a.Id,
@@ -57,15 +72,37 @@ public class AuthorsController : ControllerBase
                 a.OpenLibraryKey,
                 a.Status,
                 a.ExclusionReason,
+                a.Priority,
                 a.LastSyncedAt,
                 BookCount = a.Books.Count,
-                OwnedCount = a.Books.Count(b => b.ManuallyOwned || b.LocalFiles.Any())
+                EbookOwnedCount = a.Books.Count(b => b.LocalFiles.Any()),
+                PhysicalOwnedCount = a.Books.Count(b => b.ManuallyOwned && !b.LocalFiles.Any())
             })
             .ToListAsync(ct);
 
-        return rows.Select(r => new AuthorListItem(
+        var projected = rows.Select(r => new AuthorListItem(
             r.Id, r.Name, r.CalibreFolderName, r.OpenLibraryKey,
-            r.Status.ToString(), r.ExclusionReason, r.BookCount, r.OwnedCount, r.LastSyncedAt)).ToList();
+            r.Status.ToString(), r.ExclusionReason,
+            r.Priority, r.BookCount,
+            OwnedCount: r.EbookOwnedCount + r.PhysicalOwnedCount,
+            r.EbookOwnedCount, r.PhysicalOwnedCount, r.LastSyncedAt));
+
+        var descending = string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase);
+        IOrderedEnumerable<AuthorListItem> ordered = (sort?.ToLowerInvariant()) switch
+        {
+            "priority"   => descending ? projected.OrderByDescending(a => a.Priority)            : projected.OrderBy(a => a.Priority),
+            "books"      => descending ? projected.OrderByDescending(a => a.BookCount)           : projected.OrderBy(a => a.BookCount),
+            "owned"      => descending ? projected.OrderByDescending(a => a.OwnedCount)          : projected.OrderBy(a => a.OwnedCount),
+            "ebooks"     => descending ? projected.OrderByDescending(a => a.EbookOwnedCount)     : projected.OrderBy(a => a.EbookOwnedCount),
+            "physical"   => descending ? projected.OrderByDescending(a => a.PhysicalOwnedCount)  : projected.OrderBy(a => a.PhysicalOwnedCount),
+            "lastsynced" => descending ? projected.OrderByDescending(a => a.LastSyncedAt ?? DateTime.MinValue)
+                                       : projected.OrderBy(a => a.LastSyncedAt ?? DateTime.MinValue),
+            _            => projected.OrderBy(a => a.Name)
+        };
+        // Secondary sort on name keeps ordering stable when the primary
+        // key ties (very common for counts and unrated priority=0).
+        var sorted = ordered.ThenBy(a => a.Name).ToList();
+        return sorted;
     }
 
     public sealed record AuthorDetail(
@@ -75,6 +112,7 @@ public class AuthorsController : ControllerBase
         string? CalibreFolderName,
         string Status,
         string? ExclusionReason,
+        int Priority,
         DateTime? LastSyncedAt,
         IReadOnlyList<BookRow> Books,
         IReadOnlyList<UnmatchedRow> UnmatchedLocal);
@@ -172,7 +210,7 @@ public class AuthorsController : ControllerBase
 
         return new AuthorDetail(
             a.Id, a.Name, a.OpenLibraryKey, a.CalibreFolderName,
-            a.Status.ToString(), a.ExclusionReason, a.LastSyncedAt,
+            a.Status.ToString(), a.ExclusionReason, a.Priority, a.LastSyncedAt,
             books, unmatched);
     }
 
@@ -377,6 +415,16 @@ public class AuthorsController : ControllerBase
                    ?? key;
         }
 
+        // Blacklist wins over manual add. If the user wants this author back
+        // they must remove the blacklist entry in Settings first — otherwise
+        // incoming scans would strip files off the re-added author anyway.
+        var normalizedAddName = TitleNormalizer.NormalizeAuthor(name);
+        if (!string.IsNullOrEmpty(normalizedAddName)
+            && await _db.AuthorBlacklist.AnyAsync(b => b.NormalizedName == normalizedAddName, ct))
+        {
+            return Conflict(new { error = $"'{name}' is on the author blacklist. Remove them from the blacklist in Settings before re-adding." });
+        }
+
         var author = new Author
         {
             Name = name!,
@@ -410,7 +458,24 @@ public class AuthorsController : ControllerBase
 
         return CreatedAtAction(nameof(Get), new { id = author.Id }, new AuthorListItem(
             author.Id, author.Name, author.CalibreFolderName, author.OpenLibraryKey,
-            author.Status.ToString(), author.ExclusionReason, 0, 0, author.LastSyncedAt));
+            author.Status.ToString(), author.ExclusionReason,
+            author.Priority, 0, 0, 0, 0, author.LastSyncedAt));
+    }
+
+    public sealed record SetPriorityRequest(int Priority);
+
+    // Update the user's 0–5 star rating. Values outside the range are
+    // rejected so the UI can't store garbage.
+    [HttpPut("{id:int}/priority")]
+    public async Task<IActionResult> SetPriority(int id, [FromBody] SetPriorityRequest body, CancellationToken ct)
+    {
+        if (body.Priority < 0 || body.Priority > 5)
+            return BadRequest(new { error = "Priority must be 0–5" });
+        var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (author is null) return NotFound();
+        author.Priority = body.Priority;
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
     }
 
     // On-demand refresh of a single author: resolves the OL key if missing,
@@ -438,20 +503,107 @@ public class AuthorsController : ControllerBase
         return await Get(id, ct);
     }
 
+    // Deleting an author is destructive: every local file linked to them is
+    // moved off the library and back into the incoming bucket (grouped under
+    // <incoming>/<AuthorName>/<TitleFolder>/), DB rows are removed, the
+    // author row is deleted, and the author's normalized name goes on the
+    // blacklist so subsequent scans don't silently re-add them.
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Remove(int id, CancellationToken ct)
     {
         var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
         if (author is null) return NotFound();
 
-        // LocalBookFile.Author is NoAction (to avoid multi-cascade). Null the FKs
-        // ourselves so deletion of the author doesn't violate the constraint.
-        await _db.LocalBookFiles.Where(f => f.AuthorId == id)
-            .ExecuteUpdateAsync(s => s.SetProperty(f => f.AuthorId, _ => null)
-                                      .SetProperty(f => f.BookId, _ => null), ct);
+        var incomingSetting = await _db.AppSettings
+            .FirstOrDefaultAsync(s => s.Key == AppSettingKeys.IncomingFolder, ct);
+        var incomingPath = incomingSetting?.Value?.Trim();
+        if (string.IsNullOrWhiteSpace(incomingPath))
+            return BadRequest(new { error = "Incoming folder is not configured — set it in Settings before removing authors." });
+        if (!Directory.Exists(incomingPath))
+            return BadRequest(new { error = $"Incoming folder does not exist: {incomingPath}" });
+
+        var folderCandidates = FolderCandidatesFor(author);
+        var files = await _db.LocalBookFiles
+            .Where(f => f.AuthorId == id
+                || (f.AuthorId == null && folderCandidates.Contains(f.AuthorFolder)))
+            .ToListAsync(ct);
+
+        // All the author's files go under a single per-author subfolder of
+        // incoming so bulk re-imports stay organised and multi-format books
+        // stay grouped with their siblings.
+        var authorDestRoot = UniqueDirectory(incomingPath, author.Name);
+        try { Directory.CreateDirectory(authorDestRoot); }
+        catch (IOException ex)
+        {
+            return StatusCode(500, new { error = $"Could not create destination folder: {ex.Message}" });
+        }
+
+        var movedSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var moveWarnings = new List<string>();
+
+        foreach (var file in files)
+        {
+            if (string.IsNullOrWhiteSpace(file.FullPath)) continue;
+            var src = file.FullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (!Directory.Exists(src)) continue;
+            if (!movedSources.Add(src)) continue; // sibling row pointing at the same folder
+
+            var leaf = !string.IsNullOrWhiteSpace(file.TitleFolder) ? file.TitleFolder : Path.GetFileName(src);
+            if (string.IsNullOrWhiteSpace(leaf)) leaf = $"returned-{file.Id}";
+
+            var dest = UniqueDirectory(authorDestRoot, leaf);
+            try
+            {
+                Directory.Move(src, dest);
+            }
+            catch (IOException ex)
+            {
+                moveWarnings.Add($"{leaf}: {ex.Message}");
+            }
+        }
+
+        // If the author's Calibre author-level folders are now empty, prune
+        // them so the library view isn't left with ghost directories.
+        var parentDirs = files
+            .Where(f => !string.IsNullOrWhiteSpace(f.FullPath))
+            .Select(f => Path.GetDirectoryName(f.FullPath!.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)))
+            .Where(p => !string.IsNullOrEmpty(p))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        foreach (var parent in parentDirs)
+        {
+            try
+            {
+                if (Directory.Exists(parent) && !Directory.EnumerateFileSystemEntries(parent!).Any())
+                    Directory.Delete(parent!);
+            }
+            catch { /* best effort */ }
+        }
+
+        // Drop every local-file row we collected. Books cascade via the
+        // Author FK when the author row is removed below.
+        _db.LocalBookFiles.RemoveRange(files);
+
+        var normalizedName = TitleNormalizer.NormalizeAuthor(author.Name);
+        if (!string.IsNullOrEmpty(normalizedName)
+            && !await _db.AuthorBlacklist.AnyAsync(b => b.NormalizedName == normalizedName, ct))
+        {
+            _db.AuthorBlacklist.Add(new AuthorBlacklist
+            {
+                Name = author.Name,
+                NormalizedName = normalizedName,
+                FolderName = author.CalibreFolderName,
+                AddedAt = DateTime.UtcNow,
+                Reason = "Removed from watchlist"
+            });
+        }
 
         _db.Authors.Remove(author);
         await _db.SaveChangesAsync(ct);
+
+        if (moveWarnings.Count > 0)
+            return Ok(new { warnings = moveWarnings });
+
         return NoContent();
     }
 

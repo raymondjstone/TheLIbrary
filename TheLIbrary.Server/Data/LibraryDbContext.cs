@@ -15,6 +15,7 @@ public class LibraryDbContext : DbContext
     public DbSet<IgnoredFolder> IgnoredFolders => Set<IgnoredFolder>();
     public DbSet<AppSetting> AppSettings => Set<AppSetting>();
     public DbSet<RemarkableAuth> RemarkableAuths => Set<RemarkableAuth>();
+    public DbSet<AuthorBlacklist> AuthorBlacklist => Set<AuthorBlacklist>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -66,6 +67,15 @@ public class LibraryDbContext : DbContext
         b.Entity<AppSetting>(e =>
         {
             e.HasIndex(x => x.Key).IsUnique();
+        });
+
+        b.Entity<AuthorBlacklist>(e =>
+        {
+            e.Property(x => x.Name).HasMaxLength(300);
+            e.Property(x => x.NormalizedName).HasMaxLength(300);
+            e.Property(x => x.FolderName).HasMaxLength(300);
+            e.Property(x => x.Reason).HasMaxLength(500);
+            e.HasIndex(x => x.NormalizedName).IsUnique();
         });
 
         b.Entity<OpenLibraryAuthor>(e =>
