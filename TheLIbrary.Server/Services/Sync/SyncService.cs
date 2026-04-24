@@ -380,8 +380,10 @@ public sealed class SyncService
         foreach (var entry in relevantEntries)
         {
             ct.ThrowIfCancellationRequested();
-            var norm = TitleNormalizer.Normalize(entry.TitleFolder);
-            bookByTitle.TryGetValue(norm, out var matchedBook);
+
+            Book? matchedBook = null;
+            foreach (var candidate in TitleNormalizer.FolderTitleCandidates(entry.TitleFolder))
+                if (bookByTitle.TryGetValue(candidate, out matchedBook)) break;
 
             var canon = Canon(entry.FullPath);
             UpsertLocalFile(db, entry, author.Id, matchedBook?.Id, existingByPath, canon);

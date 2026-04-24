@@ -11,6 +11,15 @@ public static class TitleNormalizer
     private static readonly Regex NonAlnum = new(@"[^a-z0-9]+", RegexOptions.Compiled);
     private static readonly string[] LeadingArticles = { "the ", "a ", "an " };
 
+    // Strips any trailing parenthetical group from a raw folder name,
+    // e.g. "Title (Author Name)" → "Title".
+    private static readonly Regex TrailingParensGroup = new(@"\s*\([^)]*\)\s*$", RegexOptions.Compiled);
+
+    // After normalization (lowercase, spaces only) matches the LAST " by <2+ word author>"
+    // suffix. Greedy (.+) ensures we take the longest possible title portion.
+    // Requires ≥2 words after "by" so "Stand By Me" is never truncated.
+    private static readonly Regex ByAuthorSuffixNorm = new(@"^(.+)\s+by\s+\w+(?:\s+\w+)+\s*$", RegexOptions.Compiled);
+
     // Cap below SQL Server's 1700-byte nonclustered-index-key limit: with a
     // 4-byte AuthorId also in IX_*_AuthorId_NormalizedTitle, nvarchar values
     // above ~848 chars bust the index. Overly long OL titles (compilations
@@ -30,6 +39,51 @@ public static class TitleNormalizer
         s = Regex.Replace(s, @"\s+", " ");
         if (s.Length > MaxNormalizedLength) s = s[..MaxNormalizedLength].TrimEnd();
         return s;
+    }
+
+    // Returns normalized title candidates for a Calibre folder name, from most
+    // to least specific. The matching loop in SyncService stops at the first hit.
+    //
+    // Handled patterns (in addition to straight normalization):
+    //   "Title (Author Name)"     — trailing parenthetical stripped
+    //   "Title by Author Name"    — " by <2+ word name>" suffix stripped
+    //   "Title_by_Author"         — underscores/dashes become spaces → same rule
+    //   "Title (Author) by Name"  — parens stripped first, then by-author
+    public static IEnumerable<string> FolderTitleCandidates(string folder)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        // 1. Straight normalization — highest confidence, tried first.
+        var n1 = Normalize(folder);
+        if (n1.Length > 0 && seen.Add(n1)) yield return n1;
+
+        // 2. Strip trailing "(...)" from the raw folder name, then normalize.
+        var noParens = TrailingParensGroup.Replace(folder, "").Trim();
+        string? n2 = null;
+        if (noParens.Length > 0 && noParens != folder)
+        {
+            n2 = Normalize(noParens);
+            if (n2.Length > 0 && seen.Add(n2)) yield return n2;
+        }
+
+        // 3. Strip " by <FirstName LastName>" suffix from the already-normalized text.
+        var m1 = ByAuthorSuffixNorm.Match(n1);
+        if (m1.Success)
+        {
+            var n3 = m1.Groups[1].Value.Trim();
+            if (n3.Length > 0 && seen.Add(n3)) yield return n3;
+
+            // 4. Parens stripped + by-author stripped.
+            if (n2 is not null)
+            {
+                var m2 = ByAuthorSuffixNorm.Match(n2);
+                if (m2.Success)
+                {
+                    var n4 = m2.Groups[1].Value.Trim();
+                    if (n4.Length > 0 && seen.Add(n4)) yield return n4;
+                }
+            }
+        }
     }
 
     public static string NormalizeAuthor(string? input)

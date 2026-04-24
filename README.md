@@ -12,6 +12,10 @@ from a drop folder and re-running matching against previously-unmatched files.
 - **Client** — React 19 + Vite + react-router
 - **Scheduling** — Hangfire (SQL Server storage) with a single-worker policy so
   scheduled jobs mutually exclude
+- **NZB search** — configurable URL-template sites let you jump straight to an
+  NZB search for any unowned book
+- **Author management** — priority ratings (0–5), blacklist, per-author
+  next-fetch scheduling, exclusion reasons
 - **Data source of truth** — OpenLibrary (works only, English, published 1970 or later)
 - **Local source** — a Calibre folder tree of the form `<Root>/<Author>/<Title (id)>/...`
 - **Ingest formats** — EPUB, MOBI / AZW / AZW3 / AZW4 / KF8 / PRC / PDB,
@@ -32,13 +36,18 @@ author from the UI and add them — the sync then does the rest.
    `<Root>/<Author>/<Title (id)>/…`.
 4. **Match** each Calibre author folder to a tracked author by normalized name
    (handles `Last, First`, diacritics, casing). Match each title folder to a
-   work by normalized title.
+   work by normalized title — see [Title matching](#title-matching) for the
+   multi-candidate strategy that handles `by Author`, trailing parens, etc.
 5. **Surface** Calibre folders with no matching tracked author as
    "unclaimed" — click one to kick off an OpenLibrary search pre-filled with
    that folder's name, so you can add the author in one click.
-6. **Prune** `LocalBookFile` rows not seen during the scan (covers deleted
+6. **Stamp** `CalibreScannedAt` on each author as their file-matching pass
+   completes. On the next run, authors are processed in ascending order of this
+   timestamp (nulls first) so interrupted runs catch up stragglers before
+   re-scanning recently-processed authors.
+7. **Prune** `LocalBookFile` rows not seen during the scan (covers deleted
    files and disabled locations).
-7. A book is **owned** if any local file matched it *or* you manually marked it.
+8. A book is **owned** if any local file matched it *or* you manually marked it.
 
 The author detail page also lists unmatched local files (files in the author's
 folder that didn't line up with any tracked work). You can force-match one to
@@ -48,6 +57,52 @@ bucket for reprocessing.
 OpenLibrary asks for no more than ~1 request per second. A single shared
 `OpenLibraryRateLimiter` serializes all outbound calls with a 1.1s minimum gap,
 and the client retries on `429`/`5xx` honoring `Retry-After`.
+
+## Title matching
+
+Calibre folder names are normalized to lowercase alphanumeric + spaces, then
+matched against the `NormalizedTitle` stored for each OpenLibrary work.
+Multiple candidates are tried per folder in order; the first hit wins:
+
+1. **Straight normalization** — `The Hobbit (123)` → `hobbit`
+2. **Trailing parenthetical stripped** — `The Hobbit (J.R.R. Tolkien)` → `hobbit`
+3. **`by Author` suffix stripped** (≥2 words required after `by`, so `Stand By Me` is never truncated) — `The Hobbit by J R R Tolkien` → `hobbit`
+4. **Both combined** — `The Hobbit (2001) by J R R Tolkien` → `hobbit`
+
+Characters `_`, `-`, `,`, `(`, `)` are all treated as whitespace during
+normalization, so `The_Hobbit_by_Tolkien_JRR` feeds the same pipeline.
+
+Leading articles (`the`, `a`, `an`) are stripped, diacritics are decomposed,
+and Calibre's trailing `(id)` numeric suffix is removed before any of the
+above steps.
+
+## NZB search sites
+
+On the **Settings** page, add any number of NZB sites using URL templates. Three
+placeholders are resolved client-side per book:
+
+| Placeholder | Resolves to |
+|---|---|
+| `{Title}` | URL-encoded book title |
+| `{Author}` | URL-encoded author name |
+| `{SearchTerm}` | URL-encoded `"Title Author"` combined |
+
+Example template: `https://nzbgeek.info/geekseek.php?q={SearchTerm}`
+
+On each author's detail page, unowned books show a link per active site.
+Sites can be reordered, toggled active/inactive, and deleted from the Settings page.
+
+## Author priority and blacklist
+
+Each author carries a **priority** field (0–5 integer, displayed as stars). Zero
+is a valid deliberate rating ("lowest priority"), not "unrated". Priority is
+visible and editable on the author list and detail pages and is available as a
+sort/filter dimension on the list.
+
+The **author blacklist** (`AuthorBlacklist` table) prevents a Calibre folder
+from ever being promoted to a tracked author. Blacklisted entries are matched
+by normalized name at scan time. Blacklisted authors that are already tracked
+are silently skipped when processing their works.
 
 ## Incoming pipeline
 
@@ -126,10 +181,10 @@ Managed on the **Schedules** page (backed by Hangfire). Each job has a cron
 expression and an enabled/disabled flag, persisted to the database and applied
 on every startup.
 
-- `sync` — full sync
-- `seed` — seed authors from the OpenLibrary dump
-- `author-updates` — apply OpenLibrary's daily author-change log (handles
-  renames/merges)
+- `sync` — full sync (scan + author resolve + file matching)
+- `seed` — seed the local author catalog from the OpenLibrary bulk dump
+- `author-updates` — apply OpenLibrary's daily author-change log (handles renames/merges)
+- `refresh-due-works` — re-fetch works for authors whose `NextFetchAt` is past due
 - `incoming` — process the drop folder
 - `reprocess-unknown` — re-run matching on the `__unknown` bucket
 
@@ -240,7 +295,12 @@ search is instant and offline.
 | POST   | `/api/sync/start`                                         | Kick off a full sync (single-flight)                 |
 | POST   | `/api/sync/seed-authors`                                  | Download and import the OpenLibrary author dump      |
 | POST   | `/api/sync/author-updates`                                | Apply OpenLibrary's daily author updates             |
+| POST   | `/api/sync/refresh-due-works`                             | Re-fetch works for authors with an overdue NextFetchAt |
 | GET    | `/api/sync/status`                                        | Poll the current sync phase and counters             |
+| GET    | `/api/nzb-sites`                                          | List NZB search sites ordered by Order then Name     |
+| POST   | `/api/nzb-sites`                                          | Add a new NZB site                                   |
+| PUT    | `/api/nzb-sites/{id}`                                     | Update an NZB site                                   |
+| DELETE | `/api/nzb-sites/{id}`                                     | Delete an NZB site                                   |
 | GET    | `/api/schedules`                                          | List scheduled jobs and their cron/enabled state     |
 | PUT    | `/api/schedules/{jobId}`                                  | Update a job's cron expression or enabled flag       |
 | GET    | `/api/remarkable/status`                                  | Is a reMarkable device paired?                       |
@@ -254,8 +314,8 @@ trusted LAN).
 ## Data model
 
 - `Author` — OL key, name, Calibre folder name, status (Pending / Active /
-  Excluded / NotFound), exclusion reason, last-synced timestamp,
-  next-fetch-due-at.
+  Excluded / NotFound), exclusion reason, priority (0–5), last-synced timestamp,
+  next-fetch-due-at, `CalibreScannedAt` (for fair scan ordering).
 - `Book` — OL work key (unique), title, first-publish year, cover id,
   `ManuallyOwned` flag + timestamp, FK to Author.
 - `LocalBookFile` — path on disk, Calibre folder names, optional FKs to Author
@@ -265,6 +325,10 @@ trusted LAN).
 - `AppSetting` — key/value store (incoming folder path, etc).
 - `IgnoredFolder` — author-level folder names to skip on every scan
   (case-insensitive). `__unknown` is always skipped automatically.
+- `AuthorBlacklist` — normalized author names that are never promoted to the
+  watchlist, with optional folder name and reason fields.
+- `NzbSite` — a named NZB site with a URL template containing `{Title}`,
+  `{Author}`, and/or `{SearchTerm}` placeholders; has order and active flag.
 - `ScheduleEntry` — cron expression + enabled flag, keyed by job id.
 - `AuthorUpdateState` — watermark for the OpenLibrary author-updates feed.
 - `RemarkableAuth` — singleton row holding the paired reMarkable device
