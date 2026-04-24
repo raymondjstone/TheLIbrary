@@ -17,6 +17,14 @@ export default function AuthorDetail() {
     const [sendBusyIds, setSendBusyIds] = useState(() => new Set())
     const [sendError, setSendError] = useState(null)
     const [sendNotice, setSendNotice] = useState(null)
+    const [nzbSites, setNzbSites] = useState([])
+
+    useEffect(() => {
+        fetch('/api/nzb-sites')
+            .then(r => r.ok ? r.json() : [])
+            .then(sites => setNzbSites(sites.filter(s => s.active)))
+            .catch(() => {})
+    }, [])
 
     useEffect(() => {
         setData(null)
@@ -59,6 +67,25 @@ export default function AuthorDetail() {
                 const n = new Set(prev); n.delete(fileId); return n
             })
         }
+    }
+
+    const nzbLinks = (bookTitle) => {
+        if (!nzbSites.length) return null
+        const enc = s => encodeURIComponent(s)
+        const author = data?.name ?? ''
+        const searchTerm = `${author} ${bookTitle}`.trim()
+        return nzbSites.map(site => {
+            const url = site.urlTemplate
+                .replace('{Title}', enc(bookTitle))
+                .replace('{Author}', enc(author))
+                .replace('{SearchTerm}', enc(searchTerm))
+            return (
+                <a key={site.id} href={url} target="_blank" rel="noreferrer"
+                    style={{ fontSize: '0.8em', marginRight: '0.4rem', whiteSpace: 'nowrap' }}>
+                    {site.name}
+                </a>
+            )
+        })
     }
 
     const canSend = (formats) => !!formats?.length
@@ -228,6 +255,11 @@ export default function AuthorDetail() {
                             </td>
                             <td>
                                 <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{b.title}</a>
+                                {!b.owned && nzbSites.length > 0 && (
+                                    <div style={{ marginTop: '0.2rem' }}>
+                                        {nzbLinks(b.title)}
+                                    </div>
+                                )}
                                 {b.hasLocalFiles
                                     ? <div className="subtle">
                                         {b.files.map(f => {

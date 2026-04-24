@@ -93,6 +93,9 @@ namespace TheLibrary.Server.Data.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
+                    b.Property<DateTime?>("CalibreScannedAt")
+                        .HasColumnType("datetime2");
+
                     b.Property<string>("CalibreFolderName")
                         .HasMaxLength(512)
                         .HasColumnType("nvarchar(512)");
@@ -364,6 +367,39 @@ namespace TheLibrary.Server.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("OpenLibraryAuthors");
+                });
+
+            modelBuilder.Entity("TheLibrary.Server.Data.Models.NzbSite", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("Active")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true);
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<int>("Order")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(99);
+
+                    b.Property<string>("UrlTemplate")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("NzbSites");
                 });
 
             modelBuilder.Entity("TheLibrary.Server.Data.Models.RemarkableAuth", b =>

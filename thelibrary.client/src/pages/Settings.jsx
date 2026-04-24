@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react'
 
+const NZB_EXAMPLES = [
+    { name: 'NZBGeek',   urlTemplate: 'https://nzbgeek.info/geekseek.php?browseincludewords={SearchTerm}&c=7020' },
+    { name: 'NZBs.in',   urlTemplate: 'https://nzbs.in/search?q={SearchTerm}&t=7000' },
+    { name: 'NZBPlanet', urlTemplate: 'https://nzbplanet.net/search/{SearchTerm}?c=7000' },
+    { name: 'NZBFinder', urlTemplate: 'https://nzbfinder.ws/search?q={SearchTerm}&t=7020' },
+]
+
 export default function Settings() {
     const [locations, setLocations] = useState(null)
     const [error, setError] = useState(null)
@@ -16,6 +23,9 @@ export default function Settings() {
     const [rmCode, setRmCode] = useState('')
     const [rmBusy, setRmBusy] = useState(false)
     const [rmError, setRmError] = useState(null)
+    const [nzbSites, setNzbSites] = useState([])
+    const [nzbNew, setNzbNew] = useState({ name: '', urlTemplate: '', order: 99, active: true })
+    const [nzbEdits, setNzbEdits] = useState({})    // id → draft object
 
     const load = async () => {
         // Independent loads — a failing endpoint (e.g. pending migration) must
@@ -54,6 +64,16 @@ export default function Settings() {
             setRemarkable({ connected: false })
             setError(prev => prev ?? String(e))
         }
+
+        try {
+            const r = await fetch('/api/nzb-sites')
+            if (!r.ok) throw new Error(r.statusText)
+            const sites = await r.json()
+            setNzbSites(sites)
+            const drafts = {}
+            for (const s of sites) drafts[s.id] = { ...s }
+            setNzbEdits(drafts)
+        } catch (e) { setNzbSites([]); setError(prev => prev ?? String(e)) }
     }
 
     useEffect(() => { load() }, [])
@@ -211,6 +231,39 @@ export default function Settings() {
 
     const updateRow = (id, patch) => {
         setLocations(locations.map(l => l.id === id ? { ...l, ...patch } : l))
+    }
+
+    const nzbPatch = (id, patch) => setNzbEdits(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }))
+
+    const saveNzbSite = async (id) => {
+        const draft = nzbEdits[id]
+        if (!draft) return
+        const r = await fetch(`/api/nzb-sites/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(draft)
+        })
+        if (!r.ok) { setError((await r.json().catch(() => ({}))).error || r.statusText); return }
+        load()
+    }
+
+    const deleteNzbSite = async (id) => {
+        if (!window.confirm('Delete this NZB site?')) return
+        const r = await fetch(`/api/nzb-sites/${id}`, { method: 'DELETE' })
+        if (!r.ok) { setError(r.statusText); return }
+        load()
+    }
+
+    const addNzbSite = async () => {
+        if (!nzbNew.name.trim() || !nzbNew.urlTemplate.trim()) return
+        const r = await fetch('/api/nzb-sites', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(nzbNew)
+        })
+        if (!r.ok) { setError((await r.json().catch(() => ({}))).error || r.statusText); return }
+        setNzbNew({ name: '', urlTemplate: '', order: 99, active: true })
+        load()
     }
 
     if (locations === null) return <p>Loading…</p>
@@ -423,6 +476,58 @@ export default function Settings() {
                     </tr>
                 </tbody>
             </table>
+            <h2 style={{ marginTop: '1.5rem' }}>NZB search sites</h2>
+            <p className="subtle">
+                Configure sites to search for book NZBs. Use <code>{'{Title}'}</code>, <code>{'{Author}'}</code>,
+                and <code>{'{SearchTerm}'}</code> (author + title combined) as placeholders — they are URL-encoded automatically.
+                Search links appear on each book's row in the author detail page.
+            </p>
+
+            <table className="grid">
+                <thead>
+                    <tr>
+                        <th style={{ width: '1%' }}>Active</th>
+                        <th style={{ width: 120 }}>Name</th>
+                        <th>URL template</th>
+                        <th style={{ width: 60 }}>Order</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {nzbSites.map(s => {
+                        const d = nzbEdits[s.id] ?? s
+                        return (
+                            <tr key={s.id}>
+                                <td><input type="checkbox" checked={d.active} onChange={e => nzbPatch(s.id, { active: e.target.checked })} /></td>
+                                <td><input value={d.name} onChange={e => nzbPatch(s.id, { name: e.target.value })} /></td>
+                                <td><input style={{ width: '100%' }} value={d.urlTemplate} onChange={e => nzbPatch(s.id, { urlTemplate: e.target.value })} /></td>
+                                <td><input type="number" style={{ width: 55 }} value={d.order} onChange={e => nzbPatch(s.id, { order: Number(e.target.value) })} /></td>
+                                <td style={{ whiteSpace: 'nowrap' }}>
+                                    <button onClick={() => saveNzbSite(s.id)}>Save</button>{' '}
+                                    <button className="btn-danger" onClick={() => deleteNzbSite(s.id)}>Delete</button>
+                                </td>
+                            </tr>
+                        )
+                    })}
+                    <tr>
+                        <td><input type="checkbox" checked={nzbNew.active} onChange={e => setNzbNew(p => ({ ...p, active: e.target.checked }))} /></td>
+                        <td><input placeholder="Name" value={nzbNew.name} onChange={e => setNzbNew(p => ({ ...p, name: e.target.value }))} /></td>
+                        <td><input style={{ width: '100%' }} placeholder="URL template" value={nzbNew.urlTemplate} onChange={e => setNzbNew(p => ({ ...p, urlTemplate: e.target.value }))} /></td>
+                        <td><input type="number" style={{ width: 55 }} value={nzbNew.order} onChange={e => setNzbNew(p => ({ ...p, order: Number(e.target.value) }))} /></td>
+                        <td><button onClick={addNzbSite} disabled={!nzbNew.name.trim() || !nzbNew.urlTemplate.trim()}>Add</button></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <p className="subtle" style={{ marginTop: '0.5rem' }}>Common examples (click to prefill):{' '}
+                {NZB_EXAMPLES.map(ex => (
+                    <button key={ex.name} className="btn-ghost" style={{ fontSize: '0.85em' }}
+                        onClick={() => setNzbNew({ name: ex.name, urlTemplate: ex.urlTemplate, order: 99, active: true })}>
+                        {ex.name}
+                    </button>
+                ))}
+            </p>
+
         </section>
     )
 }

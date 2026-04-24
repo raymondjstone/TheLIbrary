@@ -11,6 +11,14 @@ public static class TitleNormalizer
     private static readonly Regex NonAlnum = new(@"[^a-z0-9]+", RegexOptions.Compiled);
     private static readonly string[] LeadingArticles = { "the ", "a ", "an " };
 
+    // Cap below SQL Server's 1700-byte nonclustered-index-key limit: with a
+    // 4-byte AuthorId also in IX_*_AuthorId_NormalizedTitle, nvarchar values
+    // above ~848 chars bust the index. Overly long OL titles (compilations
+    // with every included work listed in the title) have been seen at 900+
+    // chars; 800 is comfortably under the limit and preserves enough signal
+    // to keep match accuracy on normal-length titles.
+    public const int MaxNormalizedLength = 800;
+
     public static string Normalize(string? input)
     {
         if (string.IsNullOrWhiteSpace(input)) return "";
@@ -19,7 +27,9 @@ public static class TitleNormalizer
         foreach (var art in LeadingArticles)
             if (s.StartsWith(art)) { s = s[art.Length..]; break; }
         s = NonAlnum.Replace(s, " ").Trim();
-        return Regex.Replace(s, @"\s+", " ");
+        s = Regex.Replace(s, @"\s+", " ");
+        if (s.Length > MaxNormalizedLength) s = s[..MaxNormalizedLength].TrimEnd();
+        return s;
     }
 
     public static string NormalizeAuthor(string? input)

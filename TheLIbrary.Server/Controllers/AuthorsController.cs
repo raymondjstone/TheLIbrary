@@ -43,27 +43,15 @@ public class AuthorsController : ControllerBase
         int PhysicalOwnedCount,
         DateTime? LastSyncedAt);
 
-    // Sorting is done in-memory after projection because the counts aren't
-    // actual columns — translating the full set into a stable SQL ORDER BY
-    // across all these dimensions isn't worth the complexity for the size of
-    // the author table.
-    [HttpGet]
-    public async Task<IReadOnlyList<AuthorListItem>> List(
-        [FromQuery] string? status,
-        [FromQuery] int? minPriority,
-        [FromQuery] string? sort,
-        [FromQuery] string? dir,
-        CancellationToken ct)
-    {
-        IQueryable<Author> q = _db.Authors.AsNoTracking();
-        if (!string.IsNullOrWhiteSpace(status) && Enum.TryParse<AuthorStatus>(status, true, out var s))
-            q = q.Where(a => a.Status == s);
-        if (minPriority is int mp && mp > 0)
-            q = q.Where(a => a.Priority >= mp);
+    // Keyless projection used by the raw SQL book-stats query below.
+    private sealed record BookStatRow(int AuthorId, int Total, int Ebook, int Physical);
 
-        // Ebook-owned = any LocalBookFile present. Physical-owned = user
-        // flagged ManuallyOwned but no file on disk (per project memory).
-        var rows = await q
+    // Returns the full list, unsorted and unfiltered. The client caches it
+    // and applies filter/sort and paging in the browser.
+    [HttpGet]
+    public async Task<IReadOnlyList<AuthorListItem>> List(CancellationToken ct)
+    {
+        var baseRows = await _db.Authors.AsNoTracking()
             .Select(a => new
             {
                 a.Id,
@@ -73,36 +61,43 @@ public class AuthorsController : ControllerBase
                 a.Status,
                 a.ExclusionReason,
                 a.Priority,
-                a.LastSyncedAt,
-                BookCount = a.Books.Count,
-                EbookOwnedCount = a.Books.Count(b => b.LocalFiles.Any()),
-                PhysicalOwnedCount = a.Books.Count(b => b.ManuallyOwned && !b.LocalFiles.Any())
+                a.LastSyncedAt
             })
             .ToListAsync(ct);
 
-        var projected = rows.Select(r => new AuthorListItem(
-            r.Id, r.Name, r.CalibreFolderName, r.OpenLibraryKey,
-            r.Status.ToString(), r.ExclusionReason,
-            r.Priority, r.BookCount,
-            OwnedCount: r.EbookOwnedCount + r.PhysicalOwnedCount,
-            r.EbookOwnedCount, r.PhysicalOwnedCount, r.LastSyncedAt));
+        // A single pass with a hash join is faster than LINQ GroupBy with
+        // Count(b => b.LocalFiles.Any()), which EF emits as an EXISTS
+        // subquery evaluated per book row. The LEFT JOIN materialises the
+        // distinct ebook-owned book ids once, then SQL Server hash-joins
+        // it with Books and groups — one row per author out.
+        var stats = await _db.Database
+            .SqlQuery<BookStatRow>($"""
+                SELECT b.AuthorId,
+                       COUNT(*)                                                               AS Total,
+                       COUNT(lf.BookId)                                                      AS Ebook,
+                       SUM(CASE WHEN lf.BookId IS NULL AND b.ManuallyOwned = 1 THEN 1 ELSE 0 END) AS Physical
+                FROM   Books b
+                LEFT JOIN (
+                    SELECT DISTINCT BookId
+                    FROM   LocalBookFiles
+                    WHERE  BookId IS NOT NULL
+                ) lf ON lf.BookId = b.Id
+                GROUP BY b.AuthorId
+                """)
+            .ToDictionaryAsync(x => x.AuthorId, ct);
 
-        var descending = string.Equals(dir, "desc", StringComparison.OrdinalIgnoreCase);
-        IOrderedEnumerable<AuthorListItem> ordered = (sort?.ToLowerInvariant()) switch
+        return baseRows.Select(r =>
         {
-            "priority"   => descending ? projected.OrderByDescending(a => a.Priority)            : projected.OrderBy(a => a.Priority),
-            "books"      => descending ? projected.OrderByDescending(a => a.BookCount)           : projected.OrderBy(a => a.BookCount),
-            "owned"      => descending ? projected.OrderByDescending(a => a.OwnedCount)          : projected.OrderBy(a => a.OwnedCount),
-            "ebooks"     => descending ? projected.OrderByDescending(a => a.EbookOwnedCount)     : projected.OrderBy(a => a.EbookOwnedCount),
-            "physical"   => descending ? projected.OrderByDescending(a => a.PhysicalOwnedCount)  : projected.OrderBy(a => a.PhysicalOwnedCount),
-            "lastsynced" => descending ? projected.OrderByDescending(a => a.LastSyncedAt ?? DateTime.MinValue)
-                                       : projected.OrderBy(a => a.LastSyncedAt ?? DateTime.MinValue),
-            _            => projected.OrderBy(a => a.Name)
-        };
-        // Secondary sort on name keeps ordering stable when the primary
-        // key ties (very common for counts and unrated priority=0).
-        var sorted = ordered.ThenBy(a => a.Name).ToList();
-        return sorted;
+            stats.TryGetValue(r.Id, out var s);
+            var ebook    = s?.Ebook    ?? 0;
+            var physical = s?.Physical ?? 0;
+            return new AuthorListItem(
+                r.Id, r.Name, r.CalibreFolderName, r.OpenLibraryKey,
+                r.Status.ToString(), r.ExclusionReason,
+                r.Priority, s?.Total ?? 0,
+                OwnedCount: ebook + physical,
+                ebook, physical, r.LastSyncedAt);
+        }).ToList();
     }
 
     public sealed record AuthorDetail(

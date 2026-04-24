@@ -42,5 +42,9 @@ public class Author
     // derived from the author's most recent publication year.
     public DateTime? NextFetchAt { get; set; }
 
+    // Stamped after each Calibre file-matching pass. Used to order authors so
+    // the longest-waiting (null = never scanned) are processed first each run.
+    public DateTime? CalibreScannedAt { get; set; }
+
     public List<Book> Books { get; set; } = new();
 }

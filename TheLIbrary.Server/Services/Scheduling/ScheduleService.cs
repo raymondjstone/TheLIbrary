@@ -79,6 +79,7 @@ public sealed class ScheduleService
             ScheduleJobIds.AuthorUpdates => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunAuthorUpdates()),
             ScheduleJobIds.Incoming => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunIncoming()),
             ScheduleJobIds.ReprocessUnknown => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunReprocessUnknown()),
+            ScheduleJobIds.RefreshWorks => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunRefreshDueWorks()),
             _ => throw new ArgumentException($"Unknown job id '{jobId}'", nameof(jobId)),
         };
     }
@@ -123,6 +124,9 @@ public sealed class ScheduleService
                     break;
                 case ScheduleJobIds.ReprocessUnknown:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunReprocessUnknown(), entry.Cron);
+                    break;
+                case ScheduleJobIds.RefreshWorks:
+                    _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunRefreshDueWorks(), entry.Cron);
                     break;
             }
             _log.LogInformation("Schedule {Job}: enabled with cron '{Cron}'", jobId, entry.Cron);

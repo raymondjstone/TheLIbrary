@@ -39,6 +39,7 @@ public sealed class CalibreScanner
             {
                 var authorFolder = Path.GetFileName(authorDir)!;
                 if (ignored.Contains(authorFolder)) continue;
+                //var bookDirs = new List<string>();
                 var bookDirs = EnumerateDirsSafe(authorDir).ToList();
                 if (bookDirs.Count == 0)
                 {

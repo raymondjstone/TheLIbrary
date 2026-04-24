@@ -50,6 +50,11 @@ public sealed class ScheduledJobs
         ct => _incoming.TryStartUnknown(ct, out var err) ? (true, err) : (false, err),
         () => _incoming.IsRunning);
 
+    public Task RunRefreshDueWorks() => RunWithPolling(
+        ScheduleJobIds.RefreshWorks,
+        ct => _sync.TryStartRefreshDueWorks(ct, out var err) ? (true, err) : (false, err),
+        () => _sync.IsRunning);
+
     private async Task RunWithPolling(
         string jobId,
         Func<CancellationToken, (bool started, string? error)> start,
@@ -74,8 +79,9 @@ public sealed class ScheduledJobs
             {
                 _log.LogWarning("Scheduled job {Job} gave up after {Waited}: {Error}",
                     jobId, waited, outcome.error);
-                throw new InvalidOperationException(
-                    $"Could not start {jobId} within {waitCeiling}: {outcome.error}");
+                return;
+                //throw new InvalidOperationException(
+                //    $"Could not start {jobId} within {waitCeiling}: {outcome.error}");
             }
             _log.LogInformation("Scheduled job {Job} waiting for coordinator: {Error}",
                 jobId, outcome.error);

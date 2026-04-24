@@ -89,6 +89,9 @@ export default function Sync() {
                 <button onClick={() => post('/api/sync/author-updates')} disabled={running}>
                     {authorUpdates ? 'Updating…' : 'Apply author updates'}
                 </button>
+                <button onClick={() => post('/api/sync/refresh-works')} disabled={running}>
+                    Refresh due works
+                </button>
                 <button onClick={processIncoming} disabled={running || incomingRunning}>
                     {incomingRunning ? 'Processing…' : 'Process incoming'}
                 </button>

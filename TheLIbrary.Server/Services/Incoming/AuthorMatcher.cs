@@ -7,7 +7,19 @@ namespace TheLibrary.Server.Services.Incoming;
 // catalog row. FolderName is where a matched file goes:
 //   - tracked: the Calibre folder already in use (e.g. author.CalibreFolderName)
 //   - ol    : the OL author's display name, sanitized for quarantine grouping
-public sealed record AuthorIndexEntry(string DisplayName, string FolderName, bool IsTracked);
+//
+// TrackedAuthorId is the Author.Id for tracked entries (null for OL-only).
+// OpenLibraryKey is the OL author key ("OL123A") when known — populated for
+// OL-derived entries and for tracked entries that already have one in DB.
+// Collection folders must only be created when we hold an OpenLibraryKey, so
+// downstream code can upsert the backing Author row immediately rather than
+// leaving a ghost folder for the sync phase to reconcile later.
+public sealed record AuthorIndexEntry(
+    string DisplayName,
+    string FolderName,
+    bool IsTracked,
+    int? TrackedAuthorId = null,
+    string? OpenLibraryKey = null);
 
 public sealed record AuthorMatchResult(AuthorIndexEntry Entry, string? RewrittenTitle);
 

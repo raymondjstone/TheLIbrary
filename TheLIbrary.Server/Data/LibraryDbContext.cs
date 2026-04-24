@@ -16,6 +16,7 @@ public class LibraryDbContext : DbContext
     public DbSet<AppSetting> AppSettings => Set<AppSetting>();
     public DbSet<RemarkableAuth> RemarkableAuths => Set<RemarkableAuth>();
     public DbSet<AuthorBlacklist> AuthorBlacklist => Set<AuthorBlacklist>();
+    public DbSet<NzbSite> NzbSites => Set<NzbSite>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -76,6 +77,14 @@ public class LibraryDbContext : DbContext
             e.Property(x => x.FolderName).HasMaxLength(300);
             e.Property(x => x.Reason).HasMaxLength(500);
             e.HasIndex(x => x.NormalizedName).IsUnique();
+        });
+
+        b.Entity<NzbSite>(e =>
+        {
+            e.Property(x => x.Name).HasMaxLength(100);
+            e.Property(x => x.UrlTemplate).HasMaxLength(500);
+            e.Property(x => x.Order).HasDefaultValue(99);
+            e.Property(x => x.Active).HasDefaultValue(true);
         });
 
         b.Entity<OpenLibraryAuthor>(e =>

@@ -42,4 +42,12 @@ public class SyncController : ControllerBase
             return Conflict(new { error = err });
         return Accepted(_sync.GetState());
     }
+
+    [HttpPost("refresh-works")]
+    public ActionResult RefreshWorks()
+    {
+        if (!_sync.TryStartRefreshDueWorks(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted(_sync.GetState());
+    }
 }

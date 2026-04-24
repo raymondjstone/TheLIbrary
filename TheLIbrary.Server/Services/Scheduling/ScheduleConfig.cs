@@ -22,8 +22,9 @@ public static class ScheduleJobIds
     public const string AuthorUpdates = "author-updates";
     public const string Incoming = "incoming";
     public const string ReprocessUnknown = "reprocess-unknown";
+    public const string RefreshWorks = "refresh-works";
 
-    public static readonly IReadOnlyList<string> All = new[] { Sync, Seed, AuthorUpdates, Incoming, ReprocessUnknown };
+    public static readonly IReadOnlyList<string> All = new[] { Sync, Seed, AuthorUpdates, Incoming, ReprocessUnknown, RefreshWorks };
 
     // Default crons are staggered across the small hours so if every job is
     // flipped on without editing the time, they don't all queue at 02:00.
@@ -36,5 +37,6 @@ public static class ScheduleJobIds
             [AuthorUpdates] = new() { Cron = "0 4 * * *", Enabled = false },
             [Incoming] = new() { Cron = "0 5 * * *", Enabled = false },
             [ReprocessUnknown] = new() { Cron = "0 6 * * *", Enabled = false },
+            [RefreshWorks] = new() { Cron = "0 7 * * *", Enabled = false },
         };
 }

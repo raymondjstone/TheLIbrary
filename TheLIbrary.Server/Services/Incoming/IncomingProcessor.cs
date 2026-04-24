@@ -116,13 +116,15 @@ public sealed class IncomingProcessor
         // catalog (millions of rows post-seed) is too big to preload — instead
         // we query it per unmatched file via LookupOpenLibraryAsync below.
         var tracked = await _db.Authors
-            .Select(a => new { a.Name, a.CalibreFolderName })
+            .Select(a => new { a.Id, a.Name, a.CalibreFolderName, a.OpenLibraryKey })
             .ToListAsync(ct);
         var matcher = new AuthorMatcher(
             tracked.Select(a => new AuthorIndexEntry(
                 DisplayName: a.Name,
                 FolderName: string.IsNullOrWhiteSpace(a.CalibreFolderName) ? a.Name : a.CalibreFolderName!,
-                IsTracked: true)),
+                IsTracked: true,
+                TrackedAuthorId: a.Id,
+                OpenLibraryKey: a.OpenLibraryKey)),
             blacklistedNormalized);
         Report($"Indexed {tracked.Count} watchlist authors, {blacklistSet.Count} blacklisted; scanning {sourcePath}");
 
@@ -227,15 +229,23 @@ public sealed class IncomingProcessor
                         // dump covers every OL author and the same normalized
                         // key space that the matcher uses for tracked authors,
                         // so a file whose author isn't on our watchlist yet can
-                        // still be identified. We still route it under
-                        // __unknown/<AuthorName>/ so a later reprocess-unknown
-                        // picks it up once the user promotes that author.
+                        // still be identified.
                         var olMatch = await LookupOpenLibraryAsync(matcher, meta, file, blacklistSet, ct);
                         if (olMatch is not null)
                         {
                             matchedEntry = olMatch.Entry;
                             rewrittenTitle = olMatch.RewrittenTitle;
                         }
+                    }
+
+                    // Collection folders only exist when an OL-verified Author
+                    // row exists in the DB. If the match is tracked-without-OL
+                    // or OL-only, upsert the row here so we never create a
+                    // ghost folder the user would see as "not an author name".
+                    // A null return downgrades the match to __unknown.
+                    if (matchedEntry is not null)
+                    {
+                        matchedEntry = await ResolveOrCreateAuthorAsync(matchedEntry, ct);
                     }
 
                     string destDir;
@@ -278,12 +288,9 @@ public sealed class IncomingProcessor
                             : Sanitize(rewrittenTitle) ?? Sanitize(meta?.Title) ?? Sanitize(folderTitle);
                         titleFolder ??= Sanitize(Path.GetFileNameWithoutExtension(file)) ?? "Untitled";
 
-                        // Matched files — tracked OR OL — go straight to the
-                        // collection's author folder. OL-only matches still
-                        // surface as "unclaimed" in the UI so the user can
-                        // promote the author in one click; routing them back
-                        // under __unknown would just churn the filesystem on
-                        // every reprocess-unknown pass.
+                        // matchedEntry has been OL-verified and its Author row
+                        // exists in the DB — safe to create the collection
+                        // folder under its CalibreFolderName.
                         var authorSegment = Sanitize(matchedEntry.FolderName) ?? CalibreScanner.UnknownAuthorFolder;
                         destDir = Path.Combine(destRoot, authorSegment, titleFolder);
                     }
@@ -411,7 +418,7 @@ public sealed class IncomingProcessor
                             .AsNoTracking()
                             .Where(a => a.NormalizedName == probe)
                             .OrderBy(a => a.Id)
-                            .Select(a => new { a.Name })
+                            .Select(a => new { a.Name, a.OlKey })
                             .FirstOrDefaultAsync(ct);
                         if (hit is not null)
                         {
@@ -421,7 +428,12 @@ public sealed class IncomingProcessor
                             var hitKey = TitleNormalizer.NormalizeAuthor(hit.Name);
                             if (!blacklist.Contains(hitKey))
                             {
-                                cached = new AuthorIndexEntry(hit.Name, hit.Name, IsTracked: false);
+                                cached = new AuthorIndexEntry(
+                                    DisplayName: hit.Name,
+                                    FolderName: hit.Name,
+                                    IsTracked: false,
+                                    TrackedAuthorId: null,
+                                    OpenLibraryKey: hit.OlKey);
                                 break;
                             }
                         }
@@ -454,18 +466,110 @@ public sealed class IncomingProcessor
                 .AsNoTracking()
                 .Where(a => a.NormalizedName == key)
                 .OrderBy(a => a.Id)
-                .Select(a => new { a.Name })
+                .Select(a => new { a.Name, a.OlKey })
                 .FirstOrDefaultAsync(ct);
             if (hit is not null)
             {
                 var hitKey = TitleNormalizer.NormalizeAuthor(hit.Name);
                 if (blacklist.Contains(hitKey)) continue;
                 return new AuthorMatchResult(
-                    new AuthorIndexEntry(hit.Name, hit.Name, IsTracked: false),
+                    new AuthorIndexEntry(
+                        DisplayName: hit.Name,
+                        FolderName: hit.Name,
+                        IsTracked: false,
+                        TrackedAuthorId: null,
+                        OpenLibraryKey: hit.OlKey),
                     rewrittenTitle);
             }
         }
         return null;
+    }
+
+    // Guarantees the matched entry is backed by a real Author row with an OL
+    // key before any collection folder is created for it:
+    //   - Tracked with OL key: use as-is.
+    //   - Tracked without OL key: try to resolve one from the OL catalog by
+    //     name; on hit, persist it so future runs skip this step; on miss,
+    //     downgrade to null (route file to __unknown).
+    //   - OL-only match: upsert a Pending Author row with the OL key so the
+    //     folder we're about to create has a DB owner immediately.
+    // Returns an entry re-stamped with the resolved author's id/folder name
+    // (IsTracked=true), or null if the match couldn't be OL-verified. The
+    // returned FolderName is what the caller uses as the on-disk author
+    // folder segment — so it's always a real, OL-backed author name.
+    private async Task<AuthorIndexEntry?> ResolveOrCreateAuthorAsync(
+        AuthorIndexEntry entry, CancellationToken ct)
+    {
+        if (entry.IsTracked && entry.TrackedAuthorId is int trackedId)
+        {
+            if (!string.IsNullOrEmpty(entry.OpenLibraryKey)) return entry;
+
+            var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == trackedId, ct);
+            if (author is null) return null;
+            if (!string.IsNullOrEmpty(author.OpenLibraryKey))
+            {
+                return entry with { OpenLibraryKey = author.OpenLibraryKey };
+            }
+
+            // Backfill OL key opportunistically so subsequent runs (and the
+            // AuthorRefresher) can skip the lookup.
+            foreach (var probe in AuthorMatcher.AuthorKeyVariants(author.Name)
+                .Concat(AuthorMatcher.AuthorKeyVariants(author.CalibreFolderName)))
+            {
+                var hit = await _db.OpenLibraryAuthors
+                    .AsNoTracking()
+                    .Where(a => a.NormalizedName == probe)
+                    .OrderBy(a => a.Id)
+                    .Select(a => new { a.OlKey })
+                    .FirstOrDefaultAsync(ct);
+                if (hit is not null)
+                {
+                    author.OpenLibraryKey = hit.OlKey;
+                    await _db.SaveChangesAsync(ct);
+                    return entry with { OpenLibraryKey = hit.OlKey };
+                }
+            }
+
+            // Tracked but un-verifiable — don't pretend. Route to __unknown so
+            // nothing lands under a folder whose author has no OL pedigree.
+            return null;
+        }
+
+        // OL-only match: we only arrive here with an OpenLibraryKey populated
+        // from the catalog. Missing key is a safety net.
+        if (string.IsNullOrEmpty(entry.OpenLibraryKey)) return null;
+
+        var existing = await _db.Authors
+            .FirstOrDefaultAsync(a => a.OpenLibraryKey == entry.OpenLibraryKey, ct);
+        if (existing is not null)
+        {
+            return new AuthorIndexEntry(
+                DisplayName: existing.Name,
+                FolderName: string.IsNullOrWhiteSpace(existing.CalibreFolderName) ? existing.Name : existing.CalibreFolderName!,
+                IsTracked: true,
+                TrackedAuthorId: existing.Id,
+                OpenLibraryKey: existing.OpenLibraryKey);
+        }
+
+        var created = new Author
+        {
+            Name = entry.DisplayName,
+            CalibreFolderName = entry.FolderName,
+            OpenLibraryKey = entry.OpenLibraryKey,
+            Status = AuthorStatus.Pending
+        };
+        _db.Authors.Add(created);
+        await _db.SaveChangesAsync(ct);
+        _log.LogInformation(
+            "Auto-registered author '{Name}' ({OlKey}) from OL match during incoming scan",
+            created.Name, created.OpenLibraryKey);
+
+        return new AuthorIndexEntry(
+            DisplayName: created.Name,
+            FolderName: string.IsNullOrWhiteSpace(created.CalibreFolderName) ? created.Name : created.CalibreFolderName!,
+            IsTracked: true,
+            TrackedAuthorId: created.Id,
+            OpenLibraryKey: created.OpenLibraryKey);
     }
 
     private EpubMetadata? ReadMetadata(string file)
