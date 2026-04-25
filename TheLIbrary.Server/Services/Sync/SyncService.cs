@@ -162,6 +162,14 @@ public sealed class SyncService
                 continue;
             }
 
+            // Purely numeric folder names (years, page counts, edition markers
+            // that leaked into ebook metadata) are never real author names.
+            if (!string.IsNullOrEmpty(folderKey) && folderKey.All(c => char.IsDigit(c) || c == ' '))
+            {
+                _log.LogDebug("Skipping non-author numeric folder {Folder}", folder);
+                continue;
+            }
+
             // Include locally-tracked Added entities so two folder spellings in
             // the same run (e.g. "Kyle Mills" and "Mills, Kyle") collapse to one.
             var candidates = dbAuthors.Concat(

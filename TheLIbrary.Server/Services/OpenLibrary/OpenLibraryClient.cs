@@ -42,19 +42,30 @@ public sealed class OpenLibraryClient
         return list ?? (IReadOnlyList<AuthorMergeChange>)Array.Empty<AuthorMergeChange>();
     }
 
-    // Paged fetch of English works for a given author key. Uses the main search
-    // with author_key= and language=eng so variants/editions collapse to works.
-    public async IAsyncEnumerable<WorkSearchDoc> GetEnglishWorksAsync(
+    // Paged fetch of English-only works for a given author key.
+    public IAsyncEnumerable<WorkSearchDoc> GetEnglishWorksAsync(
+        string authorKey, CancellationToken ct)
+        => GetWorksAsync(authorKey, "eng", ct);
+
+    // Paged fetch of all works (any language) for a given author key.
+    // Used for starred authors where the normal language restriction is waived.
+    public IAsyncEnumerable<WorkSearchDoc> GetAllWorksAsync(
+        string authorKey, CancellationToken ct)
+        => GetWorksAsync(authorKey, null, ct);
+
+    private async IAsyncEnumerable<WorkSearchDoc> GetWorksAsync(
         string authorKey,
+        string? language,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
         const int pageSize = 100;
         const string fields = "key,title,first_publish_year,cover_i,language,author_key,author_name,edition_count";
+        var langFilter = string.IsNullOrEmpty(language) ? "" : $"&language={HttpUtility.UrlEncode(language)}";
 
         int page = 1;
         while (true)
         {
-            var url = $"search.json?author_key={HttpUtility.UrlEncode(authorKey)}&language=eng&limit={pageSize}&page={page}&fields={fields}";
+            var url = $"search.json?author_key={HttpUtility.UrlEncode(authorKey)}{langFilter}&limit={pageSize}&page={page}&fields={fields}";
             var resp = await GetJsonAsync<WorkSearchResponse>(url, ct);
             if (resp is null || resp.Docs.Count == 0) yield break;
 

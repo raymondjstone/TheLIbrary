@@ -102,8 +102,14 @@ public sealed class AuthorRefresher
             .Select(b => b.OpenLibraryWorkKey).ToListAsync(ct);
         var seen = new HashSet<string>(existingWorkKeys, StringComparer.OrdinalIgnoreCase);
 
+        // Starred authors (Priority >= 1) bypass the English-only filter so
+        // works in any language are retrieved.
+        var worksStream = author.Priority >= 1
+            ? _ol.GetAllWorksAsync(author.OpenLibraryKey!, ct)
+            : _ol.GetEnglishWorksAsync(author.OpenLibraryKey!, ct);
+
         int fetched = 0;
-        await foreach (var doc in _ol.GetEnglishWorksAsync(author.OpenLibraryKey!, ct))
+        await foreach (var doc in worksStream)
         {
             ct.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(doc.Key) || string.IsNullOrWhiteSpace(doc.Title)) continue;
@@ -131,7 +137,14 @@ public sealed class AuthorRefresher
             .Select(b => b.FirstPublishYear!.Value).ToListAsync(ct);
         var bookCount = await _db.Books.CountAsync(b => b.AuthorId == author.Id, ct);
 
-        if (bookCount == 0)
+        // Starred authors are always Active — the user explicitly wants them
+        // tracked regardless of date or language criteria.
+        if (author.Priority >= 1)
+        {
+            author.Status = AuthorStatus.Active;
+            author.ExclusionReason = null;
+        }
+        else if (bookCount == 0)
         {
             author.Status = AuthorStatus.Excluded;
             author.ExclusionReason = "No English works returned by OpenLibrary";
@@ -173,8 +186,6 @@ public sealed class AuthorRefresher
     {
         if (docs is null || docs.Count == 0) return null;
         var norm = TitleNormalizer.NormalizeAuthor(searchName);
-        var exact = docs.FirstOrDefault(d => TitleNormalizer.NormalizeAuthor(d.Name) == norm);
-        if (exact is not null) return exact;
-        return docs.OrderByDescending(d => d.WorkCount ?? 0).First();
+        return docs.FirstOrDefault(d => TitleNormalizer.NormalizeAuthor(d.Name) == norm);
     }
 }

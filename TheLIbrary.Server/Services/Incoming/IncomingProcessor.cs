@@ -502,7 +502,37 @@ public sealed class IncomingProcessor
     {
         if (entry.IsTracked && entry.TrackedAuthorId is int trackedId)
         {
-            if (!string.IsNullOrEmpty(entry.OpenLibraryKey)) return entry;
+            if (!string.IsNullOrEmpty(entry.OpenLibraryKey))
+            {
+                // Guard against OL keys that were planted by the old work-count
+                // fallback in AuthorRefresher for a completely wrong person.
+                // If the folder name and the stored OL display name share no
+                // meaningful word token (length > 1, contains a letter), the
+                // key almost certainly belongs to someone else — reset it so
+                // the next sync re-evaluates with exact-match-only semantics.
+                var folderTokens = TitleNormalizer.NormalizeAuthor(entry.FolderName)
+                    .Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var nameTokens = TitleNormalizer.NormalizeAuthor(entry.DisplayName)
+                    .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                    .ToHashSet(StringComparer.Ordinal);
+                static bool Meaningful(string t) => t.Length > 1 && t.Any(char.IsLetter);
+                if (folderTokens.Where(Meaningful).Any(t => nameTokens.Contains(t)))
+                    return entry;
+
+                // Mismatch — wipe the suspect key and restore the original name
+                // so AuthorRefresher searches with the correct string next sync.
+                var stale = await _db.Authors.FirstOrDefaultAsync(a => a.Id == trackedId, ct);
+                if (stale is not null)
+                {
+                    stale.OpenLibraryKey = null;
+                    stale.Name = entry.FolderName;
+                    stale.Status = AuthorStatus.Pending;
+                    stale.NextFetchAt = null;
+                    await _db.SaveChangesAsync(ct);
+                }
+                // Fall through to backfill; garbage names won't be in the
+                // OL catalog → returns null → file routed to __unknown.
+            }
 
             var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == trackedId, ct);
             if (author is null) return null;
