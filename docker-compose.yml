@@ -1,0 +1,14 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5043:5043"
+    environment:
+      ConnectionStrings__Library: "${LIBRARY_CONNECTION_STRING}"
+      Calibre__Root: "${CALIBRE_ROOT}"
+      Calibre__EbookConvert: "${CALIBRE_EBOOK_CONVERT:-ebook-convert}"
+      OpenLibrary__DumpCacheDir: "${OL_DUMP_CACHE_DIR:-}"
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: "5043"

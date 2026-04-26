@@ -8,7 +8,14 @@
     <SpaProxyLaunchCommand>npm run dev</SpaProxyLaunchCommand>
     <SpaProxyServerUrl>https://localhost:58112</SpaProxyServerUrl>
     <UserSecretsId>10cf18f2-6b3b-44ea-8b32-8bb09b87498a</UserSecretsId>
+    <ContainerImageName>thelibrary</ContainerImageName>
+    <ContainerPort>5043</ContainerPort>
+    <ClientDir>$(MSBuildProjectDirectory)\..\thelibrary.client</ClientDir>
   </PropertyGroup>
+
+  <ItemGroup>
+    <ContainerEnvironmentVariable Include="ASPNETCORE_HTTP_PORTS" Value="5043" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.6" />
@@ -30,5 +37,12 @@
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
   </ItemGroup>
+
+  <Target Name="BuildFrontend" BeforeTargets="Build" Condition="'$(Configuration)' == 'Release'">
+    <Exec Command="npm ci" WorkingDirectory="$(ClientDir)" />
+    <Exec Command="npm run build" WorkingDirectory="$(ClientDir)" />
+    <RemoveDir Directories="$(MSBuildProjectDirectory)\wwwroot" />
+    <Exec Command="xcopy &quot;$(ClientDir)\dist&quot; &quot;$(MSBuildProjectDirectory)\wwwroot&quot; /E /I /Y" />
+  </Target>
 
 </Project>

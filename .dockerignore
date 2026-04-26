@@ -1,0 +1,12 @@
+**/node_modules
+**/bin
+**/obj
+**/dist
+**/.vs
+**/.vscode
+*.user
+*.suo
+TheLIbrary.Server.Tests
+README.md
+.git
+.gitignore

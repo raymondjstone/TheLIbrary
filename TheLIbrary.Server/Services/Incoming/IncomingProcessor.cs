@@ -311,17 +311,7 @@ public sealed class IncomingProcessor
                         continue;
                     }
 
-                    if (File.Exists(destPath))
-                    {
-                        // Don't silently overwrite an existing copy — leaves
-                        // the source file behind so the user can reconcile.
-                        skipped++;
-                        allMoved = false;
-                        Report(null, $"skip (exists at dest): {file} → {destPath}");
-                        continue;
-                    }
-
-                    MoveAndWait(file, destPath, overwrite: false);
+                    MoveAndWait(file, destPath, overwrite: File.Exists(destPath));
                     var destFolderLabel = matchedEntry?.FolderName ?? CalibreScanner.UnknownAuthorFolder;
                     Report($"Moved {Path.GetFileName(file)} → {destFolderLabel}",
                         $"moved: {file} → {destPath}");
