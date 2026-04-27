@@ -616,4 +616,94 @@ public class AuthorsController : ControllerBase
             .ToListAsync(ct);
         return rows.Select(r => new UnclaimedFolder(r.Folder, r.Count)).ToList();
     }
+
+    // Moves all files for an untracked folder back to incoming, deletes the
+    // (now-empty) author folder from the library, and removes the DB rows.
+    [HttpDelete("~/api/unclaimed")]
+    public async Task<IActionResult> DiscardUnclaimed([FromQuery] string folder, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(folder))
+            return BadRequest(new { error = "folder is required" });
+
+        var incomingSetting = await _db.AppSettings
+            .FirstOrDefaultAsync(s => s.Key == AppSettingKeys.IncomingFolder, ct);
+        var incomingPath = incomingSetting?.Value?.Trim();
+        if (string.IsNullOrWhiteSpace(incomingPath))
+            return BadRequest(new { error = "Incoming folder is not configured — set it in Settings first." });
+        if (!Directory.Exists(incomingPath))
+            return BadRequest(new { error = $"Incoming folder does not exist: {incomingPath}" });
+
+        var files = await _db.LocalBookFiles
+            .Where(f => f.AuthorFolder == folder && f.AuthorId == null)
+            .ToListAsync(ct);
+
+        if (files.Count == 0)
+            return NotFound(new { error = $"No untracked files found for folder '{folder}'" });
+
+        var authorDestRoot = UniqueDirectory(incomingPath, folder);
+        try { Directory.CreateDirectory(authorDestRoot); }
+        catch (IOException ex)
+        {
+            return StatusCode(500, new { error = $"Could not create destination folder: {ex.Message}" });
+        }
+
+        var movedSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var moveWarnings = new List<string>();
+        string? authorDirOnDisk = null;
+
+        foreach (var file in files)
+        {
+            if (string.IsNullOrWhiteSpace(file.FullPath)) continue;
+            var src = file.FullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (!Directory.Exists(src)) continue;
+            if (!movedSources.Add(src)) continue;
+
+            authorDirOnDisk ??= Path.GetDirectoryName(src);
+
+            var leaf = !string.IsNullOrWhiteSpace(file.TitleFolder) ? file.TitleFolder : Path.GetFileName(src);
+            if (string.IsNullOrWhiteSpace(leaf)) leaf = $"returned-{file.Id}";
+
+            var dest = UniqueDirectory(authorDestRoot, leaf);
+            try { Directory.Move(src, dest); }
+            catch (IOException ex) { moveWarnings.Add($"{leaf}: {ex.Message}"); }
+        }
+
+        // Prune the now-empty author folder from the library.
+        if (!string.IsNullOrWhiteSpace(authorDirOnDisk)
+            && Directory.Exists(authorDirOnDisk)
+            && !Directory.EnumerateFileSystemEntries(authorDirOnDisk).Any())
+        {
+            try { Directory.Delete(authorDirOnDisk); } catch { /* best effort */ }
+        }
+
+        // If nothing actually moved, clean up the empty dest root we created.
+        if (Directory.Exists(authorDestRoot)
+            && !Directory.EnumerateFileSystemEntries(authorDestRoot).Any())
+        {
+            try { Directory.Delete(authorDestRoot); } catch { /* best effort */ }
+        }
+
+        _db.LocalBookFiles.RemoveRange(files);
+
+        var normalizedFolder = TitleNormalizer.NormalizeAuthor(folder);
+        if (!string.IsNullOrEmpty(normalizedFolder)
+            && !await _db.AuthorBlacklist.AnyAsync(b => b.NormalizedName == normalizedFolder, ct))
+        {
+            _db.AuthorBlacklist.Add(new AuthorBlacklist
+            {
+                Name = folder,
+                NormalizedName = normalizedFolder,
+                FolderName = folder,
+                AddedAt = DateTime.UtcNow,
+                Reason = "Discarded untracked folder"
+            });
+        }
+
+        await _db.SaveChangesAsync(ct);
+
+        if (moveWarnings.Count > 0)
+            return Ok(new { warnings = moveWarnings });
+
+        return NoContent();
+    }
 }

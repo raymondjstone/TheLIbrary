@@ -19,7 +19,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.6" />
-    <PackageReference Include="Microsoft.AspNetCore.SpaProxy">
+    <PackageReference Include="Microsoft.AspNetCore.SpaProxy" Condition="'$(SkipSpa)' != 'true'">
       <Version>10.*-*</Version>
     </PackageReference>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.*">
@@ -32,13 +32,13 @@
     <PackageReference Include="PdfPig" Version="0.1.10" />
   </ItemGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="'$(SkipSpa)' != 'true'">
     <ProjectReference Include="..\thelibrary.client\thelibrary.client.esproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
     </ProjectReference>
   </ItemGroup>
 
-  <Target Name="BuildFrontend" BeforeTargets="Build" Condition="'$(Configuration)' == 'Release'">
+  <Target Name="BuildFrontend" BeforeTargets="Build" Condition="'$(Configuration)' == 'Release' AND '$(SkipSpa)' != 'true'">
     <Exec Command="npm ci" WorkingDirectory="$(ClientDir)" />
     <Exec Command="npm run build" WorkingDirectory="$(ClientDir)" />
     <RemoveDir Directories="$(MSBuildProjectDirectory)\wwwroot" />

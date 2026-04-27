@@ -53,3 +53,4 @@ dist-ssr/
 # OS
 Thumbs.db
 .DS_Store
+/TheLIbrary.Server/Properties/PublishProfiles/galcomp.pubxml

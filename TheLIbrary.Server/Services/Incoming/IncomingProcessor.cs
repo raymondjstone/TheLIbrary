@@ -245,7 +245,7 @@ public sealed class IncomingProcessor
                     // A null return downgrades the match to __unknown.
                     if (matchedEntry is not null)
                     {
-                        matchedEntry = await ResolveOrCreateAuthorAsync(matchedEntry, ct);
+                        matchedEntry = await ResolveOrCreateAuthorAsync(matchedEntry, blacklistSet, ct);
                     }
 
                     string destDir;
@@ -488,7 +488,7 @@ public sealed class IncomingProcessor
     // returned FolderName is what the caller uses as the on-disk author
     // folder segment — so it's always a real, OL-backed author name.
     private async Task<AuthorIndexEntry?> ResolveOrCreateAuthorAsync(
-        AuthorIndexEntry entry, CancellationToken ct)
+        AuthorIndexEntry entry, HashSet<string> blacklistSet, CancellationToken ct)
     {
         if (entry.IsTracked && entry.TrackedAuthorId is int trackedId)
         {
@@ -570,6 +570,11 @@ public sealed class IncomingProcessor
                 TrackedAuthorId: existing.Id,
                 OpenLibraryKey: existing.OpenLibraryKey);
         }
+
+        var normDisplay = TitleNormalizer.NormalizeAuthor(entry.DisplayName);
+        var normFolder = TitleNormalizer.NormalizeAuthor(entry.FolderName);
+        if (blacklistSet.Contains(normDisplay) || blacklistSet.Contains(normFolder))
+            return null;
 
         var created = new Author
         {

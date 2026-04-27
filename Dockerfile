@@ -11,9 +11,9 @@ RUN ls -la /app/client/dist/ && test -f /app/client/dist/index.html
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS backend
 WORKDIR /src
 COPY TheLIbrary.Server/TheLIbrary.Server.csproj TheLIbrary.Server/
-RUN dotnet restore TheLIbrary.Server/TheLIbrary.Server.csproj
+RUN dotnet restore TheLIbrary.Server/TheLIbrary.Server.csproj /p:SkipSpa=true
 COPY TheLIbrary.Server/ TheLIbrary.Server/
-RUN dotnet publish TheLIbrary.Server/TheLIbrary.Server.csproj -c Release -o /app/publish --no-restore
+RUN dotnet publish TheLIbrary.Server/TheLIbrary.Server.csproj -c Release -o /app/publish --no-restore /p:SkipSpa=true
 
 # Stage 3: Runtime
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime

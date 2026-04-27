@@ -31,6 +31,7 @@ export default function Authors() {
     const [page, setPage] = useState(1)
     const [dialog, setDialog] = useState(null)
     const [busyId, setBusyId] = useState(null)
+    const [busyUnclaimed, setBusyUnclaimed] = useState(null)
     const [error, setError] = useState(null)
 
     useEffect(() => {
@@ -84,6 +85,23 @@ export default function Authors() {
             load()
         } catch (e) { setError(String(e.message || e)) }
         finally { setBusyId(null) }
+    }
+
+    const discardUnclaimed = async (folder) => {
+        setBusyUnclaimed(folder)
+        setError(null)
+        try {
+            const r = await fetch(`/api/unclaimed?folder=${encodeURIComponent(folder)}`, { method: 'DELETE' })
+            if (!r.ok) {
+                const body = await r.json().catch(() => ({}))
+                throw new Error(body.error || r.statusText)
+            }
+            const body = r.status === 204 ? null : await r.json().catch(() => null)
+            if (body?.warnings?.length)
+                setError(`Returned, but some files could not be moved:\n${body.warnings.join('\n')}`)
+            load()
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setBusyUnclaimed(null) }
     }
 
     const setPriority = async (author, value) => {
@@ -173,6 +191,13 @@ export default function Authors() {
                                 <code>{u.authorFolder}</code> <span className="subtle">({u.fileCount} item{u.fileCount === 1 ? '' : 's'})</span>
                                 <button className="btn-ghost" onClick={() => setDialog({ initialQuery: u.authorFolder })}>
                                     Find on OpenLibrary &amp; add
+                                </button>
+                                <button
+                                    className="btn-ghost btn-danger"
+                                    disabled={busyUnclaimed === u.authorFolder}
+                                    onClick={() => discardUnclaimed(u.authorFolder)}
+                                >
+                                    {busyUnclaimed === u.authorFolder ? 'Moving…' : '↩ Return to Incoming'}
                                 </button>
                             </li>
                         ))}
