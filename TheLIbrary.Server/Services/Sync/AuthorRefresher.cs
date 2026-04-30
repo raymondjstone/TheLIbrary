@@ -173,13 +173,13 @@ public sealed class AuthorRefresher
     // four weeks. No years on file behaves like "anything else" (4 weeks).
     public static TimeSpan NextFetchInterval(IReadOnlyList<int> years)
     {
-        if (years.Count == 0) return TimeSpan.FromDays(28);
+        if (years.Count == 0) return TimeSpan.FromDays(60);
         var mostRecent = years.Max();
         var age = DateTime.UtcNow.Year - mostRecent;
-        if (age <= 1) return TimeSpan.FromDays(1);
-        if (age <= 5) return TimeSpan.FromDays(7);
-        if (age <= 10) return TimeSpan.FromDays(14);
-        return TimeSpan.FromDays(28);
+        if (age <= 1) return TimeSpan.FromDays(2);
+        if (age <= 5) return TimeSpan.FromDays(14);
+        if (age <= 10) return TimeSpan.FromDays(28);
+        return TimeSpan.FromDays(60);
     }
 
     private static AuthorSearchDoc? PickBestAuthor(List<AuthorSearchDoc>? docs, string searchName)

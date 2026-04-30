@@ -111,6 +111,13 @@ public sealed class OpenLibraryClient
                 _log.LogWarning(ex, "OpenLibrary request failed for {Url} (attempt {Attempt})", relativeUrl, attempt);
                 await Task.Delay(TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, attempt))), ct);
             }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested && attempt < maxAttempts)
+            {
+                // HttpClient timeout (TaskCanceledException with InnerException=TimeoutException),
+                // not an external cancellation — retry it like any other transient failure.
+                _log.LogWarning("OpenLibrary request timed out for {Url} (attempt {Attempt})", relativeUrl, attempt);
+                await Task.Delay(TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, attempt))), ct);
+            }
         }
         _log.LogError("OpenLibrary request gave up after {N} attempts: {Url}", maxAttempts, relativeUrl);
         return default;

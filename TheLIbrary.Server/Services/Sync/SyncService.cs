@@ -55,7 +55,7 @@ public sealed class SyncService
         _ = Task.Run(async () =>
         {
             try { await RunInternalAsync(hostCt); }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (hostCt.IsCancellationRequested)
             {
                 _log.LogWarning("Sync canceled");
                 MutateState(s => { s.Phase = SyncPhase.Failed; s.Error = "Canceled"; s.FinishedAt = DateTime.UtcNow; });
@@ -551,7 +551,7 @@ public sealed class SyncService
                         : $"Processed {result.DaysProcessed} day(s); {result.AuthorsUpdated} rekeyed, {result.AuthorsRemoved} folded";
                 });
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (hostCt.IsCancellationRequested)
             {
                 _log.LogWarning("Author-updates canceled");
                 MutateState(s => { s.Phase = SyncPhase.Failed; s.Error = "Canceled"; s.FinishedAt = DateTime.UtcNow; });
@@ -645,7 +645,7 @@ public sealed class SyncService
                         : $"Refreshed {authorIds.Count} author(s); {s.BooksAdded} new book(s)";
                 });
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (hostCt.IsCancellationRequested)
             {
                 _log.LogWarning("Refresh-due-works canceled");
                 MutateState(s => { s.Phase = SyncPhase.Failed; s.Error = "Canceled"; s.FinishedAt = DateTime.UtcNow; });
@@ -701,7 +701,7 @@ public sealed class SyncService
                     s.Message = $"Seeded {s.DumpAuthorsInserted:N0} authors";
                 });
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (hostCt.IsCancellationRequested)
             {
                 _log.LogWarning("Author seed canceled");
                 MutateState(s => { s.Phase = SyncPhase.Failed; s.Error = "Canceled"; s.FinishedAt = DateTime.UtcNow; });

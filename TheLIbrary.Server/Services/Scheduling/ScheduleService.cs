@@ -74,12 +74,12 @@ public sealed class ScheduleService
     {
         return jobId switch
         {
-            ScheduleJobIds.Sync => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunSync()),
-            ScheduleJobIds.Seed => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunSeed()),
-            ScheduleJobIds.AuthorUpdates => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunAuthorUpdates()),
-            ScheduleJobIds.Incoming => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunIncoming()),
-            ScheduleJobIds.ReprocessUnknown => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunReprocessUnknown()),
-            ScheduleJobIds.RefreshWorks => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunRefreshDueWorks()),
+            ScheduleJobIds.Sync => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunSync(true)),
+            ScheduleJobIds.Seed => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunSeed(true)),
+            ScheduleJobIds.AuthorUpdates => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunAuthorUpdates(true)),
+            ScheduleJobIds.Incoming => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunIncoming(true)),
+            ScheduleJobIds.ReprocessUnknown => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunReprocessUnknown(true)),
+            ScheduleJobIds.RefreshWorks => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunRefreshDueWorks(true)),
             _ => throw new ArgumentException($"Unknown job id '{jobId}'", nameof(jobId)),
         };
     }

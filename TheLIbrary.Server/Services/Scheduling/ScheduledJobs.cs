@@ -1,3 +1,4 @@
+using Hangfire;
 using TheLibrary.Server.Services.Incoming;
 using TheLibrary.Server.Services.Sync;
 
@@ -10,57 +11,86 @@ namespace TheLibrary.Server.Services.Scheduling;
 // entire duration — with WorkerCount=1, that's what delivers mutual exclusion
 // between scheduled jobs.
 //
-// Manual UI clicks go through the controllers and reach the same TryStart*
-// APIs; if a scheduled job is already holding the BackgroundTaskCoordinator
-// the manual click returns 409 and vice versa.
+// Manual UI clicks set manualTrigger=true, which bypasses the schedule-enabled
+// check. Recurring jobs leave it at the default (false), so any stale enqueued
+// instance that fires after the schedule is disabled is silently discarded.
 public sealed class ScheduledJobs
 {
     private readonly SyncService _sync;
     private readonly IncomingService _incoming;
+    private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
 
-    public ScheduledJobs(SyncService sync, IncomingService incoming, IHostApplicationLifetime lifetime, ILogger<ScheduledJobs> log)
+    public ScheduledJobs(
+        SyncService sync,
+        IncomingService incoming,
+        ScheduleService schedules,
+        IHostApplicationLifetime lifetime,
+        ILogger<ScheduledJobs> log)
     {
-        _sync = sync; _incoming = incoming; _lifetime = lifetime; _log = log;
+        _sync = sync; _incoming = incoming; _schedules = schedules;
+        _lifetime = lifetime; _log = log;
     }
 
-    public Task RunSync() => RunWithPolling(
-        ScheduleJobIds.Sync,
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunSync(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.Sync, manualTrigger,
         ct => _sync.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _sync.IsRunning);
 
-    public Task RunSeed() => RunWithPolling(
-        ScheduleJobIds.Seed,
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunSeed(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.Seed, manualTrigger,
         ct => _sync.TryStartSeed(ct, out var err) ? (true, err) : (false, err),
         () => _sync.IsRunning);
 
-    public Task RunAuthorUpdates() => RunWithPolling(
-        ScheduleJobIds.AuthorUpdates,
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunAuthorUpdates(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.AuthorUpdates, manualTrigger,
         ct => _sync.TryStartAuthorUpdates(ct, out var err) ? (true, err) : (false, err),
         () => _sync.IsRunning);
 
-    public Task RunIncoming() => RunWithPolling(
-        ScheduleJobIds.Incoming,
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunIncoming(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.Incoming, manualTrigger,
         ct => _incoming.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _incoming.IsRunning);
 
-    public Task RunReprocessUnknown() => RunWithPolling(
-        ScheduleJobIds.ReprocessUnknown,
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunReprocessUnknown(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.ReprocessUnknown, manualTrigger,
         ct => _incoming.TryStartUnknown(ct, out var err) ? (true, err) : (false, err),
         () => _incoming.IsRunning);
 
-    public Task RunRefreshDueWorks() => RunWithPolling(
-        ScheduleJobIds.RefreshWorks,
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunRefreshDueWorks(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.RefreshWorks, manualTrigger,
         ct => _sync.TryStartRefreshDueWorks(ct, out var err) ? (true, err) : (false, err),
         () => _sync.IsRunning);
 
     private async Task RunWithPolling(
         string jobId,
+        bool manualTrigger,
         Func<CancellationToken, (bool started, string? error)> start,
         Func<bool> isRunning)
     {
         var ct = _lifetime.ApplicationStopping;
+
+        // Stale enqueued instances (from when the schedule was enabled, or from
+        // a retry loop) must not run after the user disables the schedule.
+        // Manual triggers bypass this so the user can always fire on demand.
+        if (!manualTrigger)
+        {
+            var all = await _schedules.GetAllAsync(ct);
+            if (!all.TryGetValue(jobId, out var entry) || !entry.Enabled)
+            {
+                _log.LogInformation(
+                    "Scheduled job {Job} is disabled — discarding stale enqueued run", jobId);
+                return;
+            }
+        }
+
         _log.LogInformation("Scheduled job {Job} starting", jobId);
 
         // Wait for the coordinator to free up rather than failing fast. A
@@ -80,8 +110,6 @@ public sealed class ScheduledJobs
                 _log.LogWarning("Scheduled job {Job} gave up after {Waited}: {Error}",
                     jobId, waited, outcome.error);
                 return;
-                //throw new InvalidOperationException(
-                //    $"Could not start {jobId} within {waitCeiling}: {outcome.error}");
             }
             _log.LogInformation("Scheduled job {Job} waiting for coordinator: {Error}",
                 jobId, outcome.error);
