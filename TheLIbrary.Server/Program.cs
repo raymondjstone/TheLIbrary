@@ -24,7 +24,7 @@ builder.Services.AddDbContext<LibraryDbContext>(opt =>
     opt.UseSqlServer(connStr, sql =>
     {
         sql.EnableRetryOnFailure(maxRetryCount: 5);
-        sql.CommandTimeout(60);
+        sql.CommandTimeout(300);
     }));
 
 builder.Services.AddSingleton<OpenLibraryRateLimiter>();

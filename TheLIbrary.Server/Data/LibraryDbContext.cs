@@ -93,7 +93,7 @@ public class LibraryDbContext : DbContext
             e.Property(x => x.Name).HasMaxLength(300);
             e.Property(x => x.NormalizedName).HasMaxLength(300);
             e.Property(x => x.PersonalName).HasMaxLength(300);
-            e.Property(x => x.AlternateNames).HasMaxLength(2000);
+            e.Property(x => x.AlternateNames).HasColumnType("nvarchar(max)");
             e.Property(x => x.BirthDate).HasMaxLength(100);
             e.Property(x => x.DeathDate).HasMaxLength(100);
             e.HasIndex(x => x.OlKey).IsUnique();

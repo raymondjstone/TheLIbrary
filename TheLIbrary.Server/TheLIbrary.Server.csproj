@@ -8,7 +8,7 @@
     <SpaProxyLaunchCommand>npm run dev</SpaProxyLaunchCommand>
     <SpaProxyServerUrl>https://localhost:58112</SpaProxyServerUrl>
     <UserSecretsId>10cf18f2-6b3b-44ea-8b32-8bb09b87498a</UserSecretsId>
-    <ContainerImageName>thelibrary</ContainerImageName>
+    <ContainerRepository>thelibrary</ContainerRepository>
     <ContainerPort>5043</ContainerPort>
     <ClientDir>$(MSBuildProjectDirectory)\..\thelibrary.client</ClientDir>
   </PropertyGroup>
