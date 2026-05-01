@@ -4,17 +4,17 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
-using Microsoft.EntityFrameworkCore;
-using TheLibrary.Server.Data;
 using TheLibrary.Server.Services.Sync;
 
 namespace TheLibrary.Server.Services.OpenLibrary;
 
-// Pulls the OpenLibrary authors bulk dump and bulk-inserts it into
-// OpenLibraryAuthors. The dump is ~2 GB compressed with tens of millions of
-// rows, so everything streams: download chunks to a .part file (resumable),
-// GZipStream → StreamReader → TSV/JSON parse → DataTable → SqlBulkCopy.
-// Existing rows are truncated before reseeding so this is idempotent.
+// Pulls the OpenLibrary authors bulk dump, stores it in the Books folder
+// (parent of Calibre:Root), decompresses it fully, then upserts every author
+// row into OpenLibraryAuthors via a temp-table MERGE so existing rows added by
+// AuthorUpdateProcessor are updated rather than wiped.
+//
+// Flow: download .gz → decompress to .txt → bulk-load .txt into #StagingAuthors
+//       → MERGE staging into OpenLibraryAuthors → delete .txt.
 public sealed class AuthorDumpSeeder
 {
     public const string DumpUrl = "https://openlibrary.org/data/ol_dump_authors_latest.txt.gz";
@@ -22,31 +22,38 @@ public sealed class AuthorDumpSeeder
 
     private readonly IHttpClientFactory _httpFactory;
     private readonly IConfiguration _cfg;
-    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<AuthorDumpSeeder> _log;
 
     public AuthorDumpSeeder(
         IHttpClientFactory httpFactory,
         IConfiguration cfg,
-        IServiceScopeFactory scopeFactory,
         ILogger<AuthorDumpSeeder> log)
     {
         _httpFactory = httpFactory;
         _cfg = cfg;
-        _scopeFactory = scopeFactory;
         _log = log;
     }
 
-    public string DumpFilePath
+    public string DumpFilePath => Path.Combine(GetDumpDir(), "ol_dump_authors_latest.txt.gz");
+    public string DumpTextPath => Path.Combine(GetDumpDir(), "ol_dump_authors_latest.txt");
+
+    // Returns the Books folder (parent of Calibre:Root), falling back to temp.
+    private string GetDumpDir()
     {
-        get
+        var calibreRoot = _cfg["Calibre:Root"];
+        if (!string.IsNullOrWhiteSpace(calibreRoot))
         {
-            var dir = _cfg["OpenLibrary:DumpCacheDir"];
-            if (string.IsNullOrWhiteSpace(dir))
-                dir = Path.Combine(Path.GetTempPath(), "TheLibrary");
-            Directory.CreateDirectory(dir);
-            return Path.Combine(dir, "ol_dump_authors_latest.txt.gz");
+            var parent = Path.GetDirectoryName(
+                calibreRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            if (!string.IsNullOrWhiteSpace(parent))
+            {
+                Directory.CreateDirectory(parent);
+                return parent;
+            }
         }
+        var fallback = Path.Combine(Path.GetTempPath(), "TheLibrary");
+        Directory.CreateDirectory(fallback);
+        return fallback;
     }
 
     public sealed record SeedProgress(
@@ -62,27 +69,42 @@ public sealed class AuthorDumpSeeder
             (done, total) => onProgress(new SeedProgress("Downloading dump", done, total, 0, 0)),
             ct);
 
-        onProgress(new SeedProgress("Preparing target table", downloaded, downloaded, 0, 0));
+        await DecompressDumpAsync(
+            (done, total) => onProgress(new SeedProgress("Decompressing dump", done, total, 0, 0)),
+            ct);
+
         var connStr = _cfg.GetConnectionString("Library")
             ?? throw new InvalidOperationException("Missing ConnectionStrings:Library");
-
-        using (var scope = _scopeFactory.CreateScope())
-        {
-            var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-            // TRUNCATE is faster but the uniqueness index + future FKs make
-            // DELETE safer. For millions of rows DELETE is still fine here
-            // because the table has no dependent FKs.
-            await db.Database.ExecuteSqlRawAsync("DELETE FROM OpenLibraryAuthors", ct);
-        }
 
         long parsed = 0;
         long inserted = 0;
         var importedAt = DateTime.UtcNow;
-        var table = CreateDataTable();
+        var batch = CreateDataTable();
 
-        using var file = File.OpenRead(DumpFilePath);
-        using var gz = new GZipStream(file, CompressionMode.Decompress);
-        using var reader = new StreamReader(gz, Encoding.UTF8, false, 1 << 20);
+        await using var conn = new SqlConnection(connStr);
+        await conn.OpenAsync(ct);
+
+        // Temp table lives for the duration of this connection.
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"
+                CREATE TABLE #StagingAuthors (
+                    OlKey          nvarchar(32)   NOT NULL,
+                    Name           nvarchar(300)  NOT NULL,
+                    NormalizedName nvarchar(300)  NOT NULL,
+                    PersonalName   nvarchar(300)  NULL,
+                    AlternateNames nvarchar(2000) NULL,
+                    BirthDate      nvarchar(100)  NULL,
+                    DeathDate      nvarchar(100)  NULL,
+                    ImportedAt     datetime2      NOT NULL
+                );";
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        var textPath = DumpTextPath;
+        var fileSize = new FileInfo(textPath).Length;
+        using var file = File.OpenRead(textPath);
+        using var reader = new StreamReader(file, Encoding.UTF8, false, 1 << 20);
 
         while (await reader.ReadLineAsync(ct) is { } line)
         {
@@ -90,31 +112,90 @@ public sealed class AuthorDumpSeeder
             parsed++;
 
             var row = ParseLine(line, importedAt);
-            if (row is not null) table.Rows.Add(row);
+            if (row is not null) batch.Rows.Add(row);
 
-            if (table.Rows.Count >= BatchSize)
+            if (batch.Rows.Count >= BatchSize)
             {
-                await BulkInsertAsync(connStr, table, ct);
-                inserted += table.Rows.Count;
-                table.Clear();
-                onProgress(new SeedProgress("Importing authors", file.Position, downloaded, parsed, inserted));
+                await BulkInsertIntoStagingAsync(conn, batch, ct);
+                inserted += batch.Rows.Count;
+                batch.Clear();
+                onProgress(new SeedProgress("Importing authors", file.Position, fileSize, parsed, inserted));
             }
             else if (parsed % 100_000 == 0)
             {
-                onProgress(new SeedProgress("Importing authors", file.Position, downloaded, parsed, inserted));
+                onProgress(new SeedProgress("Importing authors", file.Position, fileSize, parsed, inserted));
             }
         }
 
-        if (table.Rows.Count > 0)
+        if (batch.Rows.Count > 0)
         {
-            await BulkInsertAsync(connStr, table, ct);
-            inserted += table.Rows.Count;
+            await BulkInsertIntoStagingAsync(conn, batch, ct);
+            inserted += batch.Rows.Count;
         }
+
+        onProgress(new SeedProgress("Merging into catalog", fileSize, fileSize, parsed, inserted));
+
+        // Index staging table before the MERGE join.
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "CREATE CLUSTERED INDEX IX_Stage_OlKey ON #StagingAuthors (OlKey);";
+            cmd.CommandTimeout = 120;
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = @"
+                MERGE OpenLibraryAuthors WITH (HOLDLOCK) AS target
+                USING #StagingAuthors AS source ON target.OlKey = source.OlKey
+                WHEN MATCHED THEN UPDATE SET
+                    target.Name            = source.Name,
+                    target.NormalizedName  = source.NormalizedName,
+                    target.PersonalName    = source.PersonalName,
+                    target.AlternateNames  = source.AlternateNames,
+                    target.BirthDate       = source.BirthDate,
+                    target.DeathDate       = source.DeathDate,
+                    target.ImportedAt      = source.ImportedAt
+                WHEN NOT MATCHED BY TARGET THEN
+                    INSERT (OlKey, Name, NormalizedName, PersonalName, AlternateNames,
+                            BirthDate, DeathDate, ImportedAt)
+                    VALUES (source.OlKey, source.Name, source.NormalizedName,
+                            source.PersonalName, source.AlternateNames,
+                            source.BirthDate, source.DeathDate, source.ImportedAt);";
+            cmd.CommandTimeout = 1200;
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        try { File.Delete(DumpTextPath); }
+        catch (Exception ex) { _log.LogWarning(ex, "Could not delete decompressed dump {Path}", DumpTextPath); }
 
         var final = new SeedProgress("Done", downloaded, downloaded, parsed, inserted);
         onProgress(final);
-        _log.LogInformation("Seeded {Inserted} authors from dump ({Parsed} lines parsed)", inserted, parsed);
+        _log.LogInformation("Upserted {Inserted} authors from dump ({Parsed} lines parsed)", inserted, parsed);
         return final;
+    }
+
+    // Decompresses DumpFilePath → DumpTextPath. Always starts fresh (deletes
+    // any leftover .txt from a previous partial run).
+    private async Task DecompressDumpAsync(Action<long, long?> onProgress, CancellationToken ct)
+    {
+        var gzPath = DumpFilePath;
+        var txtPath = DumpTextPath;
+        var gzSize = new FileInfo(gzPath).Length;
+
+        if (File.Exists(txtPath)) File.Delete(txtPath);
+
+        await using var src = File.OpenRead(gzPath);
+        await using var gz = new GZipStream(src, CompressionMode.Decompress);
+        await using var dst = new FileStream(txtPath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20);
+
+        var buf = new byte[1 << 20];
+        int read;
+        while ((read = await gz.ReadAsync(buf, ct)) > 0)
+        {
+            await dst.WriteAsync(buf.AsMemory(0, read), ct);
+            onProgress(src.Position, gzSize);
+        }
     }
 
     private async Task<long> EnsureDumpDownloadedAsync(Action<long, long?> onProgress, CancellationToken ct)
@@ -262,13 +343,11 @@ public sealed class AuthorDumpSeeder
     private static string? Trunc(string? s, int max)
         => s is null ? null : s.Length <= max ? s : s[..max];
 
-    private static async Task BulkInsertAsync(string connStr, DataTable table, CancellationToken ct)
+    private static async Task BulkInsertIntoStagingAsync(SqlConnection conn, DataTable table, CancellationToken ct)
     {
-        await using var conn = new SqlConnection(connStr);
-        await conn.OpenAsync(ct);
         using var bulk = new SqlBulkCopy(conn, SqlBulkCopyOptions.TableLock, externalTransaction: null)
         {
-            DestinationTableName = "OpenLibraryAuthors",
+            DestinationTableName = "#StagingAuthors",
             BatchSize = 10_000,
             BulkCopyTimeout = 600,
         };
