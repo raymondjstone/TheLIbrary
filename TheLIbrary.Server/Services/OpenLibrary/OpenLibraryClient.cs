@@ -30,6 +30,11 @@ public sealed class OpenLibraryClient
         return GetJsonAsync<AuthorSearchResponse>(url, ct);
     }
 
+    // Fetches a single author record by OL key (e.g. "OL123A"). Returns null on
+    // 404 or if the record is a redirect (merged into another key).
+    public Task<AuthorDetailResponse?> FetchAuthorAsync(string key, CancellationToken ct)
+        => GetJsonAsync<AuthorDetailResponse>($"authors/{HttpUtility.UrlEncode(key)}.json", ct);
+
     // Fetches the day's merge-authors changelog. Each entry has a surviving
     // master author key plus the duplicate keys that were folded into it;
     // callers use this to rewrite local OpenLibraryKey pointers that still

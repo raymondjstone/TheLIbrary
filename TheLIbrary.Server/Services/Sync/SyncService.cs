@@ -499,6 +499,8 @@ public sealed class SyncService
         UpdateMergesSeen = s.UpdateMergesSeen,
         UpdateAuthorsRekeyed = s.UpdateAuthorsRekeyed,
         UpdateAuthorsFolded = s.UpdateAuthorsFolded,
+        UpdateCatalogInserted = s.UpdateCatalogInserted,
+        UpdateCatalogUpdated = s.UpdateCatalogUpdated,
         UpdateCurrentDay = s.UpdateCurrentDay,
         StartedAt = s.StartedAt,
         FinishedAt = s.FinishedAt,
@@ -538,6 +540,8 @@ public sealed class SyncService
                         s.UpdateMergesSeen = p.MergesSeen;
                         s.UpdateAuthorsRekeyed = p.AuthorsUpdated;
                         s.UpdateAuthorsFolded = p.AuthorsRemoved;
+                        s.UpdateCatalogInserted = p.CatalogInserted;
+                        s.UpdateCatalogUpdated = p.CatalogUpdated;
                         s.UpdateCurrentDay = p.CurrentDay?.ToString("yyyy-MM-dd");
                     });
                 }, hostCt);
@@ -548,7 +552,7 @@ public sealed class SyncService
                     s.FinishedAt = DateTime.UtcNow;
                     s.Message = result.DaysProcessed == 0
                         ? "Already up to date"
-                        : $"Processed {result.DaysProcessed} day(s); {result.AuthorsUpdated} rekeyed, {result.AuthorsRemoved} folded";
+                        : $"Processed {result.DaysProcessed} day(s); {result.AuthorsUpdated} rekeyed, {result.AuthorsRemoved} folded, {result.CatalogInserted} catalog inserted, {result.CatalogUpdated} catalog updated";
                 });
             }
             catch (OperationCanceledException) when (hostCt.IsCancellationRequested)

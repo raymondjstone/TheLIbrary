@@ -34,6 +34,8 @@ public sealed class SyncState
     public int UpdateMergesSeen { get; set; }
     public int UpdateAuthorsRekeyed { get; set; }
     public int UpdateAuthorsFolded { get; set; }
+    public int UpdateCatalogInserted { get; set; }
+    public int UpdateCatalogUpdated { get; set; }
     public string? UpdateCurrentDay { get; set; }
 
     public DateTime? StartedAt { get; set; }

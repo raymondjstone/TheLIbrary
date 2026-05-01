@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.OpenLibrary;
+using TheLibrary.Server.Services.Sync;
 
 namespace TheLibrary.Server.Services.AuthorUpdates;
 
@@ -11,6 +12,8 @@ public sealed record AuthorUpdateResult(
     int MergesSeen,
     int AuthorsUpdated,
     int AuthorsRemoved,
+    int CatalogInserted,
+    int CatalogUpdated,
     DateOnly LastProcessedDate,
     IReadOnlyList<string> Log);
 
@@ -21,6 +24,8 @@ public sealed record AuthorUpdateProgress(
     int MergesSeen,
     int AuthorsUpdated,
     int AuthorsRemoved,
+    int CatalogInserted,
+    int CatalogUpdated,
     string? Message,
     string? LogLine);
 
@@ -50,6 +55,7 @@ public sealed class AuthorUpdateProcessor
     {
         var log = new List<string>();
         int mergesSeen = 0, authorsUpdated = 0, authorsRemoved = 0, daysProcessed = 0;
+        int catalogInserted = 0, catalogUpdated = 0;
 
         var setting = await _db.AppSettings
             .FirstOrDefaultAsync(s => s.Key == AppSettingKeys.AuthorUpdateLastDate, ct);
@@ -59,9 +65,9 @@ public sealed class AuthorUpdateProcessor
         if (startDate > yesterday)
         {
             onProgress?.Invoke(new AuthorUpdateProgress(
-                null, 0, 0, 0, 0, 0,
+                null, 0, 0, 0, 0, 0, 0, 0,
                 $"Already up to date (last processed {startDate:yyyy-MM-dd})", null));
-            return new AuthorUpdateResult(0, 0, 0, 0, startDate, log);
+            return new AuthorUpdateResult(0, 0, 0, 0, 0, 0, startDate, log);
         }
 
         var totalDays = (yesterday.DayNumber - startDate.DayNumber) + 1;
@@ -72,7 +78,8 @@ public sealed class AuthorUpdateProcessor
             if (line is not null) log.Add(line);
             onProgress?.Invoke(new AuthorUpdateProgress(
                 currentDay, daysProcessed, totalDays,
-                mergesSeen, authorsUpdated, authorsRemoved, message, line));
+                mergesSeen, authorsUpdated, authorsRemoved,
+                catalogInserted, catalogUpdated, message, line));
         }
 
         Report($"Processing {totalDays} day(s) from {startDate:yyyy-MM-dd} to {yesterday:yyyy-MM-dd}",
@@ -85,7 +92,7 @@ public sealed class AuthorUpdateProcessor
             Report($"Fetching merges for {day:yyyy-MM-dd}");
 
             var merges = await _ol.FetchAuthorMergesAsync(day, ct);
-            int dayUpdates = 0, dayRemovals = 0;
+            int dayUpdates = 0, dayRemovals = 0, dayCatalogInserted = 0, dayCatalogUpdated = 0;
 
             foreach (var merge in merges)
             {
@@ -93,14 +100,35 @@ public sealed class AuthorUpdateProcessor
                 mergesSeen++;
 
                 var masterKey = StripAuthorPrefix(merge.Data?.Master);
-                if (masterKey is null || merge.Data?.Duplicates is null) continue;
+                if (masterKey is null) continue;
 
-                foreach (var dup in merge.Data.Duplicates)
+                // Build the dup-key list from data.duplicates when present; fall
+                // back to the changes array (filter to /authors/ keys, exclude
+                // master) so the catalog is always fully updated even when data
+                // is sparse.
+                List<string> dupKeys;
+                if (merge.Data?.Duplicates is { Count: > 0 })
                 {
-                    var dupKey = StripAuthorPrefix(dup);
-                    if (dupKey is null || string.Equals(dupKey, masterKey, StringComparison.OrdinalIgnoreCase))
-                        continue;
+                    dupKeys = merge.Data.Duplicates
+                        .Select(StripAuthorPrefix)
+                        .Where(k => k is not null && !string.Equals(k, masterKey, StringComparison.OrdinalIgnoreCase))
+                        .Select(k => k!)
+                        .ToList();
+                }
+                else
+                {
+                    dupKeys = (merge.Changes ?? [])
+                        .Select(c => StripAuthorPrefix(c.Key))
+                        .Where(k => k is not null
+                            && k.StartsWith("OL", StringComparison.OrdinalIgnoreCase)
+                            && !string.Equals(k, masterKey, StringComparison.OrdinalIgnoreCase))
+                        .Select(k => k!)
+                        .ToList();
+                }
 
+                // Update local Authors table.
+                foreach (var dupKey in dupKeys)
+                {
                     var holder = await _db.Authors
                         .FirstOrDefaultAsync(a => a.OpenLibraryKey == dupKey, ct);
                     if (holder is null) continue;
@@ -142,10 +170,68 @@ public sealed class AuthorUpdateProcessor
                         Report(null, $"{day:yyyy-MM-dd}: merged '{holder.Name}' -> '{canonical.Name}' ({masterKey})");
                     }
 
-                    // Flush per merge so a later merge on the same day that
+                    // Flush per dup so a later merge on the same day that
                     // references this author sees the new key.
                     await _db.SaveChangesAsync(ct);
                 }
+
+                // Upsert master into the OpenLibraryAuthors catalog regardless
+                // of whether any local Author rows were affected — the catalog
+                // must stay current so Phase 2 of sync can auto-match folders
+                // to the surviving master key.
+                var masterInfo = await _ol.FetchAuthorAsync(masterKey, ct);
+                if (masterInfo is null)
+                {
+                    _log.LogWarning("FetchAuthorAsync returned null for master {Key}; skipping catalog upsert", masterKey);
+                }
+                else if (masterInfo.Name is null)
+                {
+                    _log.LogWarning("Author {Key} has no name (redirect or deleted record); skipping catalog upsert", masterKey);
+                }
+
+                if (masterInfo?.Name is not null)
+                {
+                    var catalogRow = await _db.OpenLibraryAuthors
+                        .FirstOrDefaultAsync(a => a.OlKey == masterKey, ct);
+                    if (catalogRow is not null)
+                    {
+                        catalogRow.Name = masterInfo.Name;
+                        catalogRow.NormalizedName = TitleNormalizer.NormalizeAuthor(masterInfo.Name);
+                        catalogRow.PersonalName = masterInfo.PersonalName;
+                        catalogRow.AlternateNames = masterInfo.AlternateNames is { Count: > 0 }
+                            ? string.Join("; ", masterInfo.AlternateNames)
+                            : null;
+                        catalogRow.BirthDate = masterInfo.BirthDate;
+                        catalogRow.DeathDate = masterInfo.DeathDate;
+                        catalogRow.ImportedAt = DateTime.UtcNow;
+                        catalogUpdated++; dayCatalogUpdated++;
+                    }
+                    else
+                    {
+                        _db.OpenLibraryAuthors.Add(new OpenLibraryAuthor
+                        {
+                            OlKey = masterKey,
+                            Name = masterInfo.Name,
+                            NormalizedName = TitleNormalizer.NormalizeAuthor(masterInfo.Name),
+                            PersonalName = masterInfo.PersonalName,
+                            AlternateNames = masterInfo.AlternateNames is { Count: > 0 }
+                                ? string.Join("; ", masterInfo.AlternateNames)
+                                : null,
+                            BirthDate = masterInfo.BirthDate,
+                            DeathDate = masterInfo.DeathDate,
+                            ImportedAt = DateTime.UtcNow,
+                        });
+                        catalogInserted++; dayCatalogInserted++;
+                        Report(null, $"{day:yyyy-MM-dd}: catalog +'{masterInfo.Name}' ({masterKey})");
+                    }
+                    await _db.SaveChangesAsync(ct);
+                }
+
+                // Remove the now-defunct duplicate keys from the catalog.
+                if (dupKeys.Count > 0)
+                    await _db.OpenLibraryAuthors
+                        .Where(a => dupKeys.Contains(a.OlKey))
+                        .ExecuteDeleteAsync(ct);
             }
 
             // Persist the cursor after every day so a mid-range crash resumes
@@ -158,14 +244,14 @@ public sealed class AuthorUpdateProcessor
 
             if (merges.Count > 0 || dayUpdates > 0 || dayRemovals > 0)
             {
-                Report(null, $"{day:yyyy-MM-dd}: {merges.Count} merges seen, {dayUpdates} rekeyed, {dayRemovals} folded");
+                Report(null, $"{day:yyyy-MM-dd}: {merges.Count} merges seen, {dayUpdates} rekeyed, {dayRemovals} folded, {dayCatalogInserted} catalog inserted, {dayCatalogUpdated} catalog updated");
             }
         }
 
-        Report($"Done — processed {daysProcessed} day(s), {authorsUpdated} rekeyed, {authorsRemoved} folded",
+        Report($"Done — processed {daysProcessed} day(s), {authorsUpdated} rekeyed, {authorsRemoved} folded, {catalogInserted} catalog inserted, {catalogUpdated} catalog updated",
             $"Finished at {yesterday:yyyy-MM-dd}");
 
-        return new AuthorUpdateResult(daysProcessed, mergesSeen, authorsUpdated, authorsRemoved, yesterday, log);
+        return new AuthorUpdateResult(daysProcessed, mergesSeen, authorsUpdated, authorsRemoved, catalogInserted, catalogUpdated, yesterday, log);
     }
 
     private async Task UpsertLastDateAsync(DateOnly date, CancellationToken ct)

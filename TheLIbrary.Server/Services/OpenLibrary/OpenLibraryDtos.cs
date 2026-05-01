@@ -38,9 +38,18 @@ public sealed class WorkSearchDoc
     [JsonPropertyName("edition_count")] public int? EditionCount { get; set; }
 }
 
-// One entry from /recentchanges/.../merge-authors.json. Only the data payload
-// (master survivor + the list of duplicates folded into it) is relevant to
-// the local sync task — the other fields are diagnostic.
+// Response from /authors/{key}.json — used to upsert the OpenLibraryAuthors catalog.
+public sealed class AuthorDetailResponse
+{
+    [JsonPropertyName("key")] public string? Key { get; set; }
+    [JsonPropertyName("name")] public string? Name { get; set; }
+    [JsonPropertyName("personal_name")] public string? PersonalName { get; set; }
+    [JsonPropertyName("alternate_names")] public List<string>? AlternateNames { get; set; }
+    [JsonPropertyName("birth_date")] public string? BirthDate { get; set; }
+    [JsonPropertyName("death_date")] public string? DeathDate { get; set; }
+}
+
+// One entry from /recentchanges/.../merge-authors.json.
 public sealed class AuthorMergeChange
 {
     [JsonPropertyName("id")] public string? Id { get; set; }
@@ -48,6 +57,15 @@ public sealed class AuthorMergeChange
     [JsonPropertyName("timestamp")] public string? Timestamp { get; set; }
     [JsonPropertyName("comment")] public string? Comment { get; set; }
     [JsonPropertyName("data")] public AuthorMergeData? Data { get; set; }
+    // Every OL object touched by this change; includes both the master and
+    // duplicate author keys alongside any books/works that were reassigned.
+    [JsonPropertyName("changes")] public List<AuthorMergeChangedKey>? Changes { get; set; }
+}
+
+public sealed class AuthorMergeChangedKey
+{
+    [JsonPropertyName("key")] public string? Key { get; set; }
+    [JsonPropertyName("revision")] public int Revision { get; set; }
 }
 
 public sealed class AuthorMergeData
