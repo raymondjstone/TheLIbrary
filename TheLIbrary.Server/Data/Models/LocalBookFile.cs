@@ -24,8 +24,6 @@ public class LocalBookFile
     public int? AuthorId { get; set; }
     public Author? Author { get; set; }
 
-    public DateTime LastSeenAt { get; set; }
-
     // Fingerprint of the title folder's contents on disk; lets us skip
     // metadata reads + rematching when nothing has changed since last scan.
     public long SizeBytes { get; set; }

@@ -65,6 +65,9 @@ export default function Sync() {
     const authorProgress = state && state.authorsTotal > 0
         ? Math.round((state.authorsProcessed / state.authorsTotal) * 100)
         : 0
+    const saveProgress = state && state.localFilesSaveTotal > 0
+        ? Math.round((state.localFilesSaved / state.localFilesSaveTotal) * 100)
+        : null
     const downloadProgress = state && state.dumpBytesTotal
         ? Math.round((state.dumpBytesDone / state.dumpBytesTotal) * 100)
         : 0
@@ -137,6 +140,12 @@ export default function Sync() {
                             <div><strong>Books added:</strong> {state.booksAdded}</div>
                             <div><strong>Local entries seen:</strong> {state.localFilesSeen}</div>
                             <div className="progress"><div style={{ width: `${authorProgress}%` }} /></div>
+                            {saveProgress !== null ? (
+                                <>
+                                    <div><strong>Saving:</strong> {state.localFilesSaved.toLocaleString()} / {state.localFilesSaveTotal.toLocaleString()} ({saveProgress}%)</div>
+                                    <div className="progress"><div style={{ width: `${saveProgress}%` }} /></div>
+                                </>
+                            ) : null}
                         </>
                     )}
 

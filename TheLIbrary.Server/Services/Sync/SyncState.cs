@@ -21,6 +21,8 @@ public sealed class SyncState
     public int AuthorsProcessed { get; set; }
     public int BooksAdded { get; set; }
     public int LocalFilesSeen { get; set; }
+    public int LocalFilesSaveTotal { get; set; }
+    public int LocalFilesSaved { get; set; }
 
     // Populated during the SeedingAuthors phase.
     public long DumpBytesDone { get; set; }

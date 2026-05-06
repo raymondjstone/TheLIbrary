@@ -1,3 +1,5 @@
+using System.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
@@ -79,7 +81,6 @@ public sealed class SyncService
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
         var scanner = scope.ServiceProvider.GetRequiredService<CalibreScanner>();
-        var refresher = scope.ServiceProvider.GetRequiredService<AuthorRefresher>();
 
         var syncStartedUtc = DateTime.UtcNow;
 
@@ -112,14 +113,7 @@ public sealed class SyncService
         // together means a canceled run leaves authors in consistent states
         // and every OL round-trip we make sits next to the work that needs
         // its result, reducing redundant lookups under OL's rate limits.
-        await ProcessAuthorsAsync(db, refresher, entries, ct);
-
-        // Phase 4: prune stale LocalBookFile rows.
-        var prunedCount = await db.LocalBookFiles
-            .Where(f => f.LastSeenAt < syncStartedUtc)
-            .ExecuteDeleteAsync(ct);
-        if (prunedCount > 0)
-            _log.LogInformation("Pruned {Count} stale LocalBookFile row(s)", prunedCount);
+        await ProcessAuthorsAsync(db, entries, ct);
 
         MutateState(s =>
         {
@@ -129,12 +123,9 @@ public sealed class SyncService
         });
     }
 
-    // Walks every unique Calibre author folder and makes sure a DB Author row
-    // exists for it. Blacklist wins (we must not silently re-create rows the
-    // user just deleted). When a brand-new row is needed, try to stamp an OL
-    // key from the local OpenLibraryAuthors table so Phase 3 can skip the
-    // OL search call for this author — avoiding one rate-limited round trip
-    // per auto-registered folder.
+    // Ensures a DB Author row exists for every new Calibre folder.
+    // Existing folders are detected in O(1) via a pre-built index; only
+    // genuinely new folders reach the OL-catalog probe. Blacklist wins.
     private async Task ReconcileAuthorFoldersAsync(
         LibraryDbContext db, IReadOnlyList<CalibreBookEntry> entries, CancellationToken ct)
     {
@@ -149,47 +140,37 @@ public sealed class SyncService
             .ToHashSet(StringComparer.Ordinal);
 
         var dbAuthors = await db.Authors.ToListAsync(ct);
+
+        // Pre-build index keyed by every normalized name/folder so each lookup
+        // is O(1) instead of an O(N) linear scan through all authors.
+        var authorByKey = new Dictionary<string, Author>(StringComparer.Ordinal);
+        var authorByOlKey = new Dictionary<string, Author>(StringComparer.OrdinalIgnoreCase);
+        foreach (var a in dbAuthors)
+        {
+            foreach (var k in AuthorKeys(a)) authorByKey.TryAdd(k, a);
+            if (!string.IsNullOrEmpty(a.OpenLibraryKey)) authorByOlKey.TryAdd(a.OpenLibraryKey, a);
+        }
+
+        int newCount = 0;
         foreach (var group in folderGroups)
         {
             ct.ThrowIfCancellationRequested();
             var folder = group.Key;
             var folderKey = TitleNormalizer.NormalizeAuthor(folder);
-            MutateState(s => { s.Phase = SyncPhase.ResolvingAuthors; s.Message = $"Registering authors from Calibre folders - {folder}"; });
 
-            if (blacklistedNormalized.Contains(folderKey))
-            {
-                _log.LogDebug("Skipping blacklisted author folder {Folder}", folder);
-                continue;
-            }
+            if (blacklistedNormalized.Contains(folderKey)) continue;
+            // Purely numeric folder names (years, page counts, edition markers) are never real author names.
+            if (!string.IsNullOrEmpty(folderKey) && folderKey.All(c => char.IsDigit(c) || c == ' ')) continue;
 
-            // Purely numeric folder names (years, page counts, edition markers
-            // that leaked into ebook metadata) are never real author names.
-            if (!string.IsNullOrEmpty(folderKey) && folderKey.All(c => char.IsDigit(c) || c == ' '))
-            {
-                _log.LogDebug("Skipping non-author numeric folder {Folder}", folder);
-                continue;
-            }
-
-            // Include locally-tracked Added entities so two folder spellings in
-            // the same run (e.g. "Kyle Mills" and "Mills, Kyle") collapse to one.
-            var candidates = dbAuthors.Concat(
-                db.ChangeTracker.Entries<Author>()
-                  .Where(e => e.State == EntityState.Added)
-                  .Select(e => e.Entity));
-
-            var existing = candidates.FirstOrDefault(a =>
-                string.Equals(a.CalibreFolderName, folder, StringComparison.OrdinalIgnoreCase) ||
-                TitleNormalizer.NormalizeAuthor(a.Name) == folderKey ||
-                TitleNormalizer.NormalizeAuthor(a.CalibreFolderName) == folderKey);
-
-            if (existing is not null)
+            // O(1): already known — just back-fill CalibreFolderName if blank.
+            if (authorByKey.TryGetValue(folderKey, out var existing))
             {
                 if (string.IsNullOrEmpty(existing.CalibreFolderName))
                     existing.CalibreFolderName = folder;
                 continue;
             }
 
-            // New folder — try local OL-verify before creating the row.
+            // New folder — probe the local OL catalog before creating a row.
             string? olKey = null;
             string authorName = folder;
             foreach (var probe in AuthorMatcher.AuthorKeyVariants(folder))
@@ -210,78 +191,60 @@ public sealed class SyncService
                 break;
             }
 
-            // If some other folder already pre-stamped this OL key this run,
-            // attach the current folder to that canonical row instead of
-            // creating a duplicate (the unique OL-key index would reject it).
-            if (olKey is not null)
+            // Another folder this run may have already claimed the same OL key.
+            if (olKey is not null && authorByOlKey.TryGetValue(olKey, out var canonical))
             {
-                var canonical = candidates.FirstOrDefault(a => a.OpenLibraryKey == olKey);
-                if (canonical is not null)
-                {
-                    if (string.IsNullOrEmpty(canonical.CalibreFolderName))
-                        canonical.CalibreFolderName = folder;
-                    continue;
-                }
+                if (string.IsNullOrEmpty(canonical.CalibreFolderName))
+                    canonical.CalibreFolderName = folder;
+                continue;
             }
 
-            db.Authors.Add(new Author
+            var newAuthor = new Author
             {
                 Name = authorName,
                 CalibreFolderName = folder,
                 OpenLibraryKey = olKey,
                 Status = AuthorStatus.Pending
-            });
-            try
-            {
-                await db.SaveChangesAsync(ct);
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine(e);
-                throw;
-            }
+            };
+            db.Authors.Add(newAuthor);
+            newCount++;
+
+            // Keep the index current so later folders in this run can find the
+            // newly added author without waiting for SaveChangesAsync.
+            foreach (var k in AuthorKeys(newAuthor)) authorByKey.TryAdd(k, newAuthor);
+            if (olKey is not null) authorByOlKey.TryAdd(olKey, newAuthor);
         }
-        await db.SaveChangesAsync(ct);
+
+        if (newCount > 0)
+        {
+            _log.LogInformation("Registering {Count} new author folder(s)", newCount);
+            await db.SaveChangesAsync(ct);
+        }
     }
 
-    // Unified per-author pass. Walks every DB author and, for each:
-    //   - if NextFetchAt is null or in the past, calls AuthorRefresher (OL
-    //     key resolution + works fetch + schedule update) — the rate-limited
-    //     piece, still one-author-at-a-time;
-    //   - always links that author's Calibre files to their books in the
-    //     same iteration, using the just-saved Books rows for due authors
-    //     and the existing rows otherwise.
-    // Orphan Calibre entries (folders with no matching Author — typically
-    // blacklisted ones) fall through to a final unclaimed pass so they
-    // still surface in the UI.
+    // Per-author file-matching pass. No OL HTTP calls — those belong in the
+    // dedicated "Refresh Works" job. This pass only links what's already in
+    // the DB: three bulk queries (authors, books, existing LBF rows) then
+    // pure in-memory matching, followed by a single batch save.
     private async Task ProcessAuthorsAsync(
         LibraryDbContext db,
-        AuthorRefresher refresher,
         IReadOnlyList<CalibreBookEntry> entries,
         CancellationToken ct)
     {
         var now = DateTime.UtcNow;
-        // Longest-waiting first: null CalibreScannedAt (never processed) leads,
-        // then oldest-scanned, so interrupted runs always catch up stragglers
-        // before re-scanning authors that were done recently.
         var authors = await db.Authors
-            .OrderBy(a => a.CalibreScannedAt.HasValue)   // false (null) sorts first
+            .OrderBy(a => a.CalibreScannedAt.HasValue)
             .ThenBy(a => a.CalibreScannedAt)
             .ToListAsync(ct);
-        var dueCount = authors.Count(a => a.NextFetchAt == null || a.NextFetchAt <= now);
 
         MutateState(s =>
         {
             s.Phase = SyncPhase.FetchingWorks;
             s.AuthorsTotal = authors.Count;
             s.AuthorsProcessed = 0;
-            s.Message = dueCount == authors.Count
-                ? $"Processing {authors.Count} author(s)"
-                : $"Processing {authors.Count} author(s); {dueCount} due for OL refresh, {authors.Count - dueCount} match-only";
+            s.Message = $"Matching files for {authors.Count} author(s)";
         });
 
-        // Pre-index Calibre entries by normalized author-folder key so each
-        // per-author pass picks up its files in O(1).
         static string Canon(string p) =>
             p.Normalize(System.Text.NormalizationForm.FormC).ToUpperInvariant();
 
@@ -292,52 +255,64 @@ public sealed class SyncService
             .GroupBy(e => TitleNormalizer.NormalizeAuthor(e.AuthorFolder), StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
 
-        var existingList = await db.LocalBookFiles.ToListAsync(ct);
+        // AsNoTracking: we do not want EF scanning 50k+ rows for changes on
+        // every SaveChangesAsync. Only explicitly-modified rows are attached below.
+        var existingList = await db.LocalBookFiles.AsNoTracking().ToListAsync(ct);
         var existingByPath = new Dictionary<string, LocalBookFile>(StringComparer.Ordinal);
         foreach (var f in existingList) existingByPath[Canon(f.FullPath)] = f;
 
+        // Identify which author-folder keys have any file change (new, modified,
+        // or removed). Authors with no changes are skipped entirely — no DB write,
+        // no matching pass. This is the primary driver of the whole sync.
+        var changedFolderKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in deduped.Values)
+        {
+            var canon = Canon(entry.FullPath);
+            if (!existingByPath.TryGetValue(canon, out var ex) ||
+                ex.SizeBytes != entry.SizeBytes ||
+                ex.ModifiedAt != entry.ModifiedAt)
+            {
+                changedFolderKeys.Add(TitleNormalizer.NormalizeAuthor(entry.AuthorFolder));
+            }
+        }
+        // Removed files also count as changes for the owning author.
+        foreach (var ex in existingList)
+        {
+            if (!deduped.ContainsKey(Canon(ex.FullPath)))
+                changedFolderKeys.Add(TitleNormalizer.NormalizeAuthor(ex.AuthorFolder));
+        }
+
+        // Load ALL books in one query — eliminates the per-author N+1 round trip.
+        var booksByAuthorId = (await db.Books.AsNoTracking().ToListAsync(ct))
+            .GroupBy(b => b.AuthorId)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
         var processed = new HashSet<string>(StringComparer.Ordinal);
+        var processedAuthorIds = new List<int>();
+        int skipped = 0;
+        var toInsert = new List<LocalBookFile>();
+        var toUpdate = new List<LocalBookFile>();
 
         foreach (var author in authors)
         {
             ct.ThrowIfCancellationRequested();
 
-            var due = author.NextFetchAt == null || author.NextFetchAt <= now;
-            if (due)
+            // Skip authors whose file set is entirely unchanged.
+            var hasChange = AuthorKeys(author).Any(k => changedFolderKeys.Contains(k));
+            if (!hasChange)
             {
-                var outcome = await refresher.RefreshAsync(
-                    author,
-                    msg => MutateState(s => s.Message = msg),
-                    ct);
-                MutateState(s => s.BooksAdded += outcome.BooksAdded);
-
-                // RefreshAsync may have merged this row into a canonical one
-                // (same OL key, different folder spelling). That row is gone;
-                // its files will link via the canonical author's folder keys.
-                if (outcome.MergedIntoCanonical)
-                {
-                    MutateState(s => s.AuthorsProcessed++);
-                    continue;  // author row was deleted — can't stamp CalibreScannedAt
-                }
-            }
-            else
-            {
-                MutateState(s => s.Message = $"Matching local files for {author.Name}");
+                skipped++;
+                MutateState(s => s.AuthorsProcessed++);
+                continue;
             }
 
-            await MatchAuthorFilesAsync(db, author, entriesByFolderKey, existingByPath, processed, ct);
-
-            author.CalibreScannedAt = DateTime.UtcNow;
-
-            // Flush LocalBookFile changes now — RefreshAsync for the NEXT
-            // author calls SaveChangesAsync internally, and if there are any
-            // LBF adds still pending in the change tracker they get flushed
-            // too, bypassing the resilient per-row retry and blowing up on
-            // SQL's CI_AS path collation folds (NFC+ToUpper doesn't catch
-            // every fold SQL applies).
-            await SaveLocalFilesResilientAsync(db, ct);
+            MatchAuthorFiles(author, entriesByFolderKey, booksByAuthorId, existingByPath, processed, toInsert, toUpdate);
+            processedAuthorIds.Add(author.Id);
             MutateState(s => s.AuthorsProcessed++);
         }
+
+        if (skipped > 0)
+            _log.LogInformation("Skipped {Count} author(s) with no file changes", skipped);
 
         // Orphan pass: entries whose folder resolved to no author (blacklisted
         // or otherwise) still need LocalBookFile rows with AuthorId=null so
@@ -346,26 +321,67 @@ public sealed class SyncService
         foreach (var (canon, entry) in deduped)
         {
             if (processed.Contains(canon)) continue;
-            UpsertLocalFile(db, entry, authorId: null, bookId: null, existingByPath, canon);
+            UpsertLocalFile(entry, authorId: null, bookId: null, existingByPath, canon, toInsert, toUpdate);
         }
 
-        MutateState(s => s.Message = "Saving local file rows");
-        await SaveLocalFilesResilientAsync(db, ct);
+        MutateState(s => s.Message = "Saving");
+        await BulkUpsertLocalFilesAsync(toInsert, toUpdate, db, ct);
+
+        // Stamp CalibreScannedAt for all processed authors in one SQL statement.
+        if (processedAuthorIds.Count > 0)
+        {
+            await db.Authors
+                .Where(a => processedAuthorIds.Contains(a.Id))
+                .ExecuteUpdateAsync(s => s.SetProperty(a => a.CalibreScannedAt, _ => now), ct);
+        }
+
+        // Delete rows for paths no longer on disk (set-based; no timestamp needed).
+        // Guard: if the scan found nothing at all, something went wrong (library
+        // location offline, misconfigured path, etc.) — never wipe the catalogue.
+        // Guard: if more than 1000 rows would be removed, something is almost
+        // certainly wrong (drive remapped, UNC path changed, etc.); refuse and log.
+        var removedIds = existingByPath
+            .Where(kvp => !deduped.ContainsKey(kvp.Key))
+            .Select(kvp => kvp.Value.Id)
+            .ToList();
+        if (removedIds.Count == 0)
+        {
+            // Nothing to remove.
+        }
+        else if (entries.Count == 0)
+        {
+            _log.LogWarning(
+                "Scan found 0 files but {Count} LocalBookFile row(s) exist — skipping deletion to prevent data loss. " +
+                "Check that library locations are configured and accessible.",
+                removedIds.Count);
+        }
+        else if (removedIds.Count > 1000)
+        {
+            _log.LogWarning(
+                "Scan would remove {Count} LocalBookFile row(s) (>{Threshold}). " +
+                "This likely indicates a path change or inaccessible drive. Deletion skipped.",
+                removedIds.Count, 1000);
+        }
+        else
+        {
+            _log.LogInformation("Removing {Count} LocalBookFile row(s) no longer on disk", removedIds.Count);
+            await db.LocalBookFiles.Where(f => removedIds.Contains(f.Id)).ExecuteDeleteAsync(ct);
+            MutateState(s => s.LocalFilesSeen -= removedIds.Count);
+        }
     }
 
-    private async Task MatchAuthorFilesAsync(
-        LibraryDbContext db,
+    private static void MatchAuthorFiles(
         Author author,
         Dictionary<string, List<CalibreBookEntry>> entriesByFolderKey,
+        Dictionary<int, List<Book>> booksByAuthorId,
         Dictionary<string, LocalBookFile> existingByPath,
         HashSet<string> processed,
-        CancellationToken ct)
+        List<LocalBookFile> toInsert,
+        List<LocalBookFile> toUpdate)
     {
         static string Canon(string p) =>
             p.Normalize(System.Text.NormalizationForm.FormC).ToUpperInvariant();
 
-        // An author can own multiple folder spellings — match any folder whose
-        // normalized name hits either Name or CalibreFolderName.
         var keys = new HashSet<string>(StringComparer.Ordinal);
         foreach (var k in AuthorKeys(author)) keys.Add(k);
 
@@ -376,46 +392,61 @@ public sealed class SyncService
 
         if (relevantEntries.Count == 0) return;
 
-        // Load this author's books (now possibly just-fetched by RefreshAsync).
-        var books = await db.Books.Where(b => b.AuthorId == author.Id).ToListAsync(ct);
         var bookByTitle = new Dictionary<string, Book>(StringComparer.Ordinal);
-        foreach (var b in books)
+        if (booksByAuthorId.TryGetValue(author.Id, out var authorBooks))
         {
-            var t = b.NormalizedTitle ?? "";
-            if (!bookByTitle.ContainsKey(t)) bookByTitle[t] = b;
+            foreach (var b in authorBooks)
+            {
+                var t = b.NormalizedTitle ?? "";
+                if (!bookByTitle.ContainsKey(t)) bookByTitle[t] = b;
+            }
         }
 
         foreach (var entry in relevantEntries)
         {
-            ct.ThrowIfCancellationRequested();
+            var canon = Canon(entry.FullPath);
+            if (processed.Contains(canon)) continue;
 
             Book? matchedBook = null;
             foreach (var candidate in TitleNormalizer.FolderTitleCandidates(entry.TitleFolder))
                 if (bookByTitle.TryGetValue(candidate, out matchedBook)) break;
 
-            var canon = Canon(entry.FullPath);
-            UpsertLocalFile(db, entry, author.Id, matchedBook?.Id, existingByPath, canon);
+            UpsertLocalFile(entry, author.Id, matchedBook?.Id, existingByPath, canon, toInsert, toUpdate);
             processed.Add(canon);
         }
     }
 
     private static void UpsertLocalFile(
-        LibraryDbContext db,
         CalibreBookEntry entry,
         int? authorId,
         int? bookId,
         Dictionary<string, LocalBookFile> existingByPath,
-        string canon)
+        string canon,
+        List<LocalBookFile> toInsert,
+        List<LocalBookFile> toUpdate)
     {
         var norm = TitleNormalizer.Normalize(entry.TitleFolder);
         if (existingByPath.TryGetValue(canon, out var existing))
         {
+            var effectiveBookId = bookId ?? existing.BookId;
+            if (existing.SizeBytes == entry.SizeBytes &&
+                existing.ModifiedAt == entry.ModifiedAt &&
+                existing.AuthorId == authorId &&
+                existing.BookId == effectiveBookId &&
+                existing.NormalizedTitle == norm &&
+                existing.AuthorFolder == entry.AuthorFolder &&
+                existing.TitleFolder == entry.TitleFolder)
+            {
+                return;
+            }
             existing.AuthorFolder = entry.AuthorFolder;
             existing.TitleFolder = entry.TitleFolder;
             existing.NormalizedTitle = norm;
+            existing.SizeBytes = entry.SizeBytes;
+            existing.ModifiedAt = entry.ModifiedAt;
             existing.AuthorId = authorId;
-            existing.BookId = bookId ?? existing.BookId;
-            existing.LastSeenAt = DateTime.UtcNow;
+            existing.BookId = effectiveBookId;
+            toUpdate.Add(existing);
             return;
         }
 
@@ -427,46 +458,186 @@ public sealed class SyncService
             NormalizedTitle = norm,
             AuthorId = authorId,
             BookId = bookId,
-            LastSeenAt = DateTime.UtcNow
+            SizeBytes = entry.SizeBytes,
+            ModifiedAt = entry.ModifiedAt
         };
-        db.LocalBookFiles.Add(row);
+        toInsert.Add(row);
         existingByPath[canon] = row;
     }
 
-    // SQL Server's collation rules can fold characters in ways no standard
-    // .NET comparer mirrors exactly, so despite best-effort dedupe a pair
-    // of paths may still collide at SaveChanges. When that happens, detach
-    // the offenders and retry the remaining adds one at a time; a single
-    // broken pair then costs one skipped row instead of the whole phase.
-    private async Task SaveLocalFilesResilientAsync(LibraryDbContext db, CancellationToken ct)
+    // Flushes any Author tracked changes, then bulk-writes LocalBookFile inserts and
+    // updates via SqlBulkCopy + staging-table SQL so the EF change tracker never sees
+    // the LBF rows at all. This handles 200k+ rows in seconds instead of minutes and
+    // automatically resolves collation-fold duplicates via the MERGE ON FullPath.
+    private async Task BulkUpsertLocalFilesAsync(
+        List<LocalBookFile> toInsert,
+        List<LocalBookFile> toUpdate,
+        LibraryDbContext db,
+        CancellationToken ct)
     {
-        try { await db.SaveChangesAsync(ct); return; }
-        catch (DbUpdateException ex)
-        {
-            _log.LogWarning(ex, "Bulk save of LocalBookFiles hit a collision; retrying per-row");
-        }
+        var total = toInsert.Count + toUpdate.Count;
+        MutateState(s => { s.Message = $"Saving {total:N0} change(s)"; s.LocalFilesSaveTotal = total; s.LocalFilesSaved = 0; });
 
-        var pending = db.ChangeTracker.Entries<LocalBookFile>()
-            .Where(e => e.State is EntityState.Added or EntityState.Modified)
-            .ToList();
-        foreach (var entry in pending) entry.State = EntityState.Detached;
+        // Flush Author/other tracked changes (e.g., CalibreFolderName back-fills).
+        // LocalBookFiles are not in the tracker so this won't touch them.
+        await db.SaveChangesAsync(ct);
 
-        foreach (var entry in pending)
+        if (total == 0) return;
+
+        var conn = (SqlConnection)db.Database.GetDbConnection();
+        bool wasOpen = conn.State == ConnectionState.Open;
+        if (!wasOpen) await conn.OpenAsync(ct);
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            try
+            if (toUpdate.Count > 0)
             {
-                if (entry.Entity.Id == 0) db.LocalBookFiles.Add(entry.Entity);
-                else db.LocalBookFiles.Update(entry.Entity);
-                await db.SaveChangesAsync(ct);
+                MutateState(s => s.Message = $"Updating {toUpdate.Count:N0} file record(s)…");
+                await BulkUpdateLocalFilesAsync(toUpdate, conn, ct);
+                MutateState(s => s.LocalFilesSaved = toUpdate.Count);
             }
-            catch (DbUpdateException ex)
+
+            if (toInsert.Count > 0)
             {
-                _log.LogWarning("Skipped LocalBookFile row for {Path}: {Message}",
-                    entry.Entity.FullPath, ex.InnerException?.Message ?? ex.Message);
-                db.Entry(entry.Entity).State = EntityState.Detached;
+                MutateState(s => s.Message = $"Inserting {toInsert.Count:N0} new file record(s)…");
+                await BulkInsertLocalFilesAsync(toInsert, conn, ct);
+                MutateState(s => s.LocalFilesSaved = toUpdate.Count + toInsert.Count);
             }
         }
+        finally
+        {
+            if (!wasOpen) conn.Close();
+        }
+    }
+
+    private static async Task BulkUpdateLocalFilesAsync(
+        List<LocalBookFile> updates, SqlConnection conn, CancellationToken ct)
+    {
+        await using (var cmd = new SqlCommand(@"
+            CREATE TABLE #lbf_upd (
+                Id              int             NOT NULL PRIMARY KEY,
+                AuthorFolder    nvarchar(1024)  NOT NULL,
+                TitleFolder     nvarchar(1024)  NOT NULL,
+                NormalizedTitle nvarchar(1024),
+                AuthorId        int,
+                BookId          int,
+                SizeBytes       bigint          NOT NULL,
+                ModifiedAt      datetime2       NOT NULL
+            )", conn))
+            await cmd.ExecuteNonQueryAsync(ct);
+
+        var dt = new DataTable();
+        dt.Columns.Add("Id",              typeof(int));
+        dt.Columns.Add("AuthorFolder",    typeof(string));
+        dt.Columns.Add("TitleFolder",     typeof(string));
+        dt.Columns.Add("NormalizedTitle", typeof(string));
+        dt.Columns.Add("AuthorId",        typeof(int));
+        dt.Columns.Add("BookId",          typeof(int));
+        dt.Columns.Add("SizeBytes",       typeof(long));
+        dt.Columns.Add("ModifiedAt",      typeof(DateTime));
+        foreach (var r in updates)
+            dt.Rows.Add(r.Id, r.AuthorFolder, r.TitleFolder,
+                (object?)r.NormalizedTitle ?? DBNull.Value,
+                (object?)r.AuthorId        ?? DBNull.Value,
+                (object?)r.BookId          ?? DBNull.Value,
+                r.SizeBytes, r.ModifiedAt);
+
+        using var bc = new SqlBulkCopy(conn) { DestinationTableName = "#lbf_upd", BulkCopyTimeout = 600, BatchSize = 10_000 };
+        foreach (DataColumn col in dt.Columns) bc.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+        await bc.WriteToServerAsync(dt, ct);
+
+        await using (var cmd = new SqlCommand(@"
+            UPDATE f SET
+                f.AuthorFolder    = t.AuthorFolder,
+                f.TitleFolder     = t.TitleFolder,
+                f.NormalizedTitle = t.NormalizedTitle,
+                f.AuthorId        = t.AuthorId,
+                f.BookId          = t.BookId,
+                f.SizeBytes       = t.SizeBytes,
+                f.ModifiedAt      = t.ModifiedAt
+            FROM LocalBookFiles f
+            INNER JOIN #lbf_upd t ON f.Id = t.Id", conn) { CommandTimeout = 600 })
+            await cmd.ExecuteNonQueryAsync(ct);
+
+        await using (var cmd = new SqlCommand("DROP TABLE #lbf_upd", conn))
+            await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task BulkInsertLocalFilesAsync(
+        List<LocalBookFile> inserts, SqlConnection conn, CancellationToken ct)
+    {
+        await using (var cmd = new SqlCommand(@"
+            CREATE TABLE #lbf_ins (
+                AuthorFolder    nvarchar(1024)  COLLATE DATABASE_DEFAULT NOT NULL,
+                TitleFolder     nvarchar(1024)  COLLATE DATABASE_DEFAULT NOT NULL,
+                FullPath        nvarchar(2048)  COLLATE DATABASE_DEFAULT NOT NULL,
+                NormalizedTitle nvarchar(1024)  COLLATE DATABASE_DEFAULT,
+                AuthorId        int,
+                BookId          int,
+                SizeBytes       bigint          NOT NULL,
+                ModifiedAt      datetime2       NOT NULL
+            )", conn))
+            await cmd.ExecuteNonQueryAsync(ct);
+
+        var dt = new DataTable();
+        dt.Columns.Add("AuthorFolder",    typeof(string));
+        dt.Columns.Add("TitleFolder",     typeof(string));
+        dt.Columns.Add("FullPath",        typeof(string));
+        dt.Columns.Add("NormalizedTitle", typeof(string));
+        dt.Columns.Add("AuthorId",        typeof(int));
+        dt.Columns.Add("BookId",          typeof(int));
+        dt.Columns.Add("SizeBytes",       typeof(long));
+        dt.Columns.Add("ModifiedAt",      typeof(DateTime));
+        foreach (var r in inserts)
+            dt.Rows.Add(r.AuthorFolder, r.TitleFolder, r.FullPath,
+                (object?)r.NormalizedTitle ?? DBNull.Value,
+                (object?)r.AuthorId        ?? DBNull.Value,
+                (object?)r.BookId          ?? DBNull.Value,
+                r.SizeBytes, r.ModifiedAt);
+
+        using var bc = new SqlBulkCopy(conn) { DestinationTableName = "#lbf_ins", BulkCopyTimeout = 600, BatchSize = 10_000 };
+        foreach (DataColumn col in dt.Columns) bc.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+        await bc.WriteToServerAsync(dt, ct);
+
+        // MERGE ON FullPath: inserts new rows and, for collation-fold collisions
+        // (where SQL Server's CI_AS treats two .NET-distinct paths as equal),
+        // updates the existing row and overwrites its stored FullPath so future
+        // scans find it without going through this fallback again.
+        // rn > 1 rows are filtered out in the WHERE clause so they are excluded
+        // from the source entirely — if they were instead hidden behind the ON
+        // condition they would still participate as WHEN NOT MATCHED BY TARGET
+        // and trigger spurious INSERTs that collide with the unique index.
+        await using (var cmd = new SqlCommand(@"
+            MERGE LocalBookFiles AS target
+            USING (
+                SELECT AuthorFolder, TitleFolder, FullPath, NormalizedTitle,
+                       AuthorId, BookId, SizeBytes, ModifiedAt
+                FROM (
+                    SELECT AuthorFolder, TitleFolder, FullPath, NormalizedTitle,
+                           AuthorId, BookId, SizeBytes, ModifiedAt,
+                           ROW_NUMBER() OVER (PARTITION BY FullPath ORDER BY (SELECT NULL)) AS rn
+                    FROM #lbf_ins
+                ) AS ranked
+                WHERE rn = 1
+            ) AS source ON target.FullPath = source.FullPath
+            WHEN NOT MATCHED BY TARGET THEN
+                INSERT (AuthorFolder, TitleFolder, FullPath, NormalizedTitle,
+                        AuthorId, BookId, SizeBytes, ModifiedAt)
+                VALUES (source.AuthorFolder, source.TitleFolder, source.FullPath,
+                        source.NormalizedTitle, source.AuthorId, source.BookId,
+                        source.SizeBytes, source.ModifiedAt)
+            WHEN MATCHED THEN UPDATE SET
+                target.FullPath        = source.FullPath,
+                target.AuthorFolder    = source.AuthorFolder,
+                target.TitleFolder     = source.TitleFolder,
+                target.NormalizedTitle = source.NormalizedTitle,
+                target.AuthorId        = source.AuthorId,
+                target.BookId          = source.BookId,
+                target.SizeBytes       = source.SizeBytes,
+                target.ModifiedAt      = source.ModifiedAt;", conn) { CommandTimeout = 600 })
+            await cmd.ExecuteNonQueryAsync(ct);
+
+        await using (var cmd = new SqlCommand("DROP TABLE #lbf_ins", conn))
+            await cmd.ExecuteNonQueryAsync(ct);
     }
 
     private static IEnumerable<string> AuthorKeys(Author a)
@@ -490,6 +661,8 @@ public sealed class SyncService
         AuthorsProcessed = s.AuthorsProcessed,
         BooksAdded = s.BooksAdded,
         LocalFilesSeen = s.LocalFilesSeen,
+        LocalFilesSaveTotal = s.LocalFilesSaveTotal,
+        LocalFilesSaved = s.LocalFilesSaved,
         DumpBytesDone = s.DumpBytesDone,
         DumpBytesTotal = s.DumpBytesTotal,
         DumpRowsParsed = s.DumpRowsParsed,
