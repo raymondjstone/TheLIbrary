@@ -776,6 +776,7 @@ public sealed class SyncService
                 var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
                 var refresher = scope.ServiceProvider.GetRequiredService<AuthorRefresher>();
 
+                const int MinimumBatch = 100;
                 var now = DateTime.UtcNow;
                 var authorIds = await db.Authors
                     .Where(a => a.NextFetchAt == null || a.NextFetchAt <= now)
@@ -784,6 +785,19 @@ public sealed class SyncService
                     .Select(a => a.Id)
                     .ToListAsync(hostCt);
 
+                int earlyCount = 0;
+                if (authorIds.Count < MinimumBatch)
+                {
+                    var extra = await db.Authors
+                        .Where(a => a.NextFetchAt > now)
+                        .OrderBy(a => a.NextFetchAt)
+                        .Select(a => a.Id)
+                        .Take(MinimumBatch - authorIds.Count)
+                        .ToListAsync(hostCt);
+                    earlyCount = extra.Count;
+                    authorIds.AddRange(extra);
+                }
+
                 MutateState(s =>
                 {
                     s.Phase = SyncPhase.FetchingWorks;
@@ -791,7 +805,9 @@ public sealed class SyncService
                     s.AuthorsProcessed = 0;
                     s.Message = authorIds.Count == 0
                         ? "No authors due for refresh"
-                        : $"Refreshing {authorIds.Count} due author(s)";
+                        : earlyCount > 0
+                            ? $"Refreshing {authorIds.Count} author(s) ({earlyCount} pulled early to reach minimum of {MinimumBatch})"
+                            : $"Refreshing {authorIds.Count} due author(s)";
                 });
 
                 foreach (var id in authorIds)
@@ -819,7 +835,9 @@ public sealed class SyncService
                     s.FinishedAt = DateTime.UtcNow;
                     s.Message = authorIds.Count == 0
                         ? "No authors were due"
-                        : $"Refreshed {authorIds.Count} author(s); {s.BooksAdded} new book(s)";
+                        : earlyCount > 0
+                            ? $"Refreshed {authorIds.Count} author(s) ({earlyCount} pulled early); {s.BooksAdded} new book(s)"
+                            : $"Refreshed {authorIds.Count} author(s); {s.BooksAdded} new book(s)";
                 });
             }
             catch (OperationCanceledException) when (hostCt.IsCancellationRequested)
