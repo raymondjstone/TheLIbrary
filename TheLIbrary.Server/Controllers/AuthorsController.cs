@@ -100,6 +100,50 @@ public class AuthorsController : ControllerBase
         }).ToList();
     }
 
+    public sealed record StarredAuthorRow(
+        int Id, string Name, int Priority,
+        int BookCount, int EbookCount, int UnmatchedCount);
+
+    [HttpGet("starred")]
+    public async Task<IReadOnlyList<StarredAuthorRow>> Starred(CancellationToken ct)
+    {
+        var authors = await _db.Authors.AsNoTracking()
+            .Where(a => a.Priority >= 1)
+            .OrderByDescending(a => a.Priority).ThenBy(a => a.Name)
+            .Select(a => new { a.Id, a.Name, a.Priority })
+            .ToListAsync(ct);
+
+        if (authors.Count == 0) return Array.Empty<StarredAuthorRow>();
+
+        var ids = authors.Select(a => a.Id).ToList();
+
+        var bookCounts = await _db.Books.AsNoTracking()
+            .Where(b => ids.Contains(b.AuthorId))
+            .GroupBy(b => b.AuthorId)
+            .Select(g => new { AuthorId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.AuthorId, x => x.Count, ct);
+
+        var ebookCounts = await _db.Books.AsNoTracking()
+            .Where(b => ids.Contains(b.AuthorId) && b.LocalFiles.Any())
+            .GroupBy(b => b.AuthorId)
+            .Select(g => new { AuthorId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.AuthorId, x => x.Count, ct);
+
+        var unmatchedRaw = await _db.LocalBookFiles.AsNoTracking()
+            .Where(f => f.BookId == null && f.AuthorId != null && ids.Contains(f.AuthorId.Value))
+            .GroupBy(f => f.AuthorId)
+            .Select(g => new { AuthorId = g.Key, Count = g.Count() })
+            .ToListAsync(ct);
+        var unmatchedDict = unmatchedRaw.ToDictionary(x => x.AuthorId!.Value, x => x.Count);
+
+        return authors.Select(a => new StarredAuthorRow(
+            a.Id, a.Name, a.Priority,
+            bookCounts.GetValueOrDefault(a.Id),
+            ebookCounts.GetValueOrDefault(a.Id),
+            unmatchedDict.GetValueOrDefault(a.Id)
+        )).ToList();
+    }
+
     public sealed record AuthorDetail(
         int Id,
         string Name,

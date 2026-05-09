@@ -86,15 +86,23 @@ public static class TitleNormalizer
         }
     }
 
-    // A plausible author folder name must contain at least one letter and must
-    // not begin with a bracket decorator (e.g. "[美]", "[tr]", "[Author]").
-    // Rejects version strings like "3.9" and nationality markers like "[美]Jeff Johnson".
+    // A plausible author folder name must pass three gates:
+    //   1. Starts with a letter — rejects bracket prefixes ([美]...), punctuation
+    //      prefixes (. Array, . . . Brock, 'Nathan), digit-prefixed names (2.16 ...).
+    //   2. At least four letter characters total — rejects single-char names, two-char
+    //      abbreviations (DS, PP, hw), and three-letter acronyms (ABS, CSS, LU).
+    //   3. At least one uppercase letter — every legitimate author name capitalises at
+    //      least one word; rejects all-lowercase metadata garbage (lasg, faq, rolo,
+    //      moon) and multi-word lowercase strings ("for my mother", "thank you").
     public static bool IsPlausibleAuthorName(string? name)
     {
         if (string.IsNullOrWhiteSpace(name)) return false;
         var s = name.Trim();
-        if (s.StartsWith('[')) return false;
-        return s.Any(char.IsLetter);
+        if (!char.IsLetter(s[0])) return false;
+        var letters = s.Where(char.IsLetter).ToArray();
+        if (letters.Length < 4) return false;
+        if (!letters.Any(char.IsUpper)) return false;
+        return true;
     }
 
     public static string NormalizeAuthor(string? input)

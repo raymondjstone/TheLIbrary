@@ -595,25 +595,12 @@ public sealed class IncomingProcessor
         if (blacklistSet.Contains(normDisplay) || blacklistSet.Contains(normFolder))
             return null;
 
-        var created = new Author
-        {
-            Name = entry.DisplayName,
-            CalibreFolderName = entry.FolderName,
-            OpenLibraryKey = entry.OpenLibraryKey,
-            Status = AuthorStatus.Pending
-        };
-        _db.Authors.Add(created);
-        await _db.SaveChangesAsync(ct);
-        _log.LogInformation(
-            "Auto-registered author '{Name}' ({OlKey}) from OL match during incoming scan",
-            created.Name, created.OpenLibraryKey);
-
-        return new AuthorIndexEntry(
-            DisplayName: created.Name,
-            FolderName: string.IsNullOrWhiteSpace(created.CalibreFolderName) ? created.Name : created.CalibreFolderName!,
-            IsTracked: true,
-            TrackedAuthorId: created.Id,
-            OpenLibraryKey: created.OpenLibraryKey);
+        // Author matched OL but is not on the watchlist — route to __unknown.
+        // User must explicitly add the author before files land in the main collection.
+        _log.LogDebug(
+            "Author '{Name}' ({OlKey}) matched OL but is not tracked — routing to __unknown",
+            entry.DisplayName, entry.OpenLibraryKey);
+        return null;
     }
 
     private EpubMetadata? ReadMetadata(string file)

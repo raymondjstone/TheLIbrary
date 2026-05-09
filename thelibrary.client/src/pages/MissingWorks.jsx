@@ -6,6 +6,32 @@ let cachedMissing = null
 export default function MissingWorks() {
     const [data, setData] = useState(cachedMissing)
     const [error, setError] = useState(null)
+    const [nzbSites, setNzbSites] = useState([])
+
+    useEffect(() => {
+        fetch('/api/nzb-sites')
+            .then(r => r.ok ? r.json() : [])
+            .then(sites => setNzbSites(sites.filter(s => s.active)))
+            .catch(() => {})
+    }, [])
+
+    const nzbLinks = (title, authorName) => {
+        if (!nzbSites.length) return null
+        const enc = s => encodeURIComponent(s)
+        const searchTerm = `${authorName} ${title}`.trim()
+        return nzbSites.map(site => {
+            const url = site.urlTemplate
+                .replace('{Title}', enc(title))
+                .replace('{Author}', enc(authorName))
+                .replace('{SearchTerm}', enc(searchTerm))
+            return (
+                <a key={site.id} href={url} target="_blank" rel="noreferrer"
+                    style={{ fontSize: '0.8em', marginRight: '0.4rem', whiteSpace: 'nowrap' }}>
+                    {site.name}
+                </a>
+            )
+        })
+    }
 
     const load = async () => {
         setError(null)
@@ -63,12 +89,17 @@ export default function MissingWorks() {
 
             {byAuthor && byAuthor.map(author => (
                 <div key={author.id} style={{ marginBottom: '2rem' }}>
-                    <h3 style={{ margin: '0 0 0.5rem', fontWeight: 600, fontSize: '1.05rem' }}>
+                    <h3 style={{ margin: '0 0 0.25rem', fontWeight: 600, fontSize: '1.05rem' }}>
                         <Link to={`/authors/${author.id}`}>{author.name}</Link>
                         <span className="subtle" style={{ fontWeight: 400, marginLeft: '0.5rem' }}>
                             {'★'.repeat(author.priority)}
                         </span>
                     </h3>
+                    {nzbSites.length > 0 && (
+                        <div style={{ marginBottom: '0.4rem' }}>
+                            {nzbLinks(author.name, author.name)}
+                        </div>
+                    )}
                     <table className="grid">
                         <thead>
                             <tr>
@@ -91,6 +122,11 @@ export default function MissingWorks() {
                                             target="_blank" rel="noreferrer">
                                             {b.title}
                                         </a>
+                                        {nzbSites.length > 0 && (
+                                            <div style={{ marginTop: '0.2rem' }}>
+                                                {nzbLinks(b.title, author.name)}
+                                            </div>
+                                        )}
                                     </td>
                                     <td>{b.firstPublishYear ?? '—'}</td>
                                 </tr>

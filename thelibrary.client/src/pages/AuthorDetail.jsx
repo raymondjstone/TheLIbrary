@@ -10,6 +10,7 @@ export default function AuthorDetail() {
     const [refreshing, setRefreshing] = useState(false)
     const [refreshError, setRefreshError] = useState(null)
     const [matchSel, setMatchSel] = useState({})
+    const [matchFilter, setMatchFilter] = useState({})
     const [matchBusyIds, setMatchBusyIds] = useState(() => new Set())
     const [matchError, setMatchError] = useState(null)
     const [returnBusyIds, setReturnBusyIds] = useState(() => new Set())
@@ -40,6 +41,28 @@ export default function AuthorDetail() {
             .then(s => setRmConnected(!!s?.connected))
             .catch(() => setRmConnected(false))
     }, [])
+
+    useEffect(() => {
+        if (!data?.unmatchedLocal?.length || !data?.books?.length) return
+        const norm = s => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+        setMatchSel(prev => {
+            const updates = {}
+            for (const u of data.unmatchedLocal) {
+                if (prev[u.id]) continue
+                const wa = norm(u.titleFolder ?? '').split(' ').filter(Boolean)
+                let bestId = '', bestScore = 0
+                for (const b of data.books) {
+                    const wb = new Set(norm(b.title ?? '').split(' ').filter(Boolean))
+                    const matches = wa.filter(w => wb.has(w)).length
+                    const total = new Set([...wa, ...wb]).size
+                    const score = total === 0 ? 0 : matches / total
+                    if (score > bestScore) { bestScore = score; bestId = String(b.id) }
+                }
+                if (bestId) updates[u.id] = bestId
+            }
+            return Object.keys(updates).length ? { ...prev, ...updates } : prev
+        })
+    }, [data])
 
     const sendToRemarkable = async (fileId, formats) => {
         if (!formats?.length) {
@@ -446,16 +469,30 @@ export default function AuthorDetail() {
                                         </td>
                                         <td className="subtle">{u.fullPath}</td>
                                         <td>
+                                            <input
+                                                type="text"
+                                                placeholder="Filter…"
+                                                value={matchFilter[u.id] ?? ''}
+                                                disabled={busy || returning}
+                                                onChange={e => setMatchFilter(prev => ({ ...prev, [u.id]: e.target.value }))}
+                                                style={{ display: 'block', width: '100%', marginBottom: '0.25rem', boxSizing: 'border-box' }}
+                                            />
                                             <select
                                                 value={selected}
                                                 disabled={busy || returning}
                                                 onChange={e => setMatchSel(prev => ({ ...prev, [u.id]: e.target.value }))}>
                                                 <option value="">— pick a work —</option>
-                                                {data.books.map(b => (
-                                                    <option key={b.id} value={b.id}>
-                                                        {b.title}{b.firstPublishYear ? ` (${b.firstPublishYear})` : ''}
-                                                    </option>
-                                                ))}
+                                                {[...data.books]
+                                                    .sort((a, b) => (a.title ?? '').localeCompare(b.title ?? ''))
+                                                    .filter(b => {
+                                                        const f = matchFilter[u.id] ?? ''
+                                                        return !f || String(b.id) === selected || (b.title ?? '').toLowerCase().includes(f.toLowerCase())
+                                                    })
+                                                    .map(b => (
+                                                        <option key={b.id} value={b.id}>
+                                                            {b.title}{b.firstPublishYear ? ` (${b.firstPublishYear})` : ''}
+                                                        </option>
+                                                    ))}
                                             </select>
                                         </td>
                                         <td>

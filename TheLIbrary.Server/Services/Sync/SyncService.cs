@@ -190,8 +190,34 @@ public sealed class SyncService
                 break;
             }
 
+            // No OL match — relocate the entire author folder to __unknown so the
+            // files are accessible for reprocessing but don't pollute the main collection.
+            if (olKey is null)
+            {
+                var authorDir = Path.Combine(group.First().LocationPath, folder);
+                if (Directory.Exists(authorDir))
+                {
+                    var unknownRoot = Path.Combine(group.First().LocationPath, CalibreScanner.UnknownAuthorFolder);
+                    var dest = Path.Combine(unknownRoot, folder);
+                    if (!Directory.Exists(dest))
+                    {
+                        try
+                        {
+                            Directory.CreateDirectory(unknownRoot);
+                            Directory.Move(authorDir, dest);
+                            _log.LogInformation("Relocated unverified author folder '{Folder}' to __unknown", folder);
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.LogWarning(ex, "Could not relocate '{Folder}' to __unknown — will retry next sync", folder);
+                        }
+                    }
+                }
+                continue;
+            }
+
             // Another folder this run may have already claimed the same OL key.
-            if (olKey is not null && authorByOlKey.TryGetValue(olKey, out var canonical))
+            if (authorByOlKey.TryGetValue(olKey, out var canonical))
             {
                 if (string.IsNullOrEmpty(canonical.CalibreFolderName))
                     canonical.CalibreFolderName = folder;
@@ -313,13 +339,22 @@ public sealed class SyncService
         if (skipped > 0)
             _log.LogInformation("Skipped {Count} author(s) with no file changes", skipped);
 
-        // Orphan pass: entries whose folder resolved to no author (blacklisted
-        // or otherwise) still need LocalBookFile rows with AuthorId=null so
-        // the "unclaimed" UI can show them.
+        // Orphan pass: only surface files from OL-verified (tracked) author folders
+        // as unclaimed. Files in folders with no matching Author row have no OL
+        // pedigree — recording them just floods the unclaimed view with garbage
+        // metadata entries from ebook files. Truly unresolvable files stay on disk
+        // but are invisible to the DB until the user explicitly adds the author.
         MutateState(s => s.Message = "Recording orphan entries");
+
+        var trackedFolderKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var a in authors)
+            foreach (var k in AuthorKeys(a))
+                trackedFolderKeys.Add(k);
+
         foreach (var (canon, entry) in deduped)
         {
             if (processed.Contains(canon)) continue;
+            if (!trackedFolderKeys.Contains(TitleNormalizer.NormalizeAuthor(entry.AuthorFolder))) continue;
             UpsertLocalFile(entry, authorId: null, bookId: null, existingByPath, canon, toInsert, toUpdate);
         }
 
@@ -366,6 +401,24 @@ public sealed class SyncService
             _log.LogInformation("Removing {Count} LocalBookFile row(s) no longer on disk", removedIds.Count);
             await db.LocalBookFiles.Where(f => removedIds.Contains(f.Id)).ExecuteDeleteAsync(ct);
             MutateState(s => s.LocalFilesSeen -= removedIds.Count);
+        }
+
+        // One-time cleanup: delete any orphan (AuthorId=null) LocalBookFile rows
+        // whose folder has no tracked Author. These were created by earlier sync
+        // runs before the orphan-pass filter was added and would otherwise linger
+        // as garbage in the unclaimed view indefinitely.
+        var staleOrphanIds = existingList
+            .Where(f => f.AuthorId == null &&
+                        !trackedFolderKeys.Contains(TitleNormalizer.NormalizeAuthor(f.AuthorFolder)))
+            .Select(f => f.Id)
+            .ToList();
+        if (staleOrphanIds.Count > 0)
+        {
+            _log.LogInformation(
+                "Removing {Count} stale orphan LocalBookFile row(s) from untracked folders",
+                staleOrphanIds.Count);
+            await db.LocalBookFiles.Where(f => staleOrphanIds.Contains(f.Id)).ExecuteDeleteAsync(ct);
+            MutateState(s => s.LocalFilesSeen -= staleOrphanIds.Count);
         }
     }
 
