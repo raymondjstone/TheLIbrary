@@ -159,8 +159,7 @@ public sealed class SyncService
             var folderKey = TitleNormalizer.NormalizeAuthor(folder);
 
             if (blacklistedNormalized.Contains(folderKey)) continue;
-            // Purely numeric folder names (years, page counts, edition markers) are never real author names.
-            if (!string.IsNullOrEmpty(folderKey) && folderKey.All(c => char.IsDigit(c) || c == ' ')) continue;
+            if (!TitleNormalizer.IsPlausibleAuthorName(folder)) continue;
 
             // O(1): already known — just back-fill CalibreFolderName if blank.
             if (authorByKey.TryGetValue(folderKey, out var existing))

@@ -115,6 +115,7 @@ public class AuthorsController : ControllerBase
     public sealed record BookRow(
         int Id,
         string Title,
+        string? NormalizedTitle,
         int? FirstPublishYear,
         int? CoverId,
         string OpenLibraryWorkKey,
@@ -171,14 +172,14 @@ public class AuthorsController : ControllerBase
             .OrderBy(b => b.FirstPublishYear ?? int.MaxValue).ThenBy(b => b.Title)
             .Select(b => new
             {
-                b.Id, b.Title, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
+                b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
                 b.ManuallyOwned,
                 Files = b.LocalFiles.Select(f => new { f.Id, f.FullPath }).ToList()
             })
             .ToListAsync(ct);
 
         var books = rawBooks.Select(b => new BookRow(
-            b.Id, b.Title, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
+            b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
             b.ManuallyOwned || b.Files.Count > 0,
             b.ManuallyOwned,
             b.Files.Count > 0,
@@ -400,7 +401,36 @@ public class AuthorsController : ControllerBase
 
         var existing = await _db.Authors.FirstOrDefaultAsync(a => a.OpenLibraryKey == key, ct);
         if (existing is not null)
-            return Conflict(new { error = "Author already in watchlist", id = existing.Id });
+        {
+            // Already tracked — still run adoption so any unmatched Calibre files
+            // get linked immediately without requiring the user to wait for a sync.
+            if (string.IsNullOrWhiteSpace(existing.CalibreFolderName))
+            {
+                var normExisting = TitleNormalizer.NormalizeAuthor(existing.Name);
+                var candidateFolders = await _db.LocalBookFiles
+                    .Where(f => f.AuthorId == null)
+                    .Select(f => f.AuthorFolder)
+                    .Distinct()
+                    .ToListAsync(ct);
+                var matched = candidateFolders
+                    .FirstOrDefault(f => TitleNormalizer.NormalizeAuthor(f) == normExisting);
+                if (matched is not null)
+                {
+                    existing.CalibreFolderName = matched;
+                    await _db.SaveChangesAsync(ct);
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(existing.CalibreFolderName))
+            {
+                await _db.LocalBookFiles
+                    .Where(f => f.AuthorId == null && f.AuthorFolder == existing.CalibreFolderName)
+                    .ExecuteUpdateAsync(s => s.SetProperty(f => f.AuthorId, _ => existing.Id), ct);
+            }
+            return Ok(new AuthorListItem(
+                existing.Id, existing.Name, existing.CalibreFolderName, existing.OpenLibraryKey,
+                existing.Status.ToString(), existing.ExclusionReason,
+                existing.Priority, 0, 0, 0, 0, existing.LastSyncedAt));
+        }
 
         var name = body.Name?.Trim();
         if (string.IsNullOrWhiteSpace(name))
@@ -699,6 +729,83 @@ public class AuthorsController : ControllerBase
             });
         }
 
+        await _db.SaveChangesAsync(ct);
+
+        if (moveWarnings.Count > 0)
+            return Ok(new { warnings = moveWarnings });
+
+        return NoContent();
+    }
+
+    // Moves every untracked file back to incoming in one shot.
+    // Unlike the per-folder DELETE, this does NOT blacklist — the intent is
+    // a bulk reset so the incoming processor can re-evaluate everything.
+    [HttpDelete("~/api/unclaimed/all")]
+    public async Task<IActionResult> DiscardAllUnclaimed(CancellationToken ct)
+    {
+        var incomingSetting = await _db.AppSettings
+            .FirstOrDefaultAsync(s => s.Key == AppSettingKeys.IncomingFolder, ct);
+        var incomingPath = incomingSetting?.Value?.Trim();
+        if (string.IsNullOrWhiteSpace(incomingPath))
+            return BadRequest(new { error = "Incoming folder is not configured — set it in Settings first." });
+        if (!Directory.Exists(incomingPath))
+            return BadRequest(new { error = $"Incoming folder does not exist: {incomingPath}" });
+
+        var allFiles = await _db.LocalBookFiles
+            .Where(f => f.AuthorId == null)
+            .ToListAsync(ct);
+
+        if (allFiles.Count == 0)
+            return NoContent();
+
+        var moveWarnings = new List<string>();
+
+        foreach (var group in allFiles.GroupBy(f => f.AuthorFolder))
+        {
+            var folder = group.Key;
+            var authorDestRoot = UniqueDirectory(incomingPath, folder);
+            try { Directory.CreateDirectory(authorDestRoot); }
+            catch (IOException ex)
+            {
+                moveWarnings.Add($"{folder}: Could not create destination — {ex.Message}");
+                continue;
+            }
+
+            var movedSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string? authorDirOnDisk = null;
+
+            foreach (var file in group)
+            {
+                if (string.IsNullOrWhiteSpace(file.FullPath)) continue;
+                var src = file.FullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (!Directory.Exists(src)) continue;
+                if (!movedSources.Add(src)) continue;
+
+                authorDirOnDisk ??= Path.GetDirectoryName(src);
+
+                var leaf = !string.IsNullOrWhiteSpace(file.TitleFolder) ? file.TitleFolder : Path.GetFileName(src);
+                if (string.IsNullOrWhiteSpace(leaf)) leaf = $"returned-{file.Id}";
+
+                var dest = UniqueDirectory(authorDestRoot, leaf);
+                try { Directory.Move(src, dest); }
+                catch (IOException ex) { moveWarnings.Add($"{leaf}: {ex.Message}"); }
+            }
+
+            if (!string.IsNullOrWhiteSpace(authorDirOnDisk)
+                && Directory.Exists(authorDirOnDisk)
+                && !Directory.EnumerateFileSystemEntries(authorDirOnDisk).Any())
+            {
+                try { Directory.Delete(authorDirOnDisk); } catch { /* best effort */ }
+            }
+
+            if (Directory.Exists(authorDestRoot)
+                && !Directory.EnumerateFileSystemEntries(authorDestRoot).Any())
+            {
+                try { Directory.Delete(authorDestRoot); } catch { /* best effort */ }
+            }
+        }
+
+        _db.LocalBookFiles.RemoveRange(allFiles);
         await _db.SaveChangesAsync(ct);
 
         if (moveWarnings.Count > 0)

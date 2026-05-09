@@ -86,6 +86,17 @@ public static class TitleNormalizer
         }
     }
 
+    // A plausible author folder name must contain at least one letter and must
+    // not begin with a bracket decorator (e.g. "[美]", "[tr]", "[Author]").
+    // Rejects version strings like "3.9" and nationality markers like "[美]Jeff Johnson".
+    public static bool IsPlausibleAuthorName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        var s = name.Trim();
+        if (s.StartsWith('[')) return false;
+        return s.Any(char.IsLetter);
+    }
+
     public static string NormalizeAuthor(string? input)
     {
         if (string.IsNullOrWhiteSpace(input)) return "";

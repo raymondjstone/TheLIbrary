@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import StarRating from '../components/StarRating.jsx'
 
@@ -205,6 +205,19 @@ export default function AuthorDetail() {
     const visibleBooks = ownedOnly ? data.books.filter(b => b.owned) : data.books
     const ownedCount = data.books.filter(b => b.owned).length
 
+    // Group books by normalized title (books are server-sorted year-asc).
+    // A null normalizedTitle is treated as unique — never merged with anything.
+    // Each group: { primary, editions[] } where primary is the earliest entry.
+    const bookGroups = (() => {
+        const map = new Map()
+        for (const book of visibleBooks) {
+            const key = book.normalizedTitle || `\0${book.id}`
+            if (!map.has(key)) map.set(key, [])
+            map.get(key).push(book)
+        }
+        return Array.from(map.values()).map(g => ({ primary: g[0], editions: g.slice(1) }))
+    })()
+
     return (
         <section>
             <p><Link to="/authors">&larr; All authors</Link></p>
@@ -246,78 +259,150 @@ export default function AuthorDetail() {
                     </tr>
                 </thead>
                 <tbody>
-                    {visibleBooks.map(b => (
-                        <tr key={b.id} className={b.owned ? '' : 'missing'}>
-                            <td>
-                                {b.coverId
-                                    ? <img alt="" loading="lazy" src={`https://covers.openlibrary.org/b/id/${b.coverId}-S.jpg`} />
-                                    : null}
-                            </td>
-                            <td>
-                                <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{b.title}</a>
-                                {!b.owned && nzbSites.length > 0 && (
-                                    <div style={{ marginTop: '0.2rem' }}>
-                                        {nzbLinks(b.title)}
-                                    </div>
-                                )}
-                                {b.hasLocalFiles
-                                    ? <div className="subtle">
-                                        {b.files.map(f => {
-                                            const formats = f.formats ?? []
-                                            const sendable = canSend(formats)
-                                            const convert = needsConvert(formats)
-                                            const label = sendBusyIds.has(f.id)
-                                                ? (convert ? 'Converting…' : 'Sending…')
-                                                : (convert ? 'Convert & send' : 'Send to reMarkable')
-                                            return (
-                                                <div key={f.id}>
-                                                    {formats.length > 0
-                                                        ? formats.map(ext => (
-                                                            <span key={ext} className="filetype-tag" style={{ marginRight: '0.25rem' }}>{ext}</span>
-                                                        ))
-                                                        : <span className="filetype-tag" title="No ebook files found in this folder">empty</span>}
-                                                    {' '}{f.fullPath}{' '}
-                                                    {sendable ? (
-                                                        <button
-                                                            onClick={() => sendToRemarkable(f.id, formats)}
-                                                            disabled={!rmConnected || sendBusyIds.has(f.id)}
-                                                            title={!rmConnected
-                                                                ? 'Pair a reMarkable on the Settings page first'
-                                                                : convert
-                                                                    ? 'Convert via Calibre, then send to reMarkable'
-                                                                    : 'Send this file to reMarkable'}>
-                                                            {label}
-                                                        </button>
-                                                    ) : (
-                                                        <span className="subtle">(no ebook files)</span>
-                                                    )}
-                                                </div>
-                                            )
-                                        })}
-                                    </div>
-                                    : null}
-                            </td>
-                            <td>{b.firstPublishYear ?? '—'}</td>
-                            <td>
-                                {b.owned
-                                    ? (b.hasLocalFiles && b.manuallyOwned
-                                        ? 'Yes (files + manual)'
-                                        : b.hasLocalFiles ? 'Yes (files)' : 'Yes (manual)')
-                                    : 'No'}
-                            </td>
-                            <td>
-                                <label>
-                                    <input
-                                        type="checkbox"
-                                        checked={b.manuallyOwned}
-                                        disabled={busyIds.has(b.id)}
-                                        onChange={() => toggleManual(b)} />
-                                    {b.hasLocalFiles
-                                        ? <span className="subtle"> (scan already matched)</span>
+                    {bookGroups.map(({ primary: b, editions }) => (
+                        <React.Fragment key={b.id}>
+                            <tr className={b.owned ? '' : 'missing'}>
+                                <td>
+                                    {b.coverId
+                                        ? <img alt="" loading="lazy" src={`https://covers.openlibrary.org/b/id/${b.coverId}-S.jpg`} />
                                         : null}
-                                </label>
-                            </td>
-                        </tr>
+                                </td>
+                                <td>
+                                    <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{b.title}</a>
+                                    {!b.owned && nzbSites.length > 0 && (
+                                        <div style={{ marginTop: '0.2rem' }}>
+                                            {nzbLinks(b.title)}
+                                        </div>
+                                    )}
+                                    {b.hasLocalFiles
+                                        ? <div className="subtle">
+                                            {b.files.map(f => {
+                                                const formats = f.formats ?? []
+                                                const sendable = canSend(formats)
+                                                const convert = needsConvert(formats)
+                                                const label = sendBusyIds.has(f.id)
+                                                    ? (convert ? 'Converting…' : 'Sending…')
+                                                    : (convert ? 'Convert & send' : 'Send to reMarkable')
+                                                return (
+                                                    <div key={f.id}>
+                                                        {formats.length > 0
+                                                            ? formats.map(ext => (
+                                                                <span key={ext} className="filetype-tag" style={{ marginRight: '0.25rem' }}>{ext}</span>
+                                                            ))
+                                                            : <span className="filetype-tag" title="No ebook files found in this folder">empty</span>}
+                                                        {' '}{f.fullPath}{' '}
+                                                        {sendable ? (
+                                                            <button
+                                                                onClick={() => sendToRemarkable(f.id, formats)}
+                                                                disabled={!rmConnected || sendBusyIds.has(f.id)}
+                                                                title={!rmConnected
+                                                                    ? 'Pair a reMarkable on the Settings page first'
+                                                                    : convert
+                                                                        ? 'Convert via Calibre, then send to reMarkable'
+                                                                        : 'Send this file to reMarkable'}>
+                                                                {label}
+                                                            </button>
+                                                        ) : (
+                                                            <span className="subtle">(no ebook files)</span>
+                                                        )}
+                                                    </div>
+                                                )
+                                            })}
+                                        </div>
+                                        : null}
+                                </td>
+                                <td>{b.firstPublishYear ?? '—'}</td>
+                                <td>
+                                    {b.owned
+                                        ? (b.hasLocalFiles && b.manuallyOwned
+                                            ? 'Yes (files + manual)'
+                                            : b.hasLocalFiles ? 'Yes (files)' : 'Yes (manual)')
+                                        : 'No'}
+                                </td>
+                                <td>
+                                    <label>
+                                        <input
+                                            type="checkbox"
+                                            checked={b.manuallyOwned}
+                                            disabled={busyIds.has(b.id)}
+                                            onChange={() => toggleManual(b)} />
+                                        {b.hasLocalFiles
+                                            ? <span className="subtle"> (scan already matched)</span>
+                                            : null}
+                                    </label>
+                                </td>
+                            </tr>
+                            {editions.map(ed => (
+                                <tr key={ed.id} className={ed.owned ? 'edition' : 'edition missing'}>
+                                    <td></td>
+                                    <td style={{ paddingLeft: '2rem' }}>
+                                        <span className="subtle" style={{ marginRight: '0.3rem' }}>↳</span>
+                                        <a href={`https://openlibrary.org/works/${ed.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{ed.title}</a>
+                                        {!ed.owned && nzbSites.length > 0 && (
+                                            <div style={{ marginTop: '0.2rem' }}>
+                                                {nzbLinks(ed.title)}
+                                            </div>
+                                        )}
+                                        {ed.hasLocalFiles
+                                            ? <div className="subtle">
+                                                {ed.files.map(f => {
+                                                    const formats = f.formats ?? []
+                                                    const sendable = canSend(formats)
+                                                    const convert = needsConvert(formats)
+                                                    const label = sendBusyIds.has(f.id)
+                                                        ? (convert ? 'Converting…' : 'Sending…')
+                                                        : (convert ? 'Convert & send' : 'Send to reMarkable')
+                                                    return (
+                                                        <div key={f.id}>
+                                                            {formats.length > 0
+                                                                ? formats.map(ext => (
+                                                                    <span key={ext} className="filetype-tag" style={{ marginRight: '0.25rem' }}>{ext}</span>
+                                                                ))
+                                                                : <span className="filetype-tag" title="No ebook files found in this folder">empty</span>}
+                                                            {' '}{f.fullPath}{' '}
+                                                            {sendable ? (
+                                                                <button
+                                                                    onClick={() => sendToRemarkable(f.id, formats)}
+                                                                    disabled={!rmConnected || sendBusyIds.has(f.id)}
+                                                                    title={!rmConnected
+                                                                        ? 'Pair a reMarkable on the Settings page first'
+                                                                        : convert
+                                                                            ? 'Convert via Calibre, then send to reMarkable'
+                                                                            : 'Send this file to reMarkable'}>
+                                                                    {label}
+                                                                </button>
+                                                            ) : (
+                                                                <span className="subtle">(no ebook files)</span>
+                                                            )}
+                                                        </div>
+                                                    )
+                                                })}
+                                            </div>
+                                            : null}
+                                    </td>
+                                    <td>{ed.firstPublishYear ?? '—'}</td>
+                                    <td>
+                                        {ed.owned
+                                            ? (ed.hasLocalFiles && ed.manuallyOwned
+                                                ? 'Yes (files + manual)'
+                                                : ed.hasLocalFiles ? 'Yes (files)' : 'Yes (manual)')
+                                            : 'No'}
+                                    </td>
+                                    <td>
+                                        <label>
+                                            <input
+                                                type="checkbox"
+                                                checked={ed.manuallyOwned}
+                                                disabled={busyIds.has(ed.id)}
+                                                onChange={() => toggleManual(ed)} />
+                                            {ed.hasLocalFiles
+                                                ? <span className="subtle"> (scan already matched)</span>
+                                                : null}
+                                        </label>
+                                    </td>
+                                </tr>
+                            ))}
+                        </React.Fragment>
                     ))}
                 </tbody>
             </table>

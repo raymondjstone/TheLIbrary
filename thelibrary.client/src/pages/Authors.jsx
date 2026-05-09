@@ -32,6 +32,7 @@ export default function Authors() {
     const [dialog, setDialog] = useState(null)
     const [busyId, setBusyId] = useState(null)
     const [busyUnclaimed, setBusyUnclaimed] = useState(null)
+    const [busyAllUnclaimed, setBusyAllUnclaimed] = useState(false)
     const [error, setError] = useState(null)
 
     useEffect(() => {
@@ -102,6 +103,23 @@ export default function Authors() {
             load()
         } catch (e) { setError(String(e.message || e)) }
         finally { setBusyUnclaimed(null) }
+    }
+
+    const discardAllUnclaimed = async () => {
+        setBusyAllUnclaimed(true)
+        setError(null)
+        try {
+            const r = await fetch('/api/unclaimed/all', { method: 'DELETE' })
+            if (!r.ok) {
+                const body = await r.json().catch(() => ({}))
+                throw new Error(body.error || r.statusText)
+            }
+            const body = r.status === 204 ? null : await r.json().catch(() => null)
+            if (body?.warnings?.length)
+                setError(`Returned, but some files could not be moved:\n${body.warnings.join('\n')}`)
+            load()
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setBusyAllUnclaimed(false) }
     }
 
     const setPriority = async (author, value) => {
@@ -184,7 +202,16 @@ export default function Authors() {
 
             {unclaimed.length > 0 && (
                 <div className="callout">
-                    <strong>{unclaimed.length} Calibre folder(s) not yet tracked.</strong>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <strong>{unclaimed.length} Calibre folder(s) not yet tracked.</strong>
+                        <button
+                            className="btn-ghost btn-danger"
+                            disabled={busyAllUnclaimed}
+                            onClick={discardAllUnclaimed}
+                        >
+                            {busyAllUnclaimed ? 'Moving…' : '↩ Return all to Incoming'}
+                        </button>
+                    </div>
                     <ul className="unclaimed-list">
                         {unclaimed.map(u => (
                             <li key={u.authorFolder}>

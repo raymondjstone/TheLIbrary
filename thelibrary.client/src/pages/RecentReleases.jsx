@@ -6,6 +6,32 @@ let cachedReleases = null
 export default function RecentReleases() {
     const [releases, setReleases] = useState(cachedReleases)
     const [error, setError] = useState(null)
+    const [nzbSites, setNzbSites] = useState([])
+
+    useEffect(() => {
+        fetch('/api/nzb-sites')
+            .then(r => r.ok ? r.json() : [])
+            .then(sites => setNzbSites(sites.filter(s => s.active)))
+            .catch(() => {})
+    }, [])
+
+    const nzbLinks = (title, authorName) => {
+        if (!nzbSites.length) return null
+        const enc = s => encodeURIComponent(s)
+        const searchTerm = `${authorName} ${title}`.trim()
+        return nzbSites.map(site => {
+            const url = site.urlTemplate
+                .replace('{Title}', enc(title))
+                .replace('{Author}', enc(authorName))
+                .replace('{SearchTerm}', enc(searchTerm))
+            return (
+                <a key={site.id} href={url} target="_blank" rel="noreferrer"
+                    style={{ fontSize: '0.8em', marginRight: '0.4rem', whiteSpace: 'nowrap' }}>
+                    {site.name}
+                </a>
+            )
+        })
+    }
 
     const load = async () => {
         setError(null)
@@ -88,6 +114,11 @@ export default function RecentReleases() {
                                             target="_blank" rel="noreferrer">
                                             {b.title}
                                         </a>
+                                        {!b.owned && nzbSites.length > 0 && (
+                                            <div style={{ marginTop: '0.2rem' }}>
+                                                {nzbLinks(b.title, b.authorName)}
+                                            </div>
+                                        )}
                                     </td>
                                     <td>
                                         <Link to={`/authors/${b.authorId}`}>{b.authorName}</Link>

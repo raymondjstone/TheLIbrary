@@ -248,6 +248,17 @@ public sealed class IncomingProcessor
                         matchedEntry = await ResolveOrCreateAuthorAsync(matchedEntry, blacklistSet, ct);
                     }
 
+                    // Final guard: even after OL verification, reject any folder name
+                    // that doesn't look like a real author name (version strings like
+                    // "3.9", bracket-decorated names like "[美]Jeff Johnson", etc.).
+                    if (matchedEntry is not null && !TitleNormalizer.IsPlausibleAuthorName(matchedEntry.FolderName))
+                    {
+                        _log.LogWarning(
+                            "Rejecting implausible author folder name '{Name}' — routing to __unknown",
+                            matchedEntry.FolderName);
+                        matchedEntry = null;
+                    }
+
                     string destDir;
                     if (matchedEntry is null)
                     {
@@ -563,9 +574,17 @@ public sealed class IncomingProcessor
             .FirstOrDefaultAsync(a => a.OpenLibraryKey == entry.OpenLibraryKey, ct);
         if (existing is not null)
         {
+            // Prefer CalibreFolderName as the folder name — it may already be the
+            // correct on-disk name for an established author. But if it looks like
+            // garbage (decorated like "[美]Jeff Johnson", or purely numeric), fall
+            // back to the OL display name so we never mint a bad collection folder.
+            var calibreFolder = existing.CalibreFolderName;
+            var folderName = !string.IsNullOrWhiteSpace(calibreFolder) && TitleNormalizer.IsPlausibleAuthorName(calibreFolder)
+                ? calibreFolder
+                : existing.Name;
             return new AuthorIndexEntry(
                 DisplayName: existing.Name,
-                FolderName: string.IsNullOrWhiteSpace(existing.CalibreFolderName) ? existing.Name : existing.CalibreFolderName!,
+                FolderName: folderName,
                 IsTracked: true,
                 TrackedAuthorId: existing.Id,
                 OpenLibraryKey: existing.OpenLibraryKey);

@@ -9,6 +9,7 @@ export default function Layout() {
                 <nav>
                     <NavLink to="/authors">Authors</NavLink>
                     <NavLink to="/recent-releases">Recent Releases</NavLink>
+                    <NavLink to="/missing">Missing Works</NavLink>
                     <NavLink to="/sync">Sync</NavLink>
                     <NavLink to="/schedules">Schedules</NavLink>
                     <NavLink to="/settings">Settings</NavLink>
