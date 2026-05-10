@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 
 const NZB_EXAMPLES = [
-    { name: 'NZBGeek',   urlTemplate: 'https://nzbgeek.info/geekseek.php?browseincludewords={SearchTerm}&c=7020' },
-    { name: 'NZBs.in',   urlTemplate: 'https://nzbs.in/search?q={SearchTerm}&t=7000' },
-    { name: 'NZBPlanet', urlTemplate: 'https://nzbplanet.net/search/{SearchTerm}?c=7000' },
-    { name: 'NZBFinder', urlTemplate: 'https://nzbfinder.ws/search?q={SearchTerm}&t=7020' },
+    { name: 'NZBGeek',    urlTemplate: 'https://nzbgeek.info/geekseek.php?browseincludewords={SearchTerm}&c=7020' },
+    { name: 'NZBs.in',    urlTemplate: 'https://nzbs.in/search?q={SearchTerm}&t=7000' },
+    { name: 'NZBPlanet',  urlTemplate: 'https://nzbplanet.net/search/{SearchTerm}?c=7000' },
+    { name: 'NZBFinder',  urlTemplate: 'https://nzbfinder.ws/search?q={SearchTerm}&t=7020' },
+    { name: 'Z-Library',  urlTemplate: 'https://z-library.sk/s/{SearchTerm}' },
 ]
 
 export default function Settings() {

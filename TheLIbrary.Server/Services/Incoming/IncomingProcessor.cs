@@ -574,10 +574,9 @@ public sealed class IncomingProcessor
             .FirstOrDefaultAsync(a => a.OpenLibraryKey == entry.OpenLibraryKey, ct);
         if (existing is not null)
         {
-            // Prefer CalibreFolderName as the folder name — it may already be the
-            // correct on-disk name for an established author. But if it looks like
-            // garbage (decorated like "[美]Jeff Johnson", or purely numeric), fall
-            // back to the OL display name so we never mint a bad collection folder.
+            if (existing.Status == AuthorStatus.Excluded)
+                return null;
+
             var calibreFolder = existing.CalibreFolderName;
             var folderName = !string.IsNullOrWhiteSpace(calibreFolder) && TitleNormalizer.IsPlausibleAuthorName(calibreFolder)
                 ? calibreFolder

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.OpenLibrary;
 using TheLibrary.Server.Services.Scheduling;
 using TheLibrary.Server.Services.Sync;
@@ -854,6 +855,137 @@ public class AuthorsController : ControllerBase
 
         if (moveWarnings.Count > 0)
             return Ok(new { warnings = moveWarnings });
+
+        return NoContent();
+    }
+
+    public sealed record UnknownFolder(string AuthorFolder, int FileCount);
+
+    // Lists author-level folders that exist inside the __unknown quarantine
+    // bucket across all enabled library locations.
+    [HttpGet("~/api/unknown-folders")]
+    public async Task<IReadOnlyList<UnknownFolder>> ListUnknownFolders(CancellationToken ct)
+    {
+        var locations = await _db.LibraryLocations
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+
+        var result = new List<UnknownFolder>();
+        foreach (var root in locations)
+        {
+            var unknownRoot = Path.Combine(root, CalibreScanner.UnknownAuthorFolder);
+            if (!Directory.Exists(unknownRoot)) continue;
+            foreach (var dir in Directory.GetDirectories(unknownRoot))
+            {
+                var fileCount = Directory.GetFiles(dir, "*", SearchOption.AllDirectories).Length;
+                if (fileCount > 0)
+                    result.Add(new UnknownFolder(Path.GetFileName(dir), fileCount));
+            }
+        }
+
+        return result.OrderBy(r => r.AuthorFolder).ToList();
+    }
+
+    // Moves a single __unknown author folder back to the incoming bucket so it
+    // can be re-evaluated after the user adds the author to the watchlist.
+    [HttpDelete("~/api/unknown-folders")]
+    public async Task<IActionResult> ReturnUnknownFolder([FromQuery] string folder, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(folder))
+            return BadRequest(new { error = "folder is required" });
+
+        var incomingSetting = await _db.AppSettings
+            .FirstOrDefaultAsync(s => s.Key == AppSettingKeys.IncomingFolder, ct);
+        var incomingPath = incomingSetting?.Value?.Trim();
+        if (string.IsNullOrWhiteSpace(incomingPath))
+            return BadRequest(new { error = "Incoming folder is not configured — set it in Settings first." });
+        if (!Directory.Exists(incomingPath))
+            return BadRequest(new { error = $"Incoming folder does not exist: {incomingPath}" });
+
+        var locations = await _db.LibraryLocations
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+
+        var warnings = new List<string>();
+        bool found = false;
+        foreach (var root in locations)
+        {
+            var src = Path.Combine(root, CalibreScanner.UnknownAuthorFolder, folder);
+            if (!Directory.Exists(src)) continue;
+            found = true;
+            var dest = UniqueDirectory(incomingPath, folder);
+            try
+            {
+                Directory.CreateDirectory(dest);
+                foreach (var entry in Directory.GetFileSystemEntries(src))
+                {
+                    var name = Path.GetFileName(entry);
+                    var target = Path.Combine(dest, name);
+                    if (Directory.Exists(entry)) Directory.Move(entry, target);
+                    else System.IO.File.Move(entry, target, overwrite: false);
+                }
+                if (!Directory.EnumerateFileSystemEntries(src).Any())
+                    Directory.Delete(src);
+            }
+            catch (IOException ex) { warnings.Add(ex.Message); }
+        }
+
+        if (!found)
+            return NotFound(new { error = $"Folder '{folder}' not found in __unknown" });
+
+        if (warnings.Count > 0)
+            return Ok(new { warnings });
+
+        return NoContent();
+    }
+
+    // Moves ALL __unknown author folders back to incoming in one shot.
+    [HttpDelete("~/api/unknown-folders/all")]
+    public async Task<IActionResult> ReturnAllUnknownFolders(CancellationToken ct)
+    {
+        var incomingSetting = await _db.AppSettings
+            .FirstOrDefaultAsync(s => s.Key == AppSettingKeys.IncomingFolder, ct);
+        var incomingPath = incomingSetting?.Value?.Trim();
+        if (string.IsNullOrWhiteSpace(incomingPath))
+            return BadRequest(new { error = "Incoming folder is not configured — set it in Settings first." });
+        if (!Directory.Exists(incomingPath))
+            return BadRequest(new { error = $"Incoming folder does not exist: {incomingPath}" });
+
+        var locations = await _db.LibraryLocations
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+
+        var warnings = new List<string>();
+        foreach (var root in locations)
+        {
+            var unknownRoot = Path.Combine(root, CalibreScanner.UnknownAuthorFolder);
+            if (!Directory.Exists(unknownRoot)) continue;
+            foreach (var dir in Directory.GetDirectories(unknownRoot))
+            {
+                var folderName = Path.GetFileName(dir);
+                var dest = UniqueDirectory(incomingPath, folderName);
+                try
+                {
+                    Directory.CreateDirectory(dest);
+                    foreach (var entry in Directory.GetFileSystemEntries(dir))
+                    {
+                        var name = Path.GetFileName(entry);
+                        var target = Path.Combine(dest, name);
+                        if (Directory.Exists(entry)) Directory.Move(entry, target);
+                        else System.IO.File.Move(entry, target, overwrite: false);
+                    }
+                    if (!Directory.EnumerateFileSystemEntries(dir).Any())
+                        Directory.Delete(dir);
+                }
+                catch (IOException ex) { warnings.Add($"{folderName}: {ex.Message}"); }
+            }
+        }
+
+        if (warnings.Count > 0)
+            return Ok(new { warnings });
 
         return NoContent();
     }

@@ -123,9 +123,11 @@ public sealed class SyncService
         });
     }
 
-    // Ensures a DB Author row exists for every new Calibre folder.
-    // Existing folders are detected in O(1) via a pre-built index; only
-    // genuinely new folders reach the OL-catalog probe. Blacklist wins.
+    // Reconciles Calibre folders against the tracked-author watchlist.
+    // Only folders whose Author row has Priority>0 or Status=Active stay in the
+    // main collection — everything else is relocated to __unknown. New folders
+    // with no existing Author row are also sent to __unknown; authors must be
+    // added explicitly via the "Add author" dialog, not auto-discovered from disk.
     private async Task ReconcileAuthorFoldersAsync(
         LibraryDbContext db, IReadOnlyList<CalibreBookEntry> entries, CancellationToken ct)
     {
@@ -141,109 +143,84 @@ public sealed class SyncService
 
         var dbAuthors = await db.Authors.ToListAsync(ct);
 
-        // Pre-build index keyed by every normalized name/folder so each lookup
-        // is O(1) instead of an O(N) linear scan through all authors.
         var authorByKey = new Dictionary<string, Author>(StringComparer.Ordinal);
-        var authorByOlKey = new Dictionary<string, Author>(StringComparer.OrdinalIgnoreCase);
         foreach (var a in dbAuthors)
-        {
             foreach (var k in AuthorKeys(a)) authorByKey.TryAdd(k, a);
-            if (!string.IsNullOrEmpty(a.OpenLibraryKey)) authorByOlKey.TryAdd(a.OpenLibraryKey, a);
-        }
 
-        int newCount = 0;
+        static bool IsTracked(Author a) => a.Status != AuthorStatus.Excluded;
+
+        var movedFolders = new List<string>();
+
         foreach (var group in folderGroups)
         {
             ct.ThrowIfCancellationRequested();
             var folder = group.Key;
             var folderKey = TitleNormalizer.NormalizeAuthor(folder);
+            var locationPath = group.First().LocationPath;
 
-            if (blacklistedNormalized.Contains(folderKey)) continue;
-            if (!TitleNormalizer.IsPlausibleAuthorName(folder)) continue;
+            if (blacklistedNormalized.Contains(folderKey))
+            {
+                if (MoveToUnknown(locationPath, folder)) movedFolders.Add(folder);
+                continue;
+            }
 
-            // O(1): already known — just back-fill CalibreFolderName if blank.
             if (authorByKey.TryGetValue(folderKey, out var existing))
             {
-                if (string.IsNullOrEmpty(existing.CalibreFolderName))
-                    existing.CalibreFolderName = folder;
-                continue;
-            }
-
-            // New folder — probe the local OL catalog before creating a row.
-            string? olKey = null;
-            string authorName = folder;
-            foreach (var probe in AuthorMatcher.AuthorKeyVariants(folder))
-            {
-                var hit = await db.OpenLibraryAuthors
-                    .AsNoTracking()
-                    .Where(a => a.NormalizedName == probe)
-                    .OrderBy(a => a.Id)
-                    .Select(a => new { a.Name, a.OlKey })
-                    .FirstOrDefaultAsync(ct);
-                if (hit is null) continue;
-
-                var hitKey = TitleNormalizer.NormalizeAuthor(hit.Name);
-                if (blacklistedNormalized.Contains(hitKey)) continue;
-
-                olKey = hit.OlKey;
-                authorName = hit.Name;
-                break;
-            }
-
-            // No OL match — relocate the entire author folder to __unknown so the
-            // files are accessible for reprocessing but don't pollute the main collection.
-            if (olKey is null)
-            {
-                var authorDir = Path.Combine(group.First().LocationPath, folder);
-                if (Directory.Exists(authorDir))
+                if (IsTracked(existing))
                 {
-                    var unknownRoot = Path.Combine(group.First().LocationPath, CalibreScanner.UnknownAuthorFolder);
-                    var dest = Path.Combine(unknownRoot, folder);
-                    if (!Directory.Exists(dest))
-                    {
-                        try
-                        {
-                            Directory.CreateDirectory(unknownRoot);
-                            Directory.Move(authorDir, dest);
-                            _log.LogInformation("Relocated unverified author folder '{Folder}' to __unknown", folder);
-                        }
-                        catch (Exception ex)
-                        {
-                            _log.LogWarning(ex, "Could not relocate '{Folder}' to __unknown — will retry next sync", folder);
-                        }
-                    }
+                    if (string.IsNullOrEmpty(existing.CalibreFolderName))
+                        existing.CalibreFolderName = folder;
+                    continue;
                 }
+
+                // Author exists but is not on the watchlist (Priority=0, not Active).
+                // Move their folder to __unknown; keep the Author row so the user
+                // can still find and star it later.
+                if (MoveToUnknown(locationPath, folder)) movedFolders.Add(folder);
                 continue;
             }
 
-            // Another folder this run may have already claimed the same OL key.
-            if (authorByOlKey.TryGetValue(olKey, out var canonical))
-            {
-                if (string.IsNullOrEmpty(canonical.CalibreFolderName))
-                    canonical.CalibreFolderName = folder;
-                continue;
-            }
-
-            var newAuthor = new Author
-            {
-                Name = authorName,
-                CalibreFolderName = folder,
-                OpenLibraryKey = olKey,
-                Status = AuthorStatus.Pending
-            };
-            db.Authors.Add(newAuthor);
-            newCount++;
-
-            // Keep the index current so later folders in this run can find the
-            // newly added author without waiting for SaveChangesAsync.
-            foreach (var k in AuthorKeys(newAuthor)) authorByKey.TryAdd(k, newAuthor);
-            if (olKey is not null) authorByOlKey.TryAdd(olKey, newAuthor);
+            // No Author row — move to __unknown. Authors must be added explicitly.
+            if (MoveToUnknown(locationPath, folder)) movedFolders.Add(folder);
         }
 
-        if (newCount > 0)
+        // Purge LocalBookFile rows for every relocated folder. Those paths are no
+        // longer scannable (CalibreScanner ignores __unknown), so the rows are
+        // immediately stale and would linger as garbage in the unclaimed view.
+        if (movedFolders.Count > 0)
         {
-            _log.LogInformation("Registering {Count} new author folder(s)", newCount);
-            await db.SaveChangesAsync(ct);
+            var affected = await db.LocalBookFiles
+                .Where(f => movedFolders.Contains(f.AuthorFolder))
+                .ExecuteDeleteAsync(ct);
+            if (affected > 0)
+                _log.LogInformation(
+                    "Removed {Lbf} LocalBookFile row(s) for {N} folder(s) relocated to __unknown",
+                    affected, movedFolders.Count);
+        }
+
+        await db.SaveChangesAsync(ct);
+    }
+
+    private bool MoveToUnknown(string locationPath, string folderName)
+    {
+        var src = Path.Combine(locationPath, folderName);
+        if (!Directory.Exists(src)) return true;
+
+        var unknownRoot = Path.Combine(locationPath, CalibreScanner.UnknownAuthorFolder);
+        var dest = Path.Combine(unknownRoot, folderName);
+        if (Directory.Exists(dest)) return true;
+
+        try
+        {
+            Directory.CreateDirectory(unknownRoot);
+            Directory.Move(src, dest);
+            _log.LogInformation("Moved '{Folder}' → __unknown", folderName);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Could not move '{Folder}' to __unknown — will retry next sync", folderName);
+            return false;
         }
     }
 
@@ -347,7 +324,7 @@ public sealed class SyncService
         MutateState(s => s.Message = "Recording orphan entries");
 
         var trackedFolderKeys = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var a in authors)
+        foreach (var a in authors.Where(a => a.Status != AuthorStatus.Excluded))
             foreach (var k in AuthorKeys(a))
                 trackedFolderKeys.Add(k);
 
