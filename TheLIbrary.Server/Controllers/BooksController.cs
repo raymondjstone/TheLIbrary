@@ -80,13 +80,21 @@ public class BooksController : ControllerBase
     // sorted by year descending then title. Excludes books whose normalized title
     // matches an earlier work by the same author so only genuinely new titles appear.
     [HttpGet("recent-releases")]
-    public async Task<IReadOnlyList<RecentReleaseRow>> RecentReleases(CancellationToken ct)
+    public Task<IReadOnlyList<RecentReleaseRow>> RecentReleases(CancellationToken ct)
+        => RecentReleasesQuery(starredOnly: true, ct);
+
+    // Same as recent-releases but includes all tracked authors, not just starred ones.
+    [HttpGet("recent-releases/all")]
+    public Task<IReadOnlyList<RecentReleaseRow>> RecentReleasesAll(CancellationToken ct)
+        => RecentReleasesQuery(starredOnly: false, ct);
+
+    private async Task<IReadOnlyList<RecentReleaseRow>> RecentReleasesQuery(bool starredOnly, CancellationToken ct)
     {
         var cutoffYear = DateTime.UtcNow.Year - 5;
 
         return await _db.Books
             .AsNoTracking()
-            .Where(b => b.Author.Priority >= 1
+            .Where(b => (!starredOnly || b.Author.Priority >= 1)
                      && b.FirstPublishYear != null
                      && b.FirstPublishYear >= cutoffYear
                      && (b.NormalizedTitle == null

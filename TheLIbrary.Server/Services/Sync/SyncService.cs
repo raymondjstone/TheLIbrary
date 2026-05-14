@@ -283,6 +283,13 @@ public sealed class SyncService
             if (!deduped.ContainsKey(Canon(ex.FullPath)))
                 changedFolderKeys.Add(TitleNormalizer.NormalizeAuthor(ex.AuthorFolder));
         }
+        // Files with a missing AuthorId in a tracked folder need re-matching even
+        // when their on-disk size/date are unchanged (previously wiped by orphan pass).
+        foreach (var ex in existingList)
+        {
+            if (ex.AuthorId == null)
+                changedFolderKeys.Add(TitleNormalizer.NormalizeAuthor(ex.AuthorFolder));
+        }
 
         // Load ALL books in one query — eliminates the per-author N+1 round trip.
         var booksByAuthorId = (await db.Books.AsNoTracking().ToListAsync(ct))
@@ -303,6 +310,12 @@ public sealed class SyncService
             var hasChange = AuthorKeys(author).Any(k => changedFolderKeys.Contains(k));
             if (!hasChange)
             {
+                // Mark this author's files as processed so the orphan pass below
+                // does not overwrite their AuthorId with null.
+                foreach (var k in AuthorKeys(author))
+                    if (entriesByFolderKey.TryGetValue(k, out var skipList))
+                        foreach (var e in skipList)
+                            processed.Add(Canon(e.FullPath));
                 skipped++;
                 MutateState(s => s.AuthorsProcessed++);
                 continue;

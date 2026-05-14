@@ -17,14 +17,10 @@ const savePrefs = (prefs) => {
 // Module-level cache: navigating to a detail page and back shows the list
 // immediately while a background refresh runs in the mount effect.
 let cachedAuthors = null
-let cachedUnclaimed = []
-let cachedUnknownFolders = []
 
 export default function Authors() {
     const initialPrefs = loadPrefs()
     const [authors, setAuthors] = useState(cachedAuthors)
-    const [unclaimed, setUnclaimed] = useState(cachedUnclaimed)
-    const [unknownFolders, setUnknownFolders] = useState(cachedUnknownFolders)
     const [statusFilter, setStatusFilter] = useState(initialPrefs.statusFilter ?? '')
     const [minPriority, setMinPriority] = useState(initialPrefs.minPriority ?? 0)
     const [sort, setSort] = useState(initialPrefs.sort ?? 'name')
@@ -33,10 +29,6 @@ export default function Authors() {
     const [page, setPage] = useState(1)
     const [dialog, setDialog] = useState(null)
     const [busyId, setBusyId] = useState(null)
-    const [busyUnclaimed, setBusyUnclaimed] = useState(null)
-    const [busyAllUnclaimed, setBusyAllUnclaimed] = useState(false)
-    const [busyUnknownFolder, setBusyUnknownFolder] = useState(null)
-    const [busyAllUnknown, setBusyAllUnknown] = useState(false)
     const [error, setError] = useState(null)
 
     useEffect(() => {
@@ -46,38 +38,18 @@ export default function Authors() {
 
     const load = async () => {
         setError(null)
-        const fail = async (r) => {
-            const body = await r.text().catch(() => '')
-            return `${r.status} ${r.statusText || ''} ${body}`.trim()
-        }
-        const fetchJson = async (url) => {
-            const r = await fetch(url)
-            if (!r.ok) throw new Error(await fail(r))
-            return r.json()
-        }
-        const [aRes, uRes, unkRes] = await Promise.allSettled([
-            fetchJson('/api/authors'),
-            fetchJson('/api/unclaimed'),
-            fetchJson('/api/unknown-folders'),
-        ])
-        if (aRes.status === 'fulfilled') {
-            cachedAuthors = aRes.value
-            setAuthors(aRes.value)
-        } else {
+        try {
+            const r = await fetch('/api/authors')
+            if (!r.ok) {
+                const body = await r.text().catch(() => '')
+                throw new Error(`${r.status} ${r.statusText || ''} ${body}`.trim())
+            }
+            const data = await r.json()
+            cachedAuthors = data
+            setAuthors(data)
+        } catch (e) {
             if (!cachedAuthors) setAuthors([])
-            setError(`/api/authors: ${aRes.reason?.message || aRes.reason}`)
-        }
-        if (uRes.status === 'fulfilled') {
-            cachedUnclaimed = uRes.value
-            setUnclaimed(uRes.value)
-        } else {
-            setError(prev => prev ?? `/api/unclaimed: ${uRes.reason?.message || uRes.reason}`)
-        }
-        if (unkRes.status === 'fulfilled') {
-            cachedUnknownFolders = unkRes.value
-            setUnknownFolders(unkRes.value)
-        } else {
-            setError(prev => prev ?? `/api/unknown-folders: ${unkRes.reason?.message || unkRes.reason}`)
+            setError(`/api/authors: ${e.message || e}`)
         }
     }
 
@@ -97,74 +69,6 @@ export default function Authors() {
             load()
         } catch (e) { setError(String(e.message || e)) }
         finally { setBusyId(null) }
-    }
-
-    const discardUnclaimed = async (folder) => {
-        setBusyUnclaimed(folder)
-        setError(null)
-        try {
-            const r = await fetch(`/api/unclaimed?folder=${encodeURIComponent(folder)}`, { method: 'DELETE' })
-            if (!r.ok) {
-                const body = await r.json().catch(() => ({}))
-                throw new Error(body.error || r.statusText)
-            }
-            const body = r.status === 204 ? null : await r.json().catch(() => null)
-            if (body?.warnings?.length)
-                setError(`Returned, but some files could not be moved:\n${body.warnings.join('\n')}`)
-            load()
-        } catch (e) { setError(String(e.message || e)) }
-        finally { setBusyUnclaimed(null) }
-    }
-
-    const discardAllUnclaimed = async () => {
-        setBusyAllUnclaimed(true)
-        setError(null)
-        try {
-            const r = await fetch('/api/unclaimed/all', { method: 'DELETE' })
-            if (!r.ok) {
-                const body = await r.json().catch(() => ({}))
-                throw new Error(body.error || r.statusText)
-            }
-            const body = r.status === 204 ? null : await r.json().catch(() => null)
-            if (body?.warnings?.length)
-                setError(`Returned, but some files could not be moved:\n${body.warnings.join('\n')}`)
-            load()
-        } catch (e) { setError(String(e.message || e)) }
-        finally { setBusyAllUnclaimed(false) }
-    }
-
-    const returnUnknownFolder = async (folder) => {
-        setBusyUnknownFolder(folder)
-        setError(null)
-        try {
-            const r = await fetch(`/api/unknown-folders?folder=${encodeURIComponent(folder)}`, { method: 'DELETE' })
-            if (!r.ok) {
-                const body = await r.json().catch(() => ({}))
-                throw new Error(body.error || r.statusText)
-            }
-            const body = r.status === 204 ? null : await r.json().catch(() => null)
-            if (body?.warnings?.length)
-                setError(`Returned, but some files could not be moved:\n${body.warnings.join('\n')}`)
-            load()
-        } catch (e) { setError(String(e.message || e)) }
-        finally { setBusyUnknownFolder(null) }
-    }
-
-    const returnAllUnknownFolders = async () => {
-        setBusyAllUnknown(true)
-        setError(null)
-        try {
-            const r = await fetch('/api/unknown-folders/all', { method: 'DELETE' })
-            if (!r.ok) {
-                const body = await r.json().catch(() => ({}))
-                throw new Error(body.error || r.statusText)
-            }
-            const body = r.status === 204 ? null : await r.json().catch(() => null)
-            if (body?.warnings?.length)
-                setError(`Returned, but some files could not be moved:\n${body.warnings.join('\n')}`)
-            load()
-        } catch (e) { setError(String(e.message || e)) }
-        finally { setBusyAllUnknown(false) }
     }
 
     const setPriority = async (author, value) => {
@@ -245,73 +149,6 @@ export default function Authors() {
         <section>
             {error ? <p className="error">{error}</p> : null}
 
-            {unclaimed.length > 0 && (
-                <div className="callout">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <strong>{unclaimed.length} Calibre folder(s) not yet tracked.</strong>
-                        <button
-                            className="btn-ghost btn-danger"
-                            disabled={busyAllUnclaimed}
-                            onClick={discardAllUnclaimed}
-                        >
-                            {busyAllUnclaimed ? 'Moving…' : '↩ Return all to Incoming'}
-                        </button>
-                    </div>
-                    <ul className="unclaimed-list">
-                        {unclaimed.map(u => (
-                            <li key={u.authorFolder}>
-                                <code>{u.authorFolder}</code> <span className="subtle">({u.fileCount} item{u.fileCount === 1 ? '' : 's'})</span>
-                                <button className="btn-ghost" onClick={() => setDialog({ initialQuery: u.authorFolder })}>
-                                    Find on OpenLibrary &amp; add
-                                </button>
-                                <button
-                                    className="btn-ghost btn-danger"
-                                    disabled={busyUnclaimed === u.authorFolder}
-                                    onClick={() => discardUnclaimed(u.authorFolder)}
-                                >
-                                    {busyUnclaimed === u.authorFolder ? 'Moving…' : '↩ Return to Incoming'}
-                                </button>
-                            </li>
-                        ))}
-                    </ul>
-                </div>
-            )}
-
-            {unknownFolders.length > 0 && (
-                <div className="callout">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <strong>{unknownFolders.length} folder(s) in __unknown (not yet tracked).</strong>
-                        <button
-                            className="btn-ghost btn-danger"
-                            disabled={busyAllUnknown}
-                            onClick={returnAllUnknownFolders}
-                        >
-                            {busyAllUnknown ? 'Moving…' : '↩ Return all to Incoming'}
-                        </button>
-                    </div>
-                    <p className="subtle" style={{ margin: '0.25rem 0 0.5rem' }}>
-                        To recover files: add the author below, star them (★ &gt; 0), then click <strong>Reprocess __unknown</strong> on the Sync page.
-                    </p>
-                    <ul className="unclaimed-list">
-                        {unknownFolders.map(u => (
-                            <li key={u.authorFolder}>
-                                <code>{u.authorFolder}</code> <span className="subtle">({u.fileCount} item{u.fileCount === 1 ? '' : 's'})</span>
-                                <button className="btn-ghost" onClick={() => setDialog({ initialQuery: u.authorFolder, fromUnknown: true })}>
-                                    Find on OpenLibrary &amp; add
-                                </button>
-                                <button
-                                    className="btn-ghost btn-danger"
-                                    disabled={busyUnknownFolder === u.authorFolder}
-                                    onClick={() => returnUnknownFolder(u.authorFolder)}
-                                >
-                                    {busyUnknownFolder === u.authorFolder ? 'Moving…' : '↩ Return to Incoming'}
-                                </button>
-                            </li>
-                        ))}
-                    </ul>
-                </div>
-            )}
-
             <div className="toolbar">
                 <button onClick={() => setDialog({ initialQuery: '' })}>+ Add author</button>
                 <input placeholder="Filter by name…" value={query} onChange={e => setQuery(e.target.value)} />
@@ -387,13 +224,7 @@ export default function Authors() {
                 <AddAuthorDialog
                     initialQuery={dialog.initialQuery}
                     onClose={() => setDialog(null)}
-                    onAdded={async (added) => {
-                        setDialog(null)
-                        if (dialog.fromUnknown) {
-                            await fetch('/api/incoming/reprocess-unknown', { method: 'POST' })
-                        }
-                        load()
-                    }} />
+                    onAdded={() => { setDialog(null); load() }} />
             )}
         </section>
     )
