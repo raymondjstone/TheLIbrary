@@ -292,28 +292,51 @@ export default function AuthorDetail() {
 
     const visibleBooks = ownedOnly ? data.books.filter(b => b.owned) : data.books
     const ownedCount = data.books.filter(b => b.owned).length
+    const knownSeries = [...new Set(data.books.map(b => b.series).filter(Boolean))].sort()
 
-    // Group books by series first, then by normalized title within each group.
-    // Books without a series are in a "null" group rendered without a header.
     const seriesGroups = (() => {
-        const seriesMap = new Map() // series name (or null) → books
+        const dedupe = books => {
+            const m = new Map()
+            for (const b of books) {
+                const k = b.normalizedTitle || `\0${b.id}`
+                if (!m.has(k)) m.set(k, [])
+                m.get(k).push(b)
+            }
+            return Array.from(m.values()).map(g => ({ primary: g[0], editions: g.slice(1) }))
+        }
+
+        const seriesMap = new Map()
         for (const book of visibleBooks) {
             const key = book.series || null
             if (!seriesMap.has(key)) seriesMap.set(key, [])
             seriesMap.get(key).push(book)
         }
+
         return Array.from(seriesMap.entries()).map(([series, books]) => {
-            // Within a series group, still deduplicate by normalized title.
-            const titleMap = new Map()
-            for (const b of books) {
-                const k = b.normalizedTitle || `\0${b.id}`
-                if (!titleMap.has(k)) titleMap.set(k, [])
-                titleMap.get(k).push(b)
+            const withPos = books.filter(b => b.seriesPosition != null)
+            const withoutPos = books.filter(b => b.seriesPosition == null)
+
+            // Group non-null positions into clusters, sorted numerically.
+            const posMap = new Map()
+            for (const b of withPos) {
+                if (!posMap.has(b.seriesPosition)) posMap.set(b.seriesPosition, [])
+                posMap.get(b.seriesPosition).push(b)
             }
-            const groups = Array.from(titleMap.values()).map(g => ({ primary: g[0], editions: g.slice(1) }))
-            return { series, groups }
+            const sortedPos = [...posMap.keys()].sort(
+                (a, b) => (parseFloat(a) || 0) - (parseFloat(b) || 0))
+            const positionClusters = sortedPos.map(pos => ({
+                position: pos,
+                titleGroups: dedupe(posMap.get(pos))
+            }))
+
+            // Null-position books: deduplicate by title but do NOT cluster across titles.
+            const nullGroups = dedupe(withoutPos)
+
+            return { series, positionClusters, nullGroups }
         })
     })()
+
+    const hasNamedSeries = seriesGroups.some(g => g.series !== null)
 
     const readStatusIcon = (status) => {
         if (status === 'Read') return '✓'
@@ -357,17 +380,18 @@ export default function AuthorDetail() {
             {sendError && <p className="error">Send failed: {sendError}</p>}
             {sendNotice && <p className="subtle">{sendNotice}</p>}
 
-            {seriesGroups.map(({ series, groups }) => (
+            {seriesGroups.map(({ series, positionClusters, nullGroups }) => (
                 <div key={series ?? '__noseries'}>
-                    {series && (
+                    {(series || hasNamedSeries) && (
                         <h3 style={{ margin: '1.5rem 0 0.5rem', fontWeight: 600, fontSize: '1rem', color: 'var(--subtle)' }}>
-                            Series: {series}
+                            {series ? `Series: ${series}` : 'No Series'}
                         </h3>
                     )}
             <table className="grid">
                 <thead>
                     <tr>
                         <th style={{ width: '1%' }}></th>
+                        {series && <th style={{ width: '3rem', textAlign: 'center' }}>#</th>}
                         <th>Title</th>
                         <th>Year</th>
                         <th>Owned</th>
@@ -377,7 +401,8 @@ export default function AuthorDetail() {
                     </tr>
                 </thead>
                 <tbody>
-                    {groups.map(({ primary: b, editions }) => (
+                    {positionClusters.flatMap(({ position, titleGroups }) =>
+                        titleGroups.map(({ primary: b, editions }, clusterIdx) => (
                         <React.Fragment key={b.id}>
                             <tr className={b.owned ? '' : 'missing'}>
                                 <td>
@@ -385,17 +410,23 @@ export default function AuthorDetail() {
                                         ? <img alt="" loading="lazy" src={`https://covers.openlibrary.org/b/id/${b.coverId}-S.jpg`} />
                                         : null}
                                 </td>
+                                {series && <td style={{ textAlign: 'center', fontWeight: 600, fontSize: '0.85rem', color: 'var(--subtle)', whiteSpace: 'nowrap' }}>
+                                    {clusterIdx === 0 ? `#${position}` : <span style={{ opacity: 0.35 }}>#{position}</span>}
+                                </td>}
                                 <td>
                                     <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{b.title}</a>
-                                    {b.seriesPosition && <span className="subtle" style={{ marginLeft: '0.4rem' }}>#{b.seriesPosition}</span>}
                                     {editingSeriesId === b.id ? (
                                         <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
                                             <input
                                                 type="text"
+                                                list={`series-list-${b.id}`}
                                                 placeholder="Series name"
                                                 value={seriesEdit.name}
                                                 onChange={e => setSeriesEdit(p => ({ ...p, name: e.target.value }))}
                                                 style={{ flex: '1 1 160px', padding: '0.2rem 0.4rem', fontSize: '0.85rem', border: '1px solid var(--border)', borderRadius: '4px' }} />
+                                            <datalist id={`series-list-${b.id}`}>
+                                                {knownSeries.map(s => <option key={s} value={s} />)}
+                                            </datalist>
                                             <input
                                                 type="text"
                                                 placeholder="#"
@@ -512,6 +543,7 @@ export default function AuthorDetail() {
                             {editions.map(ed => (
                                 <tr key={ed.id} className={ed.owned ? 'edition' : 'edition missing'}>
                                     <td></td>
+                                    {series && <td></td>}
                                     <td style={{ paddingLeft: '2rem' }}>
                                         <span className="subtle" style={{ marginRight: '0.3rem' }}>↳</span>
                                         <a href={`https://openlibrary.org/works/${ed.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{ed.title}</a>
@@ -586,6 +618,117 @@ export default function AuthorDetail() {
                                                 : null}
                                         </label>
                                     </td>
+                                </tr>
+                            ))}
+                        </React.Fragment>
+                    ))
+                    )}
+                    {nullGroups.map(({ primary: b, editions }) => (
+                        <React.Fragment key={b.id}>
+                            <tr className={b.owned ? '' : 'missing'}>
+                                <td>
+                                    {b.coverId
+                                        ? <img alt="" loading="lazy" src={`https://covers.openlibrary.org/b/id/${b.coverId}-S.jpg`} />
+                                        : null}
+                                </td>
+                                {series && <td></td>}
+                                <td>
+                                    <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{b.title}</a>
+                                    {editingSeriesId === b.id ? (
+                                        <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                                            <input type="text" list={`series-list-${b.id}`} placeholder="Series name"
+                                                value={seriesEdit.name} onChange={e => setSeriesEdit(p => ({ ...p, name: e.target.value }))}
+                                                style={{ flex: '1 1 160px', padding: '0.2rem 0.4rem', fontSize: '0.85rem', border: '1px solid var(--border)', borderRadius: '4px' }} />
+                                            <datalist id={`series-list-${b.id}`}>{knownSeries.map(s => <option key={s} value={s} />)}</datalist>
+                                            <input type="text" placeholder="#" value={seriesEdit.position}
+                                                onChange={e => setSeriesEdit(p => ({ ...p, position: e.target.value }))}
+                                                style={{ width: '4rem', padding: '0.2rem 0.4rem', fontSize: '0.85rem', border: '1px solid var(--border)', borderRadius: '4px' }} />
+                                            <button onClick={() => saveSeries(b)} style={{ padding: '0.2rem 0.5rem', fontSize: '0.8rem' }}>Save</button>
+                                            <button className="btn-ghost" onClick={() => setEditingSeriesId(null)} style={{ padding: '0.2rem 0.4rem', fontSize: '0.8rem' }}>Cancel</button>
+                                        </div>
+                                    ) : (
+                                        <button className="btn-ghost" onClick={() => startEditSeries(b)} title="Edit series / position"
+                                            style={{ marginLeft: '0.3rem', fontSize: '0.75rem', padding: '0 0.3rem', opacity: 0.5 }}>✎</button>
+                                    )}
+                                    {b.subjects && (
+                                        <div style={{ marginTop: '0.2rem', display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+                                            {b.subjects.split(';').slice(0, 4).map(g => (
+                                                <span key={g} style={{ fontSize: '0.7rem', padding: '0.05rem 0.4rem', background: 'var(--surface2, #e5e7eb)', borderRadius: '999px', color: 'var(--subtle)' }}>{g.trim()}</span>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {!b.owned && nzbSites.length > 0 && <div style={{ marginTop: '0.2rem' }}>{nzbLinks(b.title)}</div>}
+                                    {b.hasLocalFiles ? <div className="subtle">
+                                        {b.files.map(f => {
+                                            const formats = f.formats ?? []
+                                            const sendable = canSend(formats)
+                                            const convert = needsConvert(formats)
+                                            const label = sendBusyIds.has(f.id) ? (convert ? 'Converting…' : 'Sending…') : (convert ? 'Convert & send' : 'Send to reMarkable')
+                                            return (
+                                                <div key={f.id}>
+                                                    {formats.length > 0 ? formats.map(ext => <span key={ext} className="filetype-tag" style={{ marginRight: '0.25rem' }}>{ext}</span>) : <span className="filetype-tag" title="No ebook files found in this folder">empty</span>}
+                                                    {' '}{f.fullPath}{' '}
+                                                    {sendable ? (
+                                                        <button onClick={() => sendToRemarkable(f.id, formats)} disabled={!rmConnected || sendBusyIds.has(f.id)}
+                                                            title={!rmConnected ? 'Pair a reMarkable on the Settings page first' : convert ? 'Convert via Calibre, then send to reMarkable' : 'Send this file to reMarkable'}>{label}</button>
+                                                    ) : <span className="subtle">(no ebook files)</span>}
+                                                </div>
+                                            )
+                                        })}
+                                    </div> : null}
+                                </td>
+                                <td>{b.firstPublishYear ?? '—'}</td>
+                                <td>{b.owned ? (b.hasLocalFiles && b.manuallyOwned ? 'Yes (files + manual)' : b.hasLocalFiles ? 'Yes (files)' : 'Yes (manual)') : 'No'}</td>
+                                <td>
+                                    <span title={b.readStatus} style={{ marginRight: '0.3rem' }}>{readStatusIcon(b.readStatus)}</span>
+                                    <select value={b.readStatus ?? 'Unread'} onChange={e => setReadStatus(b, e.target.value)} style={{ fontSize: '0.8em' }}>
+                                        <option value="Unread">Unread</option>
+                                        <option value="Reading">Reading</option>
+                                        <option value="Read">Read</option>
+                                        <option value="Dnf">DNF</option>
+                                    </select>
+                                    {b.readAt && <span className="subtle" style={{ marginLeft: '0.3rem', fontSize: '0.75em' }}>{new Date(b.readAt).toLocaleDateString()}</span>}
+                                </td>
+                                <td>{!b.owned && <label title="Mark as wanted"><input type="checkbox" checked={b.wanted ?? false} onChange={() => toggleWanted(b)} />{' '}★</label>}</td>
+                                <td><label><input type="checkbox" checked={b.manuallyOwned} disabled={busyIds.has(b.id)} onChange={() => toggleManual(b)} />{b.hasLocalFiles ? <span className="subtle"> (scan already matched)</span> : null}</label></td>
+                            </tr>
+                            {editions.map(ed => (
+                                <tr key={ed.id} className={ed.owned ? 'edition' : 'edition missing'}>
+                                    <td></td>
+                                    {series && <td></td>}
+                                    <td style={{ paddingLeft: '2rem' }}>
+                                        <span className="subtle" style={{ marginRight: '0.3rem' }}>↳</span>
+                                        <a href={`https://openlibrary.org/works/${ed.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{ed.title}</a>
+                                        {!ed.owned && nzbSites.length > 0 && <div style={{ marginTop: '0.2rem' }}>{nzbLinks(ed.title)}</div>}
+                                        {ed.hasLocalFiles ? <div className="subtle">
+                                            {ed.files.map(f => {
+                                                const formats = f.formats ?? []
+                                                const sendable = canSend(formats)
+                                                const convert = needsConvert(formats)
+                                                const label = sendBusyIds.has(f.id) ? (convert ? 'Converting…' : 'Sending…') : (convert ? 'Convert & send' : 'Send to reMarkable')
+                                                return (
+                                                    <div key={f.id}>
+                                                        {formats.length > 0 ? formats.map(ext => <span key={ext} className="filetype-tag" style={{ marginRight: '0.25rem' }}>{ext}</span>) : <span className="filetype-tag" title="No ebook files found in this folder">empty</span>}
+                                                        {' '}{f.fullPath}{' '}
+                                                        {sendable ? (
+                                                            <button onClick={() => sendToRemarkable(f.id, formats)} disabled={!rmConnected || sendBusyIds.has(f.id)}
+                                                                title={!rmConnected ? 'Pair a reMarkable on the Settings page first' : convert ? 'Convert via Calibre, then send to reMarkable' : 'Send this file to reMarkable'}>{label}</button>
+                                                        ) : <span className="subtle">(no ebook files)</span>}
+                                                    </div>
+                                                )
+                                            })}
+                                        </div> : null}
+                                    </td>
+                                    <td>{ed.firstPublishYear ?? '—'}</td>
+                                    <td>{ed.owned ? (ed.hasLocalFiles && ed.manuallyOwned ? 'Yes (files + manual)' : ed.hasLocalFiles ? 'Yes (files)' : 'Yes (manual)') : 'No'}</td>
+                                    <td><select value={ed.readStatus ?? 'Unread'} onChange={e => setReadStatus(ed, e.target.value)} style={{ fontSize: '0.8em' }}>
+                                        <option value="Unread">Unread</option>
+                                        <option value="Reading">Reading</option>
+                                        <option value="Read">Read</option>
+                                        <option value="Dnf">DNF</option>
+                                    </select></td>
+                                    <td></td>
+                                    <td><label><input type="checkbox" checked={ed.manuallyOwned} disabled={busyIds.has(ed.id)} onChange={() => toggleManual(ed)} />{ed.hasLocalFiles ? <span className="subtle"> (scan already matched)</span> : null}</label></td>
                                 </tr>
                             ))}
                         </React.Fragment>

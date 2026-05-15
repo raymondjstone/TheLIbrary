@@ -221,7 +221,7 @@ public class AuthorsController : ControllerBase
         // per-file folder on disk for formats outside the EF query.
         var rawBooks = await _db.Books.AsNoTracking()
             .Where(b => b.AuthorId == id)
-            .OrderBy(b => b.Series == null ? 0 : 1)
+            .OrderBy(b => b.Series == null ? 1 : 0)
             .ThenBy(b => b.Series)
             .ThenBy(b => b.SeriesPosition)
             .ThenBy(b => b.FirstPublishYear ?? int.MaxValue)

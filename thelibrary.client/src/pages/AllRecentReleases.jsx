@@ -113,6 +113,11 @@ export default function AllRecentReleases() {
                                             target="_blank" rel="noreferrer">
                                             {b.title}
                                         </a>
+                                        {b.series && (
+                                            <div style={{ marginTop: '0.1rem', fontSize: '0.8em', color: 'var(--subtle)' }}>
+                                                {b.series}{b.seriesPosition ? ` #${b.seriesPosition}` : ''}
+                                            </div>
+                                        )}
                                         {b.subjects && (
                                             <div style={{ marginTop: '0.2rem', display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
                                                 {b.subjects.split(';').slice(0, 4).map(g => (

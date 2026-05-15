@@ -139,8 +139,9 @@ public sealed class AuthorRefresher
                 if (existingByKey.TryGetValue(workKey, out var existing))
                 {
                     bool needsSubjects = existing.Subjects is null;
+                    bool needsSeriesName = existing.Series is null && seriesName is not null;
                     bool needsPosition = existing.SeriesPosition is null && seriesPos is not null;
-                    if (needsSubjects || needsPosition)
+                    if (needsSubjects || needsSeriesName || needsPosition)
                     {
                         await _db.Books
                             .Where(b => b.Id == existing.Id)
