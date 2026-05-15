@@ -13,6 +13,8 @@ import Sync from './pages/Sync.jsx'
 import Schedules from './pages/Schedules.jsx'
 import Settings from './pages/Settings.jsx'
 import Untracked from './pages/Untracked.jsx'
+import Stats from './pages/Stats.jsx'
+import Duplicates from './pages/Duplicates.jsx'
 
 createRoot(document.getElementById('root')).render(
     <StrictMode>
@@ -26,6 +28,8 @@ createRoot(document.getElementById('root')).render(
                     <Route path="all-releases" element={<AllRecentReleases />} />
                     <Route path="missing" element={<MissingWorks />} />
                     <Route path="starred" element={<StarredAuthors />} />
+                    <Route path="stats" element={<Stats />} />
+                    <Route path="duplicates" element={<Duplicates />} />
                     <Route path="sync" element={<Sync />} />
                     <Route path="schedules" element={<Schedules />} />
                     <Route path="settings" element={<Settings />} />

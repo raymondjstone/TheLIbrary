@@ -65,6 +65,7 @@ public static class Fb2MetadataReader
             string.IsNullOrWhiteSpace(title) ? null : title.Trim(),
             string.IsNullOrWhiteSpace(author) ? null : author,
             authorSort,
-            string.IsNullOrWhiteSpace(lang) ? null : lang.Trim());
+            string.IsNullOrWhiteSpace(lang) ? null : lang.Trim(),
+            null);
     }
 }

@@ -154,6 +154,7 @@ public class AuthorsController : ControllerBase
         string? ExclusionReason,
         int Priority,
         DateTime? LastSyncedAt,
+        string? Bio,
         IReadOnlyList<BookRow> Books,
         IReadOnlyList<UnmatchedRow> UnmatchedLocal);
 
@@ -167,6 +168,12 @@ public class AuthorsController : ControllerBase
         bool Owned,
         bool ManuallyOwned,
         bool HasLocalFiles,
+        string ReadStatus,
+        DateTime? ReadAt,
+        bool Wanted,
+        string? Subjects,
+        string? Series,
+        string? SeriesPosition,
         IReadOnlyList<LocalFileRow> Files);
 
     public sealed record LocalFileRow(int Id, string FullPath, IReadOnlyList<string> Formats);
@@ -214,11 +221,15 @@ public class AuthorsController : ControllerBase
         // per-file folder on disk for formats outside the EF query.
         var rawBooks = await _db.Books.AsNoTracking()
             .Where(b => b.AuthorId == id)
-            .OrderBy(b => b.FirstPublishYear ?? int.MaxValue).ThenBy(b => b.Title)
+            .OrderBy(b => b.Series == null ? 0 : 1)
+            .ThenBy(b => b.Series)
+            .ThenBy(b => b.SeriesPosition)
+            .ThenBy(b => b.FirstPublishYear ?? int.MaxValue)
+            .ThenBy(b => b.Title)
             .Select(b => new
             {
                 b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
-                b.ManuallyOwned,
+                b.ManuallyOwned, b.ReadStatus, b.ReadAt, b.Wanted, b.Subjects, b.Series, b.SeriesPosition,
                 Files = b.LocalFiles.Select(f => new { f.Id, f.FullPath }).ToList()
             })
             .ToListAsync(ct);
@@ -228,6 +239,12 @@ public class AuthorsController : ControllerBase
             b.ManuallyOwned || b.Files.Count > 0,
             b.ManuallyOwned,
             b.Files.Count > 0,
+            b.ReadStatus.ToString(),
+            b.ReadAt,
+            b.Wanted,
+            b.Subjects,
+            b.Series,
+            b.SeriesPosition,
             b.Files.Select(f => new LocalFileRow(f.Id, f.FullPath, FormatsInFolder(f.FullPath))).ToList()
         )).ToList();
 
@@ -252,6 +269,7 @@ public class AuthorsController : ControllerBase
         return new AuthorDetail(
             a.Id, a.Name, a.OpenLibraryKey, a.CalibreFolderName,
             a.Status.ToString(), a.ExclusionReason, a.Priority, a.LastSyncedAt,
+            a.Bio,
             books, unmatched);
     }
 

@@ -111,7 +111,7 @@ public static class MobiMetadataReader
                 authorSort = author.Contains(',') ? author : null;
             }
 
-            return new EpubMetadata(title, author, authorSort, language);
+            return new EpubMetadata(title, author, authorSort, language, null);
         }
         catch { return null; }
     }

@@ -22,6 +22,23 @@ from a drop folder and re-running matching against previously-unmatched files.
   FB2 / FBZ / `.fb2.zip`, PDF, LIT (magic validated; title/author via filename
   fallback), CBZ (ComicInfo.xml), DOCX / ODT (Dublin Core)
 
+## Pages
+
+| Page | Route | Purpose |
+|------|-------|---------|
+| Authors | `/authors` | Full watchlist with filter, sort, pagination, and A–Z jump index |
+| Author detail | `/authors/:id` | Books (grouped by series), bio, read status, NZB links, reMarkable send |
+| Recent Releases | `/recent-releases` | New works from starred authors (last 5 years) |
+| All Releases | `/all-releases` | New works from all tracked authors |
+| Missing Works | `/missing` | Unowned books from starred authors — bulk-own, wanted flag, genre filter, search |
+| Starred Authors | `/starred` | Authors with priority ≥ 1 |
+| Stats | `/stats` | KPI cards, books-read-by-year chart, top genres, per-author coverage |
+| Duplicates | `/duplicates` | Books matched to more than one local file folder |
+| Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket |
+| Sync | `/sync` | Live sync dashboard with phase tracking and progress |
+| Schedules | `/schedules` | Cron expressions and enabled/disabled flags for background jobs |
+| Settings | `/settings` | Library locations, incoming folder, ignored folders, blacklist, NZB sites, reMarkable pairing, Goodreads import |
+
 ## How it works
 
 **Authors are a curated watchlist, driven by OpenLibrary.** You search for an
@@ -29,25 +46,34 @@ author from the UI and add them — the sync then does the rest.
 
 1. **Fetch** English works for every tracked author via
    `/search.json?author_key=...&language=eng`. OpenLibrary returns one row per
-   *work*, so variants/editions are collapsed automatically.
-2. **Exclude** authors that have no English works, or whose works were all
+   *work*, so variants/editions are collapsed automatically. Each work's
+   `subject` tags (genre) and `series` name are stored alongside the title so
+   they're available without extra API calls.
+2. **Backfill genres** — on each subsequent sync, any existing book whose
+   `Subjects` column is `NULL` (never checked) is updated from the OL response.
+   An empty string `""` is written when OL has no subjects for that work, acting
+   as a sentinel so the book is not re-checked on future syncs.
+3. **Exclude** authors that have no English works, or whose works were all
    first published before 1970.
-3. **Scan** every enabled **library location** for Calibre-structured folders:
+4. **Fetch author bio** — on the first refresh after an OL key is resolved, the
+   author's bio is pulled from `/authors/{key}.json` and stored. Displayed on
+   the author detail page.
+5. **Scan** every enabled **library location** for Calibre-structured folders:
    `<Root>/<Author>/<Title (id)>/…`.
-4. **Match** each Calibre author folder to a tracked author by normalized name
+6. **Match** each Calibre author folder to a tracked author by normalized name
    (handles `Last, First`, diacritics, casing). Match each title folder to a
    work by normalized title — see [Title matching](#title-matching) for the
    multi-candidate strategy that handles `by Author`, trailing parens, etc.
-5. **Surface** Calibre folders with no matching tracked author as
+7. **Surface** Calibre folders with no matching tracked author as
    "unclaimed" — click one to kick off an OpenLibrary search pre-filled with
    that folder's name, so you can add the author in one click.
-6. **Stamp** `CalibreScannedAt` on each author as their file-matching pass
+8. **Stamp** `CalibreScannedAt` on each author as their file-matching pass
    completes. On the next run, authors are processed in ascending order of this
    timestamp (nulls first) so interrupted runs catch up stragglers before
    re-scanning recently-processed authors.
-7. **Prune** `LocalBookFile` rows not seen during the scan (covers deleted
+9. **Prune** `LocalBookFile` rows not seen during the scan (covers deleted
    files and disabled locations).
-8. A book is **owned** if any local file matched it *or* you manually marked it.
+10. A book is **owned** if any local file matched it *or* you manually marked it.
 
 The author detail page also lists unmatched local files (files in the author's
 folder that didn't line up with any tracked work). You can force-match one to
@@ -57,6 +83,36 @@ bucket for reprocessing.
 OpenLibrary asks for no more than ~1 request per second. A single shared
 `OpenLibraryRateLimiter` serializes all outbound calls with a 1.1s minimum gap,
 and the client retries on `429`/`5xx` honoring `Retry-After`.
+
+## Genres and subjects
+
+Genre tags are sourced from OpenLibrary's `subject` field (LCSH-style tags such
+as `"Science fiction"`, `"Mystery fiction"`, `"Historical fiction"`) and stored
+as a semicolon-delimited string on each `Book` row. They populate automatically
+during sync — no extra API calls are needed.
+
+Genre chips are displayed under each book title on the author detail page (up to
+4 tags). On the Missing Works page, a genre filter dropdown narrows the list to
+a single tag. The Stats page shows the top 20 genres across all owned books.
+
+`dc:subject` from EPUB files is also extracted during incoming processing and
+stored the same way.
+
+## Reading tracking
+
+Each book carries a `ReadStatus` (Unread / Reading / Read / DNF) and an optional
+`ReadAt` date. Status is editable via a dropdown on the author detail page.
+
+The Stats page shows a year-by-year bar chart of books marked Read.
+
+To bulk-import reading history, use **Goodreads import** on the Settings page
+(see [Goodreads import](#goodreads-import)).
+
+## Wanted flag
+
+Any unowned book can be starred as **Wanted** (☆ / ★ toggle on the Missing Works
+page and the author detail page). Wanted books sort to the top of Missing Works.
+Goodreads "to-read" shelf items are also set as wanted during import.
 
 ## Title matching
 
@@ -85,7 +141,7 @@ placeholders are resolved client-side per book:
 |---|---|
 | `{Title}` | URL-encoded book title |
 | `{Author}` | URL-encoded author name |
-| `{SearchTerm}` | URL-encoded `"Title Author"` combined |
+| `{SearchTerm}` | URL-encoded `"Author Title"` combined |
 
 Example template: `https://nzbgeek.info/geekseek.php?q={SearchTerm}`
 
@@ -98,6 +154,9 @@ Each author carries a **priority** field (0–5 integer, displayed as stars). Ze
 is a valid deliberate rating ("lowest priority"), not "unrated". Priority is
 visible and editable on the author list and detail pages and is available as a
 sort/filter dimension on the list.
+
+Starred authors (priority ≥ 1) bypass the English-only language filter so works
+in any language are retrieved.
 
 The **author blacklist** (`AuthorBlacklist` table) prevents a Calibre folder
 from ever being promoted to a tracked author. Blacklisted entries are matched
@@ -127,6 +186,42 @@ before they're slotted into the library.
 - **Folder-layout matching** — if a file's metadata is unreadable but any
   ancestor folder name matches a tracked author, the whole folder is treated
   as `<Author>/<Title>/<files>` so multi-format books stay together.
+
+## Goodreads import
+
+Export your library from Goodreads (**My Books → Import/Export → Export
+Library**) and upload the CSV on the **Settings** page.
+
+The importer matches rows by normalized title + author against your tracked
+works, then:
+
+- Sets **ReadStatus = Read** and **ReadAt** from the "Date Read" column for
+  rows on the `read` shelf.
+- Sets **ReadStatus = Reading** for rows on the `currently-reading` shelf.
+- Sets **Wanted = true** for rows on the `to-read` shelf where the book is not
+  yet owned.
+
+The response shows matched / already-read / unmatched counts, plus a
+collapsible list of the first 50 unmatched titles.
+
+## OPDS catalog
+
+The library exposes an
+[OPDS 1.2](https://specs.opds.io/opds-1.2) Atom feed for reading apps (KOReader,
+Moon+ Reader, Calibre's Browse by server, etc.).
+
+| Feed | URL |
+|------|-----|
+| Root navigation | `/opds/catalog.xml` |
+| All authors | `/opds/authors.xml` |
+| Author's works | `/opds/authors/{id}.xml` |
+| Missing works | `/opds/missing.xml` |
+| Recent releases | `/opds/recent.xml` |
+
+Each entry links to the corresponding OpenLibrary page and includes cover
+thumbnails from the OpenLibrary covers CDN. The feed is navigation-only — file
+downloads are not served because the files live on a local filesystem path, not
+a web-accessible URL.
 
 ## reMarkable sync
 
@@ -265,48 +360,133 @@ catalog, run **Seed authors from OpenLibrary dump** first — it downloads the
 ~2 GB author dump and populates the local author catalog so the Add-Author
 search is instant and offline.
 
+Genre tags and author bios are populated automatically on the first sync after
+upgrading. Books that already existed before the genre feature was added have
+their subjects backfilled on the next sync pass; books for which OL has no
+subjects are marked with an empty string so they are not re-checked on future
+syncs.
+
 ## API surface
 
-| Method | Path                                                      | Purpose                                              |
-|--------|-----------------------------------------------------------|------------------------------------------------------|
-| GET    | `/api/openlibrary/search-authors?q=...`                   | Proxied OpenLibrary author search                    |
-| GET    | `/api/authors`                                            | List tracked authors (optional `?status=`)           |
-| POST   | `/api/authors`                                            | Add an author to the watchlist from an OL key        |
-| GET    | `/api/authors/{id}`                                       | Author detail + books + unmatched local files        |
-| POST   | `/api/authors/{id}/refresh`                               | On-demand single-author OpenLibrary refresh          |
-| DELETE | `/api/authors/{id}`                                       | Remove an author (deletes their stored works)        |
-| POST   | `/api/authors/{id}/unmatched/{fileId}/match`              | Force-match an unmatched local file to a work        |
-| DELETE | `/api/authors/{id}/unmatched/{fileId}/match`              | Undo a match                                         |
-| POST   | `/api/authors/{id}/unmatched/{fileId}/return-to-incoming` | Move the file's folder back to the incoming bucket   |
-| GET    | `/api/unclaimed`                                          | Calibre folders with no matching tracked author      |
-| POST   | `/api/books/{id}/ownership`                               | Manually mark a book owned/not-owned                 |
-| GET    | `/api/locations`                                          | List library locations                               |
-| POST   | `/api/locations`                                          | Add a library location                               |
-| PUT    | `/api/locations/{id}`                                     | Update label / path / enabled / primary              |
-| DELETE | `/api/locations/{id}`                                     | Delete a library location                            |
-| GET    | `/api/settings/incoming`                                  | Read the configured incoming folder                  |
-| PUT    | `/api/settings/incoming`                                  | Update the incoming folder path                      |
-| GET    | `/api/ignored-folders`                                    | Folder names excluded from every scan                |
-| POST   | `/api/ignored-folders`                                    | Add an ignored folder                                |
-| DELETE | `/api/ignored-folders/{id}`                               | Remove an ignored folder                             |
-| POST   | `/api/incoming/process`                                   | Kick off incoming processing (single-flight)         |
-| POST   | `/api/incoming/reprocess-unknown`                         | Re-run matching against `__unknown`                  |
-| GET    | `/api/incoming/state`                                     | Poll current incoming run state                      |
-| POST   | `/api/sync/start`                                         | Kick off a full sync (single-flight)                 |
-| POST   | `/api/sync/seed-authors`                                  | Download and import the OpenLibrary author dump      |
-| POST   | `/api/sync/author-updates`                                | Apply OpenLibrary's daily author updates             |
-| POST   | `/api/sync/refresh-due-works`                             | Re-fetch works for authors with an overdue NextFetchAt |
-| GET    | `/api/sync/status`                                        | Poll the current sync phase and counters             |
-| GET    | `/api/nzb-sites`                                          | List NZB search sites ordered by Order then Name     |
-| POST   | `/api/nzb-sites`                                          | Add a new NZB site                                   |
-| PUT    | `/api/nzb-sites/{id}`                                     | Update an NZB site                                   |
-| DELETE | `/api/nzb-sites/{id}`                                     | Delete an NZB site                                   |
-| GET    | `/api/schedules`                                          | List scheduled jobs and their cron/enabled state     |
-| PUT    | `/api/schedules/{jobId}`                                  | Update a job's cron expression or enabled flag       |
-| GET    | `/api/remarkable/status`                                  | Is a reMarkable device paired?                       |
-| POST   | `/api/remarkable/connect`                                 | Exchange an 8-char one-time code for a device token  |
-| POST   | `/api/remarkable/disconnect`                              | Forget the stored reMarkable credentials             |
-| POST   | `/api/remarkable/send/{localFileId}`                      | Push a local file to reMarkable (converting via Calibre if needed) |
+### Authors
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET    | `/api/authors` | List tracked authors |
+| POST   | `/api/authors` | Add an author to the watchlist from an OL key |
+| GET    | `/api/authors/{id}` | Author detail + books (with genres, series, read status) + unmatched local files |
+| PUT    | `/api/authors/{id}/priority` | Set 0–5 star priority |
+| POST   | `/api/authors/{id}/refresh` | On-demand single-author OpenLibrary refresh |
+| DELETE | `/api/authors/{id}` | Remove an author (moves files back to incoming) |
+| GET    | `/api/authors/starred` | Authors with priority ≥ 1 |
+| POST   | `/api/authors/{id}/unmatched/{fileId}/match` | Force-match an unmatched local file to a work |
+| DELETE | `/api/authors/{id}/unmatched/{fileId}/match` | Undo a match |
+| POST   | `/api/authors/{id}/unmatched/{fileId}/return-to-incoming` | Move the file's folder back to incoming |
+
+### Books
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST   | `/api/books/{id}/ownership` | Manually mark a book owned/not-owned |
+| POST   | `/api/books/bulk-ownership` | Bulk mark a list of books owned/not-owned |
+| PUT    | `/api/books/{id}/read-status` | Set ReadStatus (Unread/Reading/Read/Dnf) and optional ReadAt date |
+| PUT    | `/api/books/{id}/wanted` | Toggle the Wanted flag |
+| GET    | `/api/books/missing` | Unowned books from starred authors (includes Wanted, Subjects, Series) |
+| GET    | `/api/books/recent-releases` | Works published in the last 5 years (starred authors) |
+| GET    | `/api/books/recent-releases/all` | Works published in the last 5 years (all authors) |
+| GET    | `/api/books/duplicates` | Books matched to more than one local file folder |
+| GET    | `/api/books/genres` | All distinct subject tags sorted by frequency |
+
+### Stats & import
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET    | `/api/stats` | Library KPIs, read-by-year, top genres, author coverage |
+| POST   | `/api/import/goodreads` | Import a Goodreads export CSV (multipart/form-data `file`) |
+
+### Unclaimed / unknown
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET    | `/api/unclaimed` | Calibre folders with no matching tracked author |
+| DELETE | `/api/unclaimed?folder=` | Move a folder back to incoming and blacklist the name |
+| DELETE | `/api/unclaimed/all` | Move all unclaimed folders back to incoming |
+| GET    | `/api/unknown-folders` | Author-level folders inside `__unknown` |
+| DELETE | `/api/unknown-folders?folder=` | Move one `__unknown` folder back to incoming |
+| DELETE | `/api/unknown-folders/all` | Move all `__unknown` folders back to incoming |
+
+### Locations, settings, and ignored folders
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET    | `/api/locations` | List library locations |
+| POST   | `/api/locations` | Add a library location |
+| PUT    | `/api/locations/{id}` | Update label / path / enabled / primary |
+| DELETE | `/api/locations/{id}` | Delete a library location |
+| GET    | `/api/settings/incoming` | Read the configured incoming folder |
+| PUT    | `/api/settings/incoming` | Update the incoming folder path |
+| GET    | `/api/ignored-folders` | Folder names excluded from every scan |
+| POST   | `/api/ignored-folders` | Add an ignored folder |
+| DELETE | `/api/ignored-folders/{id}` | Remove an ignored folder |
+
+### NZB sites
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET    | `/api/nzb-sites` | List NZB search sites |
+| POST   | `/api/nzb-sites` | Add a new NZB site |
+| PUT    | `/api/nzb-sites/{id}` | Update an NZB site |
+| DELETE | `/api/nzb-sites/{id}` | Delete an NZB site |
+
+### Sync
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST   | `/api/sync/start` | Kick off a full sync (single-flight) |
+| POST   | `/api/sync/seed-authors` | Download and import the OpenLibrary author dump |
+| POST   | `/api/sync/author-updates` | Apply OpenLibrary's daily author updates |
+| POST   | `/api/sync/refresh-due-works` | Re-fetch works for authors with an overdue NextFetchAt |
+| GET    | `/api/sync/status` | Poll current sync phase and counters |
+
+### Incoming
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST   | `/api/incoming/process` | Kick off incoming processing (single-flight) |
+| POST   | `/api/incoming/reprocess-unknown` | Re-run matching against `__unknown` |
+| GET    | `/api/incoming/state` | Poll current incoming run state |
+
+### Schedules
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET    | `/api/schedules` | List scheduled jobs and their cron/enabled state |
+| PUT    | `/api/schedules/{jobId}` | Update a job's cron expression or enabled flag |
+
+### reMarkable
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET    | `/api/remarkable/status` | Is a reMarkable device paired? |
+| POST   | `/api/remarkable/connect` | Exchange an 8-char one-time code for a device token |
+| POST   | `/api/remarkable/disconnect` | Forget the stored reMarkable credentials |
+| POST   | `/api/remarkable/send/{localFileId}` | Push a local file to reMarkable |
+
+### OpenLibrary proxy
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET    | `/api/openlibrary/search-authors?q=` | Proxied OpenLibrary author search |
+
+### OPDS catalog
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET    | `/opds/catalog.xml` | Root navigation feed |
+| GET    | `/opds/authors.xml` | All active authors |
+| GET    | `/opds/authors/{id}.xml` | One author's works |
+| GET    | `/opds/missing.xml` | Unowned books from starred authors (up to 200) |
+| GET    | `/opds/recent.xml` | Recent releases from starred authors (up to 200) |
 
 The Hangfire dashboard is served at `/hangfire` (no auth — intended for a
 trusted LAN).
@@ -314,12 +494,16 @@ trusted LAN).
 ## Data model
 
 - `Author` — OL key, name, Calibre folder name, status (Pending / Active /
-  Excluded / NotFound), exclusion reason, priority (0–5), last-synced timestamp,
-  next-fetch-due-at, `CalibreScannedAt` (for fair scan ordering).
-- `Book` — OL work key (unique), title, first-publish year, cover id,
-  `ManuallyOwned` flag + timestamp, FK to Author.
+  Excluded / NotFound), exclusion reason, priority (0–5), bio (from OL),
+  last-synced timestamp, next-fetch-due-at, `CalibreScannedAt` (for fair scan
+  ordering).
+- `Book` — OL work key (unique per author), title, first-publish year, cover id,
+  `ManuallyOwned` flag + timestamp, `Subjects` (semicolon-delimited OL subject
+  tags; `NULL` = never checked, `""` = checked/none found), `Series`,
+  `SeriesPosition`, `ReadStatus` (Unread/Reading/Read/Dnf), `ReadAt`, `Wanted`,
+  FK to Author.
 - `LocalBookFile` — path on disk, Calibre folder names, optional FKs to Author
-  and Book (null FK = unmatched), `LastSeenAt` (used for pruning).
+  and Book (null FK = unmatched).
 - `LibraryLocation` — a root directory to scan. Multiple allowed; exactly one
   is `IsPrimary`. Each has a label, enabled flag, and `LastScanAt`.
 - `AppSetting` — key/value store (incoming folder path, etc).

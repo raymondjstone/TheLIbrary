@@ -46,5 +46,7 @@ public class Author
     // the longest-waiting (null = never scanned) are processed first each run.
     public DateTime? CalibreScannedAt { get; set; }
 
+    public string? Bio { get; set; }
+
     public List<Book> Books { get; set; } = new();
 }

@@ -529,6 +529,70 @@ export default function Settings() {
                 ))}
             </p>
 
+            <GoodreadsImport />
+
         </section>
+    )
+}
+
+function GoodreadsImport() {
+    const [file, setFile] = useState(null)
+    const [busy, setBusy] = useState(false)
+    const [result, setResult] = useState(null)
+    const [error, setError] = useState(null)
+
+    const submit = async () => {
+        if (!file) return
+        setBusy(true)
+        setResult(null)
+        setError(null)
+        try {
+            const form = new FormData()
+            form.append('file', file)
+            const r = await fetch('/api/import/goodreads', { method: 'POST', body: form })
+            const body = await r.json()
+            if (!r.ok) throw new Error(body?.error ?? r.statusText)
+            setResult(body)
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    return (
+        <>
+            <h2 style={{ marginTop: '1.5rem' }}>Goodreads import</h2>
+            <p className="subtle">
+                Upload your Goodreads export CSV to import reading history.
+                Books you've marked as "read" will have their Read Status updated.
+                Books on your "to-read" shelf that you don't own will be marked as Wanted.
+            </p>
+            <p className="subtle">
+                Export your data from Goodreads: <em>My Books → Import/Export → Export Library</em>
+            </p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                <input type="file" accept=".csv" onChange={e => { setFile(e.target.files[0] ?? null); setResult(null) }} />
+                <button onClick={submit} disabled={!file || busy}>{busy ? 'Importing…' : 'Import'}</button>
+            </div>
+            {error && <p className="error" style={{ marginTop: '0.5rem' }}>{error}</p>}
+            {result && (
+                <div style={{ marginTop: '0.75rem' }}>
+                    <p>
+                        <strong>{result.matched}</strong> books matched and updated.{' '}
+                        <strong>{result.alreadyRead}</strong> already marked as read (skipped).{' '}
+                        <strong>{result.unmatched}</strong> not found in your library.
+                    </p>
+                    {result.unmatchedTitles?.length > 0 && (
+                        <details>
+                            <summary className="subtle" style={{ cursor: 'pointer' }}>Unmatched titles ({result.unmatchedTitles.length})</summary>
+                            <ul style={{ fontSize: '0.85rem', color: 'var(--subtle)' }}>
+                                {result.unmatchedTitles.map((t, i) => <li key={i}>{t}</li>)}
+                            </ul>
+                        </details>
+                    )}
+                </div>
+            )}
+        </>
     )
 }

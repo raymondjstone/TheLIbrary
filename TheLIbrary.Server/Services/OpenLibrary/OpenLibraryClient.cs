@@ -64,7 +64,7 @@ public sealed class OpenLibraryClient
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
         const int pageSize = 100;
-        const string fields = "key,title,first_publish_year,cover_i,language,author_key,author_name,edition_count";
+        const string fields = "key,title,first_publish_year,cover_i,language,author_key,author_name,edition_count,subject,series";
         var langFilter = string.IsNullOrEmpty(language) ? "" : $"&language={HttpUtility.UrlEncode(language)}";
 
         int page = 1;

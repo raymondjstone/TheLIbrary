@@ -222,24 +222,76 @@ export default function AuthorDetail() {
         }
     }
 
+    const setReadStatus = async (book, status) => {
+        try {
+            const r = await fetch(`/api/books/${book.id}/read-status`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status, readAt: status === 'Read' ? new Date().toISOString() : null })
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setData(prev => ({
+                ...prev,
+                books: prev.books.map(b => b.id === book.id ? { ...b, readStatus: body.readStatus, readAt: body.readAt } : b)
+            }))
+        } catch (e) {
+            alert(`Failed to update read status: ${e.message}`)
+        }
+    }
+
+    const toggleWanted = async (book) => {
+        const next = !book.wanted
+        try {
+            const r = await fetch(`/api/books/${book.id}/wanted`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ wanted: next })
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            setData(prev => ({
+                ...prev,
+                books: prev.books.map(b => b.id === book.id ? { ...b, wanted: next } : b)
+            }))
+        } catch (e) {
+            alert(`Failed to update wanted: ${e.message}`)
+        }
+    }
+
     if (data === null) return <p>Loading…</p>
     if (data.error) return <p className="error">Failed: {data.error}</p>
 
     const visibleBooks = ownedOnly ? data.books.filter(b => b.owned) : data.books
     const ownedCount = data.books.filter(b => b.owned).length
 
-    // Group books by normalized title (books are server-sorted year-asc).
-    // A null normalizedTitle is treated as unique — never merged with anything.
-    // Each group: { primary, editions[] } where primary is the earliest entry.
-    const bookGroups = (() => {
-        const map = new Map()
+    // Group books by series first, then by normalized title within each group.
+    // Books without a series are in a "null" group rendered without a header.
+    const seriesGroups = (() => {
+        const seriesMap = new Map() // series name (or null) → books
         for (const book of visibleBooks) {
-            const key = book.normalizedTitle || `\0${book.id}`
-            if (!map.has(key)) map.set(key, [])
-            map.get(key).push(book)
+            const key = book.series || null
+            if (!seriesMap.has(key)) seriesMap.set(key, [])
+            seriesMap.get(key).push(book)
         }
-        return Array.from(map.values()).map(g => ({ primary: g[0], editions: g.slice(1) }))
+        return Array.from(seriesMap.entries()).map(([series, books]) => {
+            // Within a series group, still deduplicate by normalized title.
+            const titleMap = new Map()
+            for (const b of books) {
+                const k = b.normalizedTitle || `\0${b.id}`
+                if (!titleMap.has(k)) titleMap.set(k, [])
+                titleMap.get(k).push(b)
+            }
+            const groups = Array.from(titleMap.values()).map(g => ({ primary: g[0], editions: g.slice(1) }))
+            return { series, groups }
+        })
     })()
+
+    const readStatusIcon = (status) => {
+        if (status === 'Read') return '✓'
+        if (status === 'Reading') return '📖'
+        if (status === 'Dnf') return '✗'
+        return ''
+    }
 
     return (
         <section>
@@ -259,6 +311,11 @@ export default function AuthorDetail() {
                 <span className={`pill pill-${data.status.toLowerCase()}`}>{data.status}</span>
                 {data.exclusionReason ? <> — {data.exclusionReason}</> : null}
             </p>
+            {data.bio && (
+                <p style={{ maxWidth: '70ch', color: 'var(--text)', lineHeight: 1.6, marginBottom: '1rem' }}>
+                    {data.bio}
+                </p>
+            )}
 
             <div className="toolbar">
                 <label><input type="checkbox" checked={ownedOnly} onChange={e => setOwnedOnly(e.target.checked)} /> Owned only</label>
@@ -271,6 +328,13 @@ export default function AuthorDetail() {
             {sendError && <p className="error">Send failed: {sendError}</p>}
             {sendNotice && <p className="subtle">{sendNotice}</p>}
 
+            {seriesGroups.map(({ series, groups }) => (
+                <div key={series ?? '__noseries'}>
+                    {series && (
+                        <h3 style={{ margin: '1.5rem 0 0.5rem', fontWeight: 600, fontSize: '1rem', color: 'var(--subtle)' }}>
+                            Series: {series}
+                        </h3>
+                    )}
             <table className="grid">
                 <thead>
                     <tr>
@@ -278,11 +342,13 @@ export default function AuthorDetail() {
                         <th>Title</th>
                         <th>Year</th>
                         <th>Owned</th>
+                        <th>Read</th>
+                        <th>Wanted</th>
                         <th>Manually owned</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {bookGroups.map(({ primary: b, editions }) => (
+                    {groups.map(({ primary: b, editions }) => (
                         <React.Fragment key={b.id}>
                             <tr className={b.owned ? '' : 'missing'}>
                                 <td>
@@ -292,6 +358,18 @@ export default function AuthorDetail() {
                                 </td>
                                 <td>
                                     <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{b.title}</a>
+                                    {b.seriesPosition && <span className="subtle" style={{ marginLeft: '0.4rem' }}>#{b.seriesPosition}</span>}
+                                    {b.subjects && (
+                                        <div style={{ marginTop: '0.2rem', display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+                                            {b.subjects.split(';').slice(0, 4).map(g => (
+                                                <span key={g} style={{
+                                                    fontSize: '0.7rem', padding: '0.05rem 0.4rem',
+                                                    background: 'var(--surface2, #e5e7eb)',
+                                                    borderRadius: '999px', color: 'var(--subtle)'
+                                                }}>{g.trim()}</span>
+                                            ))}
+                                        </div>
+                                    )}
                                     {!b.owned && nzbSites.length > 0 && (
                                         <div style={{ marginTop: '0.2rem' }}>
                                             {nzbLinks(b.title)}
@@ -341,6 +419,27 @@ export default function AuthorDetail() {
                                             ? 'Yes (files + manual)'
                                             : b.hasLocalFiles ? 'Yes (files)' : 'Yes (manual)')
                                         : 'No'}
+                                </td>
+                                <td>
+                                    <span title={b.readStatus} style={{ marginRight: '0.3rem' }}>{readStatusIcon(b.readStatus)}</span>
+                                    <select
+                                        value={b.readStatus ?? 'Unread'}
+                                        onChange={e => setReadStatus(b, e.target.value)}
+                                        style={{ fontSize: '0.8em' }}>
+                                        <option value="Unread">Unread</option>
+                                        <option value="Reading">Reading</option>
+                                        <option value="Read">Read</option>
+                                        <option value="Dnf">DNF</option>
+                                    </select>
+                                    {b.readAt && <span className="subtle" style={{ marginLeft: '0.3rem', fontSize: '0.75em' }}>{new Date(b.readAt).toLocaleDateString()}</span>}
+                                </td>
+                                <td>
+                                    {!b.owned && (
+                                        <label title="Mark as wanted">
+                                            <input type="checkbox" checked={b.wanted ?? false} onChange={() => toggleWanted(b)} />
+                                            {' '}★
+                                        </label>
+                                    )}
                                 </td>
                                 <td>
                                     <label>
@@ -412,6 +511,15 @@ export default function AuthorDetail() {
                                             : 'No'}
                                     </td>
                                     <td>
+                                        <select value={ed.readStatus ?? 'Unread'} onChange={e => setReadStatus(ed, e.target.value)} style={{ fontSize: '0.8em' }}>
+                                            <option value="Unread">Unread</option>
+                                            <option value="Reading">Reading</option>
+                                            <option value="Read">Read</option>
+                                            <option value="Dnf">DNF</option>
+                                        </select>
+                                    </td>
+                                    <td></td>
+                                    <td>
                                         <label>
                                             <input
                                                 type="checkbox"
@@ -429,6 +537,8 @@ export default function AuthorDetail() {
                     ))}
                 </tbody>
             </table>
+                </div>
+            ))}
 
             {data.unmatchedLocal.length > 0 && (
                 <>

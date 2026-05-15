@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace TheLibrary.Server.Services.OpenLibrary;
@@ -36,6 +37,8 @@ public sealed class WorkSearchDoc
     [JsonPropertyName("author_key")] public List<string>? AuthorKeys { get; set; }
     [JsonPropertyName("author_name")] public List<string>? AuthorNames { get; set; }
     [JsonPropertyName("edition_count")] public int? EditionCount { get; set; }
+    [JsonPropertyName("subject")] public List<string>? Subject { get; set; }
+    [JsonPropertyName("series")] public List<string>? Series { get; set; }
 }
 
 // Response from /authors/{key}.json — used to upsert the OpenLibraryAuthors catalog.
@@ -47,6 +50,8 @@ public sealed class AuthorDetailResponse
     [JsonPropertyName("alternate_names")] public List<string>? AlternateNames { get; set; }
     [JsonPropertyName("birth_date")] public string? BirthDate { get; set; }
     [JsonPropertyName("death_date")] public string? DeathDate { get; set; }
+    // OL stores bio as either a plain string or {"type":"/type/text","value":"..."}
+    [JsonPropertyName("bio")] public JsonElement? Bio { get; set; }
 }
 
 // One entry from /recentchanges/.../merge-authors.json.

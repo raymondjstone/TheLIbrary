@@ -3,7 +3,7 @@ using System.Xml.Linq;
 
 namespace TheLibrary.Server.Services.Calibre;
 
-public sealed record EpubMetadata(string? Title, string? Author, string? AuthorSort, string? Language);
+public sealed record EpubMetadata(string? Title, string? Author, string? AuthorSort, string? Language, string? Subject);
 
 // Reads Dublin Core metadata out of an .epub file. EPUB is a zip whose
 // META-INF/container.xml points at an OPF file containing
@@ -53,11 +53,19 @@ public static class EpubMetadataReader
             var creator = meta.Elements(Dc + "creator").FirstOrDefault();
             var authorSort = creator?.Attribute(Opf + "file-as")?.Value;
 
+            var subjects = meta.Elements(Dc + "subject")
+                .Select(e => Trim(e.Value))
+                .Where(s => s is not null)
+                .Select(s => s!)
+                .ToList();
+            var subject = subjects.Count > 0 ? string.Join(";", subjects) : null;
+
             return new EpubMetadata(
                 Trim(meta.Elements(Dc + "title").FirstOrDefault()?.Value),
                 Trim(creator?.Value),
                 Trim(authorSort),
-                Trim(meta.Elements(Dc + "language").FirstOrDefault()?.Value));
+                Trim(meta.Elements(Dc + "language").FirstOrDefault()?.Value),
+                subject);
         }
         catch
         {

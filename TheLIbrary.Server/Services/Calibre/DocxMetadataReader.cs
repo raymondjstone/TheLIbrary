@@ -37,7 +37,8 @@ public static class DocxMetadataReader
                 string.IsNullOrWhiteSpace(title) ? null : title,
                 string.IsNullOrWhiteSpace(author) ? null : author,
                 null,
-                string.IsNullOrWhiteSpace(lang) ? null : lang);
+                string.IsNullOrWhiteSpace(lang) ? null : lang,
+                null);
         }
         catch { return null; }
     }

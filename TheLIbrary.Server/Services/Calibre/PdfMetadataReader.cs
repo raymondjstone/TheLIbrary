@@ -26,7 +26,7 @@ public static class PdfMetadataReader
             if (title is null && author is null) return null;
 
             string? authorSort = author is not null && author.Contains(',') ? author : null;
-            return new EpubMetadata(title, author, authorSort, null);
+            return new EpubMetadata(title, author, authorSort, null, null);
         }
         catch (Exception ex)
         {

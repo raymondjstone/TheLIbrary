@@ -98,9 +98,15 @@ public sealed class AuthorRefresher
 
         onMessage?.Invoke($"Fetching works for {author.Name}");
 
-        var existingWorkKeys = await _db.Books.Where(b => b.AuthorId == author.Id)
-            .Select(b => b.OpenLibraryWorkKey).ToListAsync(ct);
-        var seen = new HashSet<string>(existingWorkKeys, StringComparer.OrdinalIgnoreCase);
+        // Load existing books as a dict so we can both deduplicate and
+        // backfill subjects/series for books that predate this feature.
+        var existingBooks = await _db.Books
+            .Where(b => b.AuthorId == author.Id)
+            .Select(b => new { b.Id, b.OpenLibraryWorkKey, b.Subjects, b.Series })
+            .ToListAsync(ct);
+        var existingByKey = existingBooks.ToDictionary(
+            b => b.OpenLibraryWorkKey, b => b, StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<string>(existingByKey.Keys, StringComparer.OrdinalIgnoreCase);
 
         // Starred authors (Priority >= 1) bypass the English-only filter so
         // works in any language are retrieved.
@@ -115,7 +121,26 @@ public sealed class AuthorRefresher
             if (string.IsNullOrWhiteSpace(doc.Key) || string.IsNullOrWhiteSpace(doc.Title)) continue;
 
             var workKey = doc.Key.Split('/').Last();
-            if (!seen.Add(workKey)) continue;
+
+            if (!seen.Add(workKey))
+            {
+                // Book already exists — backfill subjects/series only when we
+                // have never checked before (Subjects is null). An empty string
+                // means "checked, OL returned nothing" so we don't retry.
+                if (existingByKey.TryGetValue(workKey, out var existing)
+                    && existing.Subjects is null)
+                {
+                    var newSubjects = BuildSubjects(doc.Subject); // "" when OL has none
+                    var newSeries = string.IsNullOrWhiteSpace(doc.Series?.FirstOrDefault())
+                        ? existing.Series : doc.Series!.First().Trim();
+                    await _db.Books
+                        .Where(b => b.Id == existing.Id)
+                        .ExecuteUpdateAsync(s => s
+                            .SetProperty(b => b.Subjects, _ => newSubjects)
+                            .SetProperty(b => b.Series, _ => newSeries), ct);
+                }
+                continue;
+            }
 
             _db.Books.Add(new Book
             {
@@ -124,7 +149,9 @@ public sealed class AuthorRefresher
                 NormalizedTitle = TitleNormalizer.Normalize(doc.Title),
                 FirstPublishYear = doc.FirstPublishYear,
                 CoverId = doc.CoverId,
-                AuthorId = author.Id
+                AuthorId = author.Id,
+                Subjects = BuildSubjects(doc.Subject), // "" when OL has none
+                Series = string.IsNullOrWhiteSpace(doc.Series?.FirstOrDefault()) ? null : doc.Series!.First().Trim(),
             });
             fetched++;
             if (fetched % 50 == 0) await _db.SaveChangesAsync(ct);
@@ -161,6 +188,15 @@ public sealed class AuthorRefresher
         }
         author.LastSyncedAt = DateTime.UtcNow;
         author.NextFetchAt = author.LastSyncedAt.Value.Add(NextFetchInterval(years));
+
+        // Fetch and store author bio if we don't have one yet.
+        if (string.IsNullOrWhiteSpace(author.Bio))
+        {
+            var detail = await _ol.FetchAuthorAsync(author.OpenLibraryKey!, ct);
+            if (detail?.Bio is { } bio)
+                author.Bio = ExtractBio(bio);
+        }
+
         await _db.SaveChangesAsync(ct);
 
         return new AuthorRefreshOutcome(
@@ -187,5 +223,26 @@ public sealed class AuthorRefresher
         if (docs is null || docs.Count == 0) return null;
         var norm = TitleNormalizer.NormalizeAuthor(searchName);
         return docs.FirstOrDefault(d => TitleNormalizer.NormalizeAuthor(d.Name) == norm);
+    }
+
+    // OL subjects list → semicolon-delimited string, capped at 2000 chars.
+    // Returns "" (not null) when OL has no subjects so callers can distinguish
+    // "never checked" (null) from "checked, nothing found" ("").
+    private static string BuildSubjects(List<string>? subjects)
+    {
+        if (subjects is null || subjects.Count == 0) return "";
+        var joined = string.Join(";", subjects.Select(s => s.Trim()).Where(s => s.Length > 0));
+        return string.IsNullOrWhiteSpace(joined) ? "" : (joined.Length > 2000 ? joined[..2000] : joined);
+    }
+
+    // OL stores bio as either a plain string or {"type":"/type/text","value":"..."}.
+    private static string? ExtractBio(System.Text.Json.JsonElement bio)
+    {
+        if (bio.ValueKind == System.Text.Json.JsonValueKind.String)
+        { var s = bio.GetString(); return string.IsNullOrWhiteSpace(s) ? null : s; }
+        if (bio.ValueKind == System.Text.Json.JsonValueKind.Object
+            && bio.TryGetProperty("value", out var v))
+        { var s = v.GetString(); return string.IsNullOrWhiteSpace(s) ? null : s; }
+        return null;
     }
 }

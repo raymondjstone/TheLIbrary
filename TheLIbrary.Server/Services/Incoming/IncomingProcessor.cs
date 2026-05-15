@@ -373,7 +373,8 @@ public sealed class IncomingProcessor
         !string.IsNullOrWhiteSpace(a?.Title) ? a!.Title : b.Title,
         !string.IsNullOrWhiteSpace(a?.Author) ? a!.Author : b.Author,
         !string.IsNullOrWhiteSpace(a?.AuthorSort) ? a!.AuthorSort : b.AuthorSort,
-        !string.IsNullOrWhiteSpace(a?.Language) ? a!.Language : b.Language);
+        !string.IsNullOrWhiteSpace(a?.Language) ? a!.Language : b.Language,
+        a?.Subject ?? b.Subject);
 
     // Walks ancestors of folderPath upward (excluding sourceRoot and the
     // __unknown quarantine folder) and asks the OpenLibrary catalog about
@@ -629,9 +630,9 @@ public sealed class IncomingProcessor
         {
             var author = stem[..dash].Trim();
             var title = stem[(dash + 3)..].Trim();
-            return new EpubMetadata(title, author, null, m?.Language);
+            return new EpubMetadata(title, author, null, m?.Language, null);
         }
-        return new EpubMetadata(stem, null, null, m?.Language);
+        return new EpubMetadata(stem, null, null, m?.Language, null);
     }
 
     // Top-down breadth-first walk yielding one folder's direct-child files

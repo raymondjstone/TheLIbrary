@@ -32,7 +32,11 @@
       "Bash(dotnet publish *)",
       "Bash(xargs grep *)",
       "Bash(grep -n \"reprocess\\\\|ReprocessUnknown\\\\|ProcessIncoming\\\\|reprocess-unknown\" Controllers/SyncController.cs)",
-      "Bash(grep -rn \"reprocess\\\\|ReprocessUnknown\" Controllers/)"
+      "Bash(grep -rn \"reprocess\\\\|ReprocessUnknown\" Controllers/)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Code\\\\TheLibrary\" -Force)",
+      "Bash(Select-Object Name, Mode)",
+      "Bash(Select-String -Path \"C:\\\\Code\\\\TheLibrary\\\\thelibrary.client\\\\src\\\\pages\\\\Settings.jsx\" -Pattern \"return \\\\\\(\")",
+      "Bash(Select-Object -First 1 -ExpandProperty LineNumber)"
     ]
   }
 }

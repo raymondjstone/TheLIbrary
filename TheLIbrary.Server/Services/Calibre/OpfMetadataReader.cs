@@ -27,7 +27,8 @@ public static class OpfMetadataReader
                 Trim(meta.Elements(Dc + "title").FirstOrDefault()?.Value),
                 Trim(creator?.Value),
                 Trim(authorSort),
-                Trim(meta.Elements(Dc + "language").FirstOrDefault()?.Value));
+                Trim(meta.Elements(Dc + "language").FirstOrDefault()?.Value),
+                null);
         }
         catch { return null; }
     }

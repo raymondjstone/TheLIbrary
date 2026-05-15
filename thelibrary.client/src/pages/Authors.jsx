@@ -121,6 +121,21 @@ export default function Authors() {
         })
     }, [authors, query, statusFilter, minPriority, sort, dir])
 
+    // Build A-Z letter index from the currently-filtered set (when sorted by name).
+    const letterIndex = useMemo(() => {
+        if (sort !== 'name' || !filtered) return null
+        const letters = new Set(filtered.map(a => (a.name || '?')[0].toUpperCase()))
+        return Array.from(letters).sort()
+    }, [filtered, sort])
+
+    const jumpToLetter = (letter) => {
+        if (!filtered) return
+        const idx = filtered.findIndex(a => (a.name || '?')[0].toUpperCase() === letter)
+        if (idx < 0) return
+        const targetPage = Math.floor(idx / PAGE_SIZE) + 1
+        setPage(targetPage)
+    }
+
     const totalPages = filtered ? Math.max(1, Math.ceil(filtered.length / PAGE_SIZE)) : 1
     const safePage = Math.min(page, totalPages)
     const pageRows = filtered ? filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE) : []
@@ -166,6 +181,18 @@ export default function Authors() {
                 </label>
                 <span className="count">{filtered?.length ?? 0} author(s)</span>
             </div>
+
+            {letterIndex && letterIndex.length > 1 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.15rem', margin: '0.5rem 0' }}>
+                    {letterIndex.map(l => (
+                        <button key={l} className="btn-ghost"
+                            style={{ minWidth: '1.8rem', padding: '0.1rem 0.3rem', fontSize: '0.85rem' }}
+                            onClick={() => jumpToLetter(l)}>
+                            {l}
+                        </button>
+                    ))}
+                </div>
+            )}
 
             {authors === null
                 ? <p>Loading…</p>

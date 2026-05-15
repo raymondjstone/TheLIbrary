@@ -46,7 +46,8 @@ public static class CbzMetadataReader
                 string.IsNullOrWhiteSpace(effectiveTitle) ? null : effectiveTitle,
                 string.IsNullOrWhiteSpace(author) ? null : author,
                 null,
-                string.IsNullOrWhiteSpace(lang) ? null : lang);
+                string.IsNullOrWhiteSpace(lang) ? null : lang,
+                null);
         }
         catch { return null; }
     }
