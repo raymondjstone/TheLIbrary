@@ -25,9 +25,20 @@ public sealed class AuthorRefresher
     // Author is excluded if every work's first_publish_year is < this.
     public const int MinPublishYear = 1930;
 
-    // Matches "(Series Name, #1)" or "(Series Name, #1.5)" at the end of an OL title.
+    // Extracts a series position from OL title parentheticals. Handles:
+    //   (Series, #3)  (Series, Book 3)  (Series, Book #3)  (Series, 3)
+    //   (Series Book 3)  (Series #3)  (Book 3)  (Part 2)  (Vol. 4)
     private static readonly Regex SeriesPosRx = new(
-        @"\((?:[^,)]+,\s*)?#(\d+(?:\.\d+)?)\)",
+        @"\([^)]+?(?:,\s*|\s+)(?:book\s+|part\s+|vol(?:ume)?\s*\.?\s*)?#?(\d+(?:\.\d+)?)\s*\)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // Extracts both the series name and position from OL title parentheticals
+    // when OL's series field is absent. Two patterns:
+    //   Comma:  (Series Name, [Book/Part/Vol] [#]N)  — unambiguous split on comma
+    //   Space:  (Series Name Book/Part/Vol [#]N)     — requires explicit keyword
+    private static readonly Regex SeriesInfoRx = new(
+        @"\(([^),]+?),\s*(?:book\s+|part\s+|vol(?:ume)?\s*\.?\s*)?#?(\d+(?:\.\d+)?)\s*\)" +
+        @"|\(([^)]+?)\s+(?:book|part|vol(?:ume)?\.?)\s+#?(\d+(?:\.\d+)?)\s*\)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private readonly LibraryDbContext _db;
@@ -130,7 +141,15 @@ public sealed class AuthorRefresher
 
             var seriesName = string.IsNullOrWhiteSpace(doc.Series?.FirstOrDefault())
                 ? null : doc.Series!.First().Trim();
-            var seriesPos = seriesName is not null ? ParseSeriesPosition(doc.Title!) : null;
+            string? seriesPos;
+            if (seriesName is not null)
+            {
+                seriesPos = ParseSeriesPosition(doc.Title!);
+            }
+            else
+            {
+                (seriesName, seriesPos) = ParseSeriesInfoFromTitle(doc.Title!);
+            }
 
             if (!seen.Add(workKey))
             {
@@ -249,10 +268,22 @@ public sealed class AuthorRefresher
     }
 
     // Tries to parse a series position from an OL title like "Title (Series, #1)".
-    private static string? ParseSeriesPosition(string title)
+    internal static string? ParseSeriesPosition(string title)
     {
         var m = SeriesPosRx.Match(title);
         return m.Success ? m.Groups[1].Value : null;
+    }
+
+    // When OL's series field is absent, tries to extract both the series name
+    // and position from the title parenthetical, e.g. "Title (Series, Book 3)".
+    internal static (string? Name, string? Position) ParseSeriesInfoFromTitle(string title)
+    {
+        var m = SeriesInfoRx.Match(title);
+        if (!m.Success) return (null, null);
+        // Comma alternative → groups 1 & 2; space alternative → groups 3 & 4.
+        var name = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[3].Value;
+        var pos  = m.Groups[2].Success ? m.Groups[2].Value : m.Groups[4].Value;
+        return (name.Trim(), string.IsNullOrEmpty(pos) ? null : pos);
     }
 
     // OL stores bio as either a plain string or {"type":"/type/text","value":"..."}.
