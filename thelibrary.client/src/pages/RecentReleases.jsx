@@ -114,6 +114,17 @@ export default function RecentReleases() {
                                             target="_blank" rel="noreferrer">
                                             {b.title}
                                         </a>
+                                        {b.subjects && (
+                                            <div style={{ marginTop: '0.2rem', display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+                                                {b.subjects.split(';').slice(0, 4).map(g => (
+                                                    <span key={g} style={{
+                                                        fontSize: '0.7rem', padding: '0.05rem 0.4rem',
+                                                        background: 'var(--surface2, #e5e7eb)',
+                                                        borderRadius: '999px', color: 'var(--subtle)'
+                                                    }}>{g.trim()}</span>
+                                                ))}
+                                            </div>
+                                        )}
                                         {!b.owned && nzbSites.length > 0 && (
                                             <div style={{ marginTop: '0.2rem' }}>
                                                 {nzbLinks(b.title, b.authorName)}

@@ -182,7 +182,8 @@ public class BooksController : ControllerBase
         int AuthorPriority,
         bool Owned,
         string? ReadStatus,
-        string? Series);
+        string? Series,
+        string? Subjects);
 
     // Books from starred authors (Priority >= 1) published in the last 5 years,
     // sorted by year descending then title. Excludes books whose normalized title
@@ -200,32 +201,34 @@ public class BooksController : ControllerBase
     {
         var cutoffYear = DateTime.UtcNow.Year - 5;
 
-        return await _db.Books
+        // Fetch all recent books with a simple range scan — no correlated subquery.
+        // Deduplication (same title, same author → keep earliest) is done in memory.
+        var rows = await _db.Books
             .AsNoTracking()
             .Where(b => (!starredOnly || b.Author.Priority >= 1)
                      && b.FirstPublishYear != null
-                     && b.FirstPublishYear >= cutoffYear
-                     && (b.NormalizedTitle == null
-                         || !_db.Books.Any(b2 =>
-                                b2.AuthorId == b.AuthorId
-                             && b2.NormalizedTitle == b.NormalizedTitle
-                             && b2.Id != b.Id
-                             && b2.FirstPublishYear != null
-                             && b2.FirstPublishYear < b.FirstPublishYear)))
-            .OrderByDescending(b => b.FirstPublishYear)
-            .ThenBy(b => b.Title)
-            .Select(b => new RecentReleaseRow(
-                b.Id,
-                b.Title,
-                b.FirstPublishYear!.Value,
-                b.CoverId,
-                b.OpenLibraryWorkKey,
-                b.AuthorId,
-                b.Author.Name,
-                b.Author.Priority,
-                b.ManuallyOwned || b.LocalFiles.Any(),
-                b.ReadStatus.ToString(),
-                b.Series))
+                     && b.FirstPublishYear >= cutoffYear)
+            .Select(b => new
+            {
+                b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId,
+                b.OpenLibraryWorkKey, b.AuthorId, b.Subjects, b.Series,
+                AuthorName = b.Author.Name, AuthorPriority = b.Author.Priority,
+                Owned = b.ManuallyOwned || b.LocalFiles.Any(),
+                ReadStatusStr = b.ReadStatus.ToString(),
+            })
             .ToListAsync(ct);
+
+        return rows
+            .GroupBy(r => r.NormalizedTitle is null
+                ? $"\0{r.Id}"
+                : $"{r.AuthorId}\0{r.NormalizedTitle}")
+            .Select(g => g.MinBy(r => r.FirstPublishYear)!)
+            .OrderByDescending(r => r.FirstPublishYear)
+            .ThenBy(r => r.Title)
+            .Select(r => new RecentReleaseRow(
+                r.Id, r.Title, r.FirstPublishYear!.Value, r.CoverId,
+                r.OpenLibraryWorkKey, r.AuthorId, r.AuthorName, r.AuthorPriority,
+                r.Owned, r.ReadStatusStr, r.Series, r.Subjects))
+            .ToList();
     }
 }
