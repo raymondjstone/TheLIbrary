@@ -15,6 +15,7 @@ import Settings from './pages/Settings.jsx'
 import Untracked from './pages/Untracked.jsx'
 import Stats from './pages/Stats.jsx'
 import Duplicates from './pages/Duplicates.jsx'
+import Series from './pages/Series.jsx'
 
 createRoot(document.getElementById('root')).render(
     <StrictMode>
@@ -30,6 +31,7 @@ createRoot(document.getElementById('root')).render(
                     <Route path="starred" element={<StarredAuthors />} />
                     <Route path="stats" element={<Stats />} />
                     <Route path="duplicates" element={<Duplicates />} />
+                    <Route path="series" element={<Series />} />
                     <Route path="sync" element={<Sync />} />
                     <Route path="schedules" element={<Schedules />} />
                     <Route path="settings" element={<Settings />} />

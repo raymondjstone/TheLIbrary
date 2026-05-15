@@ -19,6 +19,8 @@ export default function AuthorDetail() {
     const [sendError, setSendError] = useState(null)
     const [sendNotice, setSendNotice] = useState(null)
     const [nzbSites, setNzbSites] = useState([])
+    const [editingSeriesId, setEditingSeriesId] = useState(null)
+    const [seriesEdit, setSeriesEdit] = useState({ name: '', position: '' })
 
     useEffect(() => {
         fetch('/api/nzb-sites')
@@ -240,6 +242,33 @@ export default function AuthorDetail() {
         }
     }
 
+    const startEditSeries = (book) => {
+        setSeriesEdit({ name: book.series ?? '', position: book.seriesPosition ?? '' })
+        setEditingSeriesId(book.id)
+    }
+
+    const saveSeries = async (book) => {
+        try {
+            const r = await fetch(`/api/books/${book.id}/series`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ seriesName: seriesEdit.name || null, position: seriesEdit.position || null })
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setData(prev => ({
+                ...prev,
+                books: prev.books.map(b => b.id === book.id
+                    ? { ...b, series: body.series, seriesPosition: body.seriesPosition }
+                    : b)
+            }))
+        } catch (e) {
+            alert(`Failed to save series: ${e.message}`)
+        } finally {
+            setEditingSeriesId(null)
+        }
+    }
+
     const toggleWanted = async (book) => {
         const next = !book.wanted
         try {
@@ -359,6 +388,32 @@ export default function AuthorDetail() {
                                 <td>
                                     <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{b.title}</a>
                                     {b.seriesPosition && <span className="subtle" style={{ marginLeft: '0.4rem' }}>#{b.seriesPosition}</span>}
+                                    {editingSeriesId === b.id ? (
+                                        <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                                            <input
+                                                type="text"
+                                                placeholder="Series name"
+                                                value={seriesEdit.name}
+                                                onChange={e => setSeriesEdit(p => ({ ...p, name: e.target.value }))}
+                                                style={{ flex: '1 1 160px', padding: '0.2rem 0.4rem', fontSize: '0.85rem', border: '1px solid var(--border)', borderRadius: '4px' }} />
+                                            <input
+                                                type="text"
+                                                placeholder="#"
+                                                value={seriesEdit.position}
+                                                onChange={e => setSeriesEdit(p => ({ ...p, position: e.target.value }))}
+                                                style={{ width: '4rem', padding: '0.2rem 0.4rem', fontSize: '0.85rem', border: '1px solid var(--border)', borderRadius: '4px' }} />
+                                            <button onClick={() => saveSeries(b)} style={{ padding: '0.2rem 0.5rem', fontSize: '0.8rem' }}>Save</button>
+                                            <button className="btn-ghost" onClick={() => setEditingSeriesId(null)} style={{ padding: '0.2rem 0.4rem', fontSize: '0.8rem' }}>Cancel</button>
+                                        </div>
+                                    ) : (
+                                        <button
+                                            className="btn-ghost"
+                                            onClick={() => startEditSeries(b)}
+                                            title="Edit series / position"
+                                            style={{ marginLeft: '0.3rem', fontSize: '0.75rem', padding: '0 0.3rem', opacity: 0.5 }}>
+                                            ✎
+                                        </button>
+                                    )}
                                     {b.subjects && (
                                         <div style={{ marginTop: '0.2rem', display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
                                             {b.subjects.split(';').slice(0, 4).map(g => (

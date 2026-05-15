@@ -70,6 +70,73 @@ public class BooksController : ControllerBase
         return Ok(new { book.Id, book.Wanted });
     }
 
+    public sealed record SeriesRequest(string? SeriesName, string? Position);
+
+    [HttpPut("{id:int}/series")]
+    public async Task<IActionResult> SetSeries(int id, [FromBody] SeriesRequest body, CancellationToken ct)
+    {
+        var book = await _db.Books.FirstOrDefaultAsync(b => b.Id == id, ct);
+        if (book is null) return NotFound();
+        book.Series = string.IsNullOrWhiteSpace(body.SeriesName) ? null : body.SeriesName.Trim();
+        book.SeriesPosition = string.IsNullOrWhiteSpace(body.Position) ? null : body.Position.Trim();
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { book.Id, book.Series, book.SeriesPosition });
+    }
+
+    public sealed record SeriesEntry(
+        string Name,
+        int BookCount,
+        int OwnedCount,
+        IReadOnlyList<SeriesBookRow> Books);
+
+    public sealed record SeriesBookRow(
+        int Id,
+        string Title,
+        string? SeriesPosition,
+        int? FirstPublishYear,
+        int? CoverId,
+        string OpenLibraryWorkKey,
+        int AuthorId,
+        string AuthorName,
+        bool Owned,
+        string ReadStatus);
+
+    [HttpGet("series")]
+    public async Task<IReadOnlyList<SeriesEntry>> AllSeries(CancellationToken ct)
+    {
+        var rows = await _db.Books.AsNoTracking()
+            .Where(b => b.Series != null && b.Series != "")
+            .Select(b => new
+            {
+                b.Id, b.Title, b.Series, b.SeriesPosition, b.FirstPublishYear, b.CoverId,
+                b.OpenLibraryWorkKey, b.AuthorId, AuthorName = b.Author.Name,
+                Owned = b.ManuallyOwned || b.LocalFiles.Any(),
+                ReadStatusStr = b.ReadStatus.ToString(),
+            })
+            .ToListAsync(ct);
+
+        return rows
+            .GroupBy(r => r.Series!, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(g =>
+            {
+                var books = g
+                    .OrderBy(b => TryParsePos(b.SeriesPosition))
+                    .ThenBy(b => b.FirstPublishYear ?? int.MaxValue)
+                    .ThenBy(b => b.Title, StringComparer.OrdinalIgnoreCase)
+                    .Select(b => new SeriesBookRow(
+                        b.Id, b.Title, b.SeriesPosition, b.FirstPublishYear, b.CoverId,
+                        b.OpenLibraryWorkKey, b.AuthorId, b.AuthorName, b.Owned, b.ReadStatusStr))
+                    .ToList();
+                return new SeriesEntry(g.Key, books.Count, books.Count(b => b.Owned), books);
+            })
+            .ToList();
+    }
+
+    private static double TryParsePos(string? pos)
+        => double.TryParse(pos, System.Globalization.NumberStyles.Any,
+               System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : double.MaxValue;
+
     public sealed record DuplicateGroup(
         int BookId,
         string Title,

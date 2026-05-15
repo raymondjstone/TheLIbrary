@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
@@ -23,6 +24,11 @@ public sealed class AuthorRefresher
 {
     // Author is excluded if every work's first_publish_year is < this.
     public const int MinPublishYear = 1930;
+
+    // Matches "(Series Name, #1)" or "(Series Name, #1.5)" at the end of an OL title.
+    private static readonly Regex SeriesPosRx = new(
+        @"\((?:[^,)]+,\s*)?#(\d+(?:\.\d+)?)\)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private readonly LibraryDbContext _db;
     private readonly OpenLibraryClient _ol;
@@ -102,7 +108,7 @@ public sealed class AuthorRefresher
         // backfill subjects/series for books that predate this feature.
         var existingBooks = await _db.Books
             .Where(b => b.AuthorId == author.Id)
-            .Select(b => new { b.Id, b.OpenLibraryWorkKey, b.Subjects, b.Series })
+            .Select(b => new { b.Id, b.OpenLibraryWorkKey, b.Subjects, b.Series, b.SeriesPosition })
             .ToListAsync(ct);
         var existingByKey = existingBooks.ToDictionary(
             b => b.OpenLibraryWorkKey, b => b, StringComparer.OrdinalIgnoreCase);
@@ -122,22 +128,27 @@ public sealed class AuthorRefresher
 
             var workKey = doc.Key.Split('/').Last();
 
+            var seriesName = string.IsNullOrWhiteSpace(doc.Series?.FirstOrDefault())
+                ? null : doc.Series!.First().Trim();
+            var seriesPos = seriesName is not null ? ParseSeriesPosition(doc.Title!) : null;
+
             if (!seen.Add(workKey))
             {
-                // Book already exists — backfill subjects/series only when we
-                // have never checked before (Subjects is null). An empty string
-                // means "checked, OL returned nothing" so we don't retry.
-                if (existingByKey.TryGetValue(workKey, out var existing)
-                    && existing.Subjects is null)
+                // Book already exists — backfill subjects/series/position when not yet set.
+                // Subjects null = never checked; "" = checked, OL had nothing (don't retry).
+                if (existingByKey.TryGetValue(workKey, out var existing))
                 {
-                    var newSubjects = BuildSubjects(doc.Subject); // "" when OL has none
-                    var newSeries = string.IsNullOrWhiteSpace(doc.Series?.FirstOrDefault())
-                        ? existing.Series : doc.Series!.First().Trim();
-                    await _db.Books
-                        .Where(b => b.Id == existing.Id)
-                        .ExecuteUpdateAsync(s => s
-                            .SetProperty(b => b.Subjects, _ => newSubjects)
-                            .SetProperty(b => b.Series, _ => newSeries), ct);
+                    bool needsSubjects = existing.Subjects is null;
+                    bool needsPosition = existing.SeriesPosition is null && seriesPos is not null;
+                    if (needsSubjects || needsPosition)
+                    {
+                        await _db.Books
+                            .Where(b => b.Id == existing.Id)
+                            .ExecuteUpdateAsync(s => s
+                                .SetProperty(b => b.Subjects, _ => needsSubjects ? BuildSubjects(doc.Subject) : existing.Subjects)
+                                .SetProperty(b => b.Series, _ => seriesName ?? existing.Series)
+                                .SetProperty(b => b.SeriesPosition, _ => needsPosition ? seriesPos : existing.SeriesPosition), ct);
+                    }
                 }
                 continue;
             }
@@ -151,7 +162,8 @@ public sealed class AuthorRefresher
                 CoverId = doc.CoverId,
                 AuthorId = author.Id,
                 Subjects = BuildSubjects(doc.Subject), // "" when OL has none
-                Series = string.IsNullOrWhiteSpace(doc.Series?.FirstOrDefault()) ? null : doc.Series!.First().Trim(),
+                Series = seriesName,
+                SeriesPosition = seriesPos,
             });
             fetched++;
             if (fetched % 50 == 0) await _db.SaveChangesAsync(ct);
@@ -233,6 +245,13 @@ public sealed class AuthorRefresher
         if (subjects is null || subjects.Count == 0) return "";
         var joined = string.Join(";", subjects.Select(s => s.Trim()).Where(s => s.Length > 0));
         return string.IsNullOrWhiteSpace(joined) ? "" : (joined.Length > 2000 ? joined[..2000] : joined);
+    }
+
+    // Tries to parse a series position from an OL title like "Title (Series, #1)".
+    private static string? ParseSeriesPosition(string title)
+    {
+        var m = SeriesPosRx.Match(title);
+        return m.Success ? m.Groups[1].Value : null;
     }
 
     // OL stores bio as either a plain string or {"type":"/type/text","value":"..."}.
