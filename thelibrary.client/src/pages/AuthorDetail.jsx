@@ -2,6 +2,149 @@ import React, { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import StarRating from '../components/StarRating.jsx'
 
+function UnmatchedFilesSection({
+    unmatchedLocal, books,
+    matchError, matchBusyIds, returnBusyIds,
+    matchSel, setMatchSel, matchFilter, setMatchFilter,
+    onMatch, onReturn, rmConnected, sendBusyIds, onSend
+}) {
+    if (!unmatchedLocal.length) return null
+    const canSend = (formats) => !!formats?.length
+    const needsConvert = (formats) => !!formats?.length && !formats.some(f => f === 'epub' || f === 'pdf')
+    return (
+        <>
+            <h3>Local files with no matching work</h3>
+            <p className="subtle">
+                Pick the work each file should count toward. Use this when
+                a spelling or punctuation variant kept the scanner from
+                matching automatically.
+            </p>
+            {matchError && <p className="error">Match failed: {matchError}</p>}
+            <table className="grid">
+                <thead>
+                    <tr>
+                        <th>Folder</th><th>Type</th><th>Path</th>
+                        <th>Match to work</th><th></th><th></th><th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {unmatchedLocal.map(u => {
+                        const busy = matchBusyIds.has(u.id)
+                        const returning = returnBusyIds.has(u.id)
+                        const selected = matchSel[u.id] ?? ''
+                        const formats = u.formats ?? []
+                        const sendable = canSend(formats)
+                        const convert = needsConvert(formats)
+                        const sendLabel = sendBusyIds.has(u.id)
+                            ? (convert ? 'Converting…' : 'Sending…')
+                            : (convert ? 'Convert & send' : 'Send to reMarkable')
+                        return (
+                            <tr key={u.id}>
+                                <td><code>{u.titleFolder}</code></td>
+                                <td>
+                                    {formats.length > 0
+                                        ? formats.map(ext => (
+                                            <span key={ext} className="filetype-tag" style={{ marginRight: '0.25rem' }}>{ext}</span>
+                                        ))
+                                        : <span className="subtle">—</span>}
+                                </td>
+                                <td className="subtle">{u.fullPath}</td>
+                                <td>
+                                    <input type="text" placeholder="Filter…"
+                                        value={matchFilter[u.id] ?? ''}
+                                        disabled={busy || returning}
+                                        onChange={e => setMatchFilter(prev => ({ ...prev, [u.id]: e.target.value }))}
+                                        style={{ display: 'block', width: '100%', marginBottom: '0.25rem', boxSizing: 'border-box' }} />
+                                    <select value={selected} disabled={busy || returning}
+                                        onChange={e => setMatchSel(prev => ({ ...prev, [u.id]: e.target.value }))}>
+                                        <option value="">— pick a work —</option>
+                                        {[...books]
+                                            .sort((a, b) => (a.title ?? '').localeCompare(b.title ?? ''))
+                                            .filter(b => {
+                                                const f = matchFilter[u.id] ?? ''
+                                                return !f || String(b.id) === selected || (b.title ?? '').toLowerCase().includes(f.toLowerCase())
+                                            })
+                                            .map(b => (
+                                                <option key={b.id} value={b.id}>
+                                                    {b.title}{b.firstPublishYear ? ` (${b.firstPublishYear})` : ''}
+                                                </option>
+                                            ))}
+                                    </select>
+                                </td>
+                                <td>
+                                    <button onClick={() => onMatch(u.id)} disabled={busy || returning || !selected}>
+                                        {busy ? 'Matching…' : 'Match'}
+                                    </button>
+                                </td>
+                                <td>
+                                    <button onClick={() => onReturn(u.id, u.titleFolder || u.fullPath)}
+                                        disabled={busy || returning}
+                                        title="Move this folder back to the incoming bucket and remove the library record">
+                                        {returning ? 'Returning…' : 'Return to incoming'}
+                                    </button>
+                                </td>
+                                <td>
+                                    {sendable
+                                        ? <button onClick={() => onSend(u.id, formats)}
+                                            disabled={!rmConnected || sendBusyIds.has(u.id) || busy || returning}
+                                            title={!rmConnected
+                                                ? 'Pair a reMarkable on the Settings page first'
+                                                : convert
+                                                    ? 'Convert via Calibre, then send to reMarkable'
+                                                    : 'Send this file to reMarkable'}>
+                                            {sendLabel}
+                                          </button>
+                                        : <span className="subtle" title="No ebook files found in this folder">—</span>}
+                                </td>
+                            </tr>
+                        )
+                    })}
+                </tbody>
+            </table>
+        </>
+    )
+}
+
+function FileRow({ file, rmConnected, sendBusyIds, onSend, onUnmatch }) {
+    const formats = file.formats ?? []
+    const sendable = formats.length > 0
+    const convert = sendable && !formats.some(f => f === 'epub' || f === 'pdf')
+    const busy = sendBusyIds.has(file.id)
+    const label = busy
+        ? (convert ? 'Converting…' : 'Sending…')
+        : (convert ? 'Convert & send' : 'Send to reMarkable')
+    return (
+        <div>
+            {formats.length > 0
+                ? formats.map(ext => (
+                    <span key={ext} className="filetype-tag" style={{ marginRight: '0.25rem' }}>{ext}</span>
+                ))
+                : <span className="filetype-tag" title="No ebook files found in this folder">empty</span>}
+            {' '}{file.fullPath}{' '}
+            {sendable
+                ? <button
+                    onClick={() => onSend(file.id, formats)}
+                    disabled={!rmConnected || busy}
+                    title={!rmConnected
+                        ? 'Pair a reMarkable on the Settings page first'
+                        : convert
+                            ? 'Convert via Calibre, then send to reMarkable'
+                            : 'Send this file to reMarkable'}>
+                    {label}
+                </button>
+                : <span className="subtle">(no ebook files)</span>}
+            {' '}
+            <button
+                className="btn-ghost"
+                style={{ fontSize: '0.75em', color: 'var(--subtle)' }}
+                title="Remove the link between this file and this book — the file moves to the unmatched list"
+                onClick={() => onUnmatch(file.id)}>
+                Unmatch
+            </button>
+        </div>
+    )
+}
+
 export default function AuthorDetail() {
     const { id } = useParams()
     const [data, setData] = useState(null)
@@ -21,6 +164,9 @@ export default function AuthorDetail() {
     const [nzbSites, setNzbSites] = useState([])
     const [editingSeriesId, setEditingSeriesId] = useState(null)
     const [seriesEdit, setSeriesEdit] = useState({ name: '', position: '' })
+    const [editingNotes, setEditingNotes] = useState(false)
+    const [notesDraft, setNotesDraft] = useState('')
+    const [notesSaving, setNotesSaving] = useState(false)
 
     useEffect(() => {
         fetch('/api/nzb-sites')
@@ -113,9 +259,6 @@ export default function AuthorDetail() {
         })
     }
 
-    const canSend = (formats) => !!formats?.length
-    const needsConvert = (formats) => !!formats?.length && !formats.some(f => f === 'epub' || f === 'pdf')
-
     const setPriority = async (value) => {
         if (!data) return
         const previous = data.priority ?? 0
@@ -161,8 +304,8 @@ export default function AuthorDetail() {
 
     const unmatchFile = async (fileId) => {
         const r = await fetch(`/api/authors/${id}/unmatched/${fileId}/match`, { method: 'DELETE' })
-        if (r.ok) refresh()
-        else setError((await r.json().catch(() => ({}))).error || r.statusText)
+        if (r.ok) setData(await r.json())
+        else setMatchError((await r.json().catch(() => ({}))).error || r.statusText)
     }
 
     const matchToBook = async (fileId) => {
@@ -293,6 +436,34 @@ export default function AuthorDetail() {
         }
     }
 
+    const saveNotes = async () => {
+        setNotesSaving(true)
+        try {
+            const r = await fetch(`/api/authors/${id}/notes`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ notes: notesDraft || null })
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setData(prev => prev ? { ...prev, notes: body.notes } : prev)
+            setEditingNotes(false)
+        } catch (e) {
+            alert(`Failed to save notes: ${e.message}`)
+        } finally {
+            setNotesSaving(false)
+        }
+    }
+
+    const sendAllUnread = async () => {
+        const files = (data?.books ?? [])
+            .filter(b => b.readStatus === 'Unread' || b.readStatus === 'Reading')
+            .flatMap(b => b.files.filter(f => (f.formats ?? []).length > 0).slice(0, 1))
+        for (const f of files) {
+            await sendToRemarkable(f.id, f.formats ?? [])
+        }
+    }
+
     if (data === null) return <p>Loading…</p>
     if (data.error) return <p className="error">Failed: {data.error}</p>
 
@@ -370,16 +541,52 @@ export default function AuthorDetail() {
                 {data.exclusionReason ? <> — {data.exclusionReason}</> : null}
             </p>
             {data.bio && (
-                <p style={{ maxWidth: '70ch', color: 'var(--text)', lineHeight: 1.6, marginBottom: '1rem' }}>
+                <p style={{ maxWidth: '70ch', color: 'var(--text)', lineHeight: 1.6, marginBottom: '0.75rem' }}>
                     {data.bio}
                 </p>
             )}
+
+            <div style={{ maxWidth: '70ch', marginBottom: '1rem' }}>
+                {editingNotes ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                        <textarea
+                            autoFocus
+                            rows={4}
+                            value={notesDraft}
+                            onChange={e => setNotesDraft(e.target.value)}
+                            placeholder="Personal notes about this author…"
+                            style={{ width: '100%', boxSizing: 'border-box', padding: '0.4rem', fontSize: '0.9rem', border: '1px solid var(--border)', borderRadius: '4px', resize: 'vertical' }} />
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                            <button onClick={saveNotes} disabled={notesSaving}>{notesSaving ? 'Saving…' : 'Save notes'}</button>
+                            <button className="btn-ghost" onClick={() => setEditingNotes(false)}>Cancel</button>
+                        </div>
+                    </div>
+                ) : (
+                    <div>
+                        {data.notes
+                            ? <p style={{ margin: '0 0 0.3rem', color: 'var(--text)', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{data.notes}</p>
+                            : null}
+                        <button className="btn-ghost" style={{ fontSize: '0.8em', opacity: 0.6 }}
+                            onClick={() => { setNotesDraft(data.notes ?? ''); setEditingNotes(true) }}>
+                            {data.notes ? 'Edit notes' : '+ Add notes'}
+                        </button>
+                    </div>
+                )}
+            </div>
 
             <div className="toolbar">
                 <label><input type="checkbox" checked={ownedOnly} onChange={e => setOwnedOnly(e.target.checked)} /> Owned only</label>
                 <button onClick={refresh} disabled={refreshing}>
                     {refreshing ? 'Refreshing…' : 'Refresh from OpenLibrary'}
                 </button>
+                {rmConnected && (
+                    <button
+                        onClick={sendAllUnread}
+                        disabled={sendBusyIds.size > 0}
+                        title="Send the first ebook file of every Unread/Reading book to reMarkable">
+                        Send all unread to reMarkable
+                    </button>
+                )}
                 <span className="count">{ownedCount} owned / {data.books.length} total</span>
             </div>
             {refreshError && <p className="error">Refresh failed: {refreshError}</p>}
@@ -469,46 +676,13 @@ export default function AuthorDetail() {
                                     )}
                                     {b.hasLocalFiles
                                         ? <div className="subtle">
-                                            {b.files.map(f => {
-                                                const formats = f.formats ?? []
-                                                const sendable = canSend(formats)
-                                                const convert = needsConvert(formats)
-                                                const label = sendBusyIds.has(f.id)
-                                                    ? (convert ? 'Converting…' : 'Sending…')
-                                                    : (convert ? 'Convert & send' : 'Send to reMarkable')
-                                                return (
-                                                    <div key={f.id}>
-                                                        {formats.length > 0
-                                                            ? formats.map(ext => (
-                                                                <span key={ext} className="filetype-tag" style={{ marginRight: '0.25rem' }}>{ext}</span>
-                                                            ))
-                                                            : <span className="filetype-tag" title="No ebook files found in this folder">empty</span>}
-                                                        {' '}{f.fullPath}{' '}
-                                                        {sendable ? (
-                                                            <button
-                                                                onClick={() => sendToRemarkable(f.id, formats)}
-                                                                disabled={!rmConnected || sendBusyIds.has(f.id)}
-                                                                title={!rmConnected
-                                                                    ? 'Pair a reMarkable on the Settings page first'
-                                                                    : convert
-                                                                        ? 'Convert via Calibre, then send to reMarkable'
-                                                                        : 'Send this file to reMarkable'}>
-                                                                {label}
-                                                            </button>
-                                                        ) : (
-                                                            <span className="subtle">(no ebook files)</span>
-                                                        )}
-                                                        {' '}
-                                                        <button
-                                                            className="btn-ghost"
-                                                            style={{ fontSize: '0.75em', color: 'var(--subtle)' }}
-                                                            title="Remove the link between this file and this book — the file moves to the unmatched list"
-                                                            onClick={() => unmatchFile(f.id)}>
-                                                            Unmatch
-                                                        </button>
-                                                    </div>
-                                                )
-                                            })}
+                                            {b.files.map(f => (
+                                                <FileRow key={f.id} file={f}
+                                                    rmConnected={rmConnected}
+                                                    sendBusyIds={sendBusyIds}
+                                                    onSend={sendToRemarkable}
+                                                    onUnmatch={unmatchFile} />
+                                            ))}
                                         </div>
                                         : null}
                                 </td>
@@ -568,38 +742,13 @@ export default function AuthorDetail() {
                                         )}
                                         {ed.hasLocalFiles
                                             ? <div className="subtle">
-                                                {ed.files.map(f => {
-                                                    const formats = f.formats ?? []
-                                                    const sendable = canSend(formats)
-                                                    const convert = needsConvert(formats)
-                                                    const label = sendBusyIds.has(f.id)
-                                                        ? (convert ? 'Converting…' : 'Sending…')
-                                                        : (convert ? 'Convert & send' : 'Send to reMarkable')
-                                                    return (
-                                                        <div key={f.id}>
-                                                            {formats.length > 0
-                                                                ? formats.map(ext => (
-                                                                    <span key={ext} className="filetype-tag" style={{ marginRight: '0.25rem' }}>{ext}</span>
-                                                                ))
-                                                                : <span className="filetype-tag" title="No ebook files found in this folder">empty</span>}
-                                                            {' '}{f.fullPath}{' '}
-                                                            {sendable ? (
-                                                                <button
-                                                                    onClick={() => sendToRemarkable(f.id, formats)}
-                                                                    disabled={!rmConnected || sendBusyIds.has(f.id)}
-                                                                    title={!rmConnected
-                                                                        ? 'Pair a reMarkable on the Settings page first'
-                                                                        : convert
-                                                                            ? 'Convert via Calibre, then send to reMarkable'
-                                                                            : 'Send this file to reMarkable'}>
-                                                                    {label}
-                                                                </button>
-                                                            ) : (
-                                                                <span className="subtle">(no ebook files)</span>
-                                                            )}
-                                                        </div>
-                                                    )
-                                                })}
+                                                {ed.files.map(f => (
+                                                    <FileRow key={f.id} file={f}
+                                                        rmConnected={rmConnected}
+                                                        sendBusyIds={sendBusyIds}
+                                                        onSend={sendToRemarkable}
+                                                        onUnmatch={unmatchFile} />
+                                                ))}
                                             </div>
                                             : null}
                                     </td>
@@ -672,24 +821,17 @@ export default function AuthorDetail() {
                                         </div>
                                     )}
                                     {!b.owned && nzbSites.length > 0 && <div style={{ marginTop: '0.2rem' }}>{nzbLinks(b.title)}</div>}
-                                    {b.hasLocalFiles ? <div className="subtle">
-                                        {b.files.map(f => {
-                                            const formats = f.formats ?? []
-                                            const sendable = canSend(formats)
-                                            const convert = needsConvert(formats)
-                                            const label = sendBusyIds.has(f.id) ? (convert ? 'Converting…' : 'Sending…') : (convert ? 'Convert & send' : 'Send to reMarkable')
-                                            return (
-                                                <div key={f.id}>
-                                                    {formats.length > 0 ? formats.map(ext => <span key={ext} className="filetype-tag" style={{ marginRight: '0.25rem' }}>{ext}</span>) : <span className="filetype-tag" title="No ebook files found in this folder">empty</span>}
-                                                    {' '}{f.fullPath}{' '}
-                                                    {sendable ? (
-                                                        <button onClick={() => sendToRemarkable(f.id, formats)} disabled={!rmConnected || sendBusyIds.has(f.id)}
-                                                            title={!rmConnected ? 'Pair a reMarkable on the Settings page first' : convert ? 'Convert via Calibre, then send to reMarkable' : 'Send this file to reMarkable'}>{label}</button>
-                                                    ) : <span className="subtle">(no ebook files)</span>}
-                                                </div>
-                                            )
-                                        })}
-                                    </div> : null}
+                                    {b.hasLocalFiles
+                                        ? <div className="subtle">
+                                            {b.files.map(f => (
+                                                <FileRow key={f.id} file={f}
+                                                    rmConnected={rmConnected}
+                                                    sendBusyIds={sendBusyIds}
+                                                    onSend={sendToRemarkable}
+                                                    onUnmatch={unmatchFile} />
+                                            ))}
+                                        </div>
+                                        : null}
                                 </td>
                                 <td>{b.firstPublishYear ?? '—'}</td>
                                 <td>{b.owned ? (b.hasLocalFiles && b.manuallyOwned ? 'Yes (files + manual)' : b.hasLocalFiles ? 'Yes (files)' : 'Yes (manual)') : 'No'}</td>
@@ -714,24 +856,17 @@ export default function AuthorDetail() {
                                         <span className="subtle" style={{ marginRight: '0.3rem' }}>↳</span>
                                         <a href={`https://openlibrary.org/works/${ed.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{ed.title}</a>
                                         {!ed.owned && nzbSites.length > 0 && <div style={{ marginTop: '0.2rem' }}>{nzbLinks(ed.title)}</div>}
-                                        {ed.hasLocalFiles ? <div className="subtle">
-                                            {ed.files.map(f => {
-                                                const formats = f.formats ?? []
-                                                const sendable = canSend(formats)
-                                                const convert = needsConvert(formats)
-                                                const label = sendBusyIds.has(f.id) ? (convert ? 'Converting…' : 'Sending…') : (convert ? 'Convert & send' : 'Send to reMarkable')
-                                                return (
-                                                    <div key={f.id}>
-                                                        {formats.length > 0 ? formats.map(ext => <span key={ext} className="filetype-tag" style={{ marginRight: '0.25rem' }}>{ext}</span>) : <span className="filetype-tag" title="No ebook files found in this folder">empty</span>}
-                                                        {' '}{f.fullPath}{' '}
-                                                        {sendable ? (
-                                                            <button onClick={() => sendToRemarkable(f.id, formats)} disabled={!rmConnected || sendBusyIds.has(f.id)}
-                                                                title={!rmConnected ? 'Pair a reMarkable on the Settings page first' : convert ? 'Convert via Calibre, then send to reMarkable' : 'Send this file to reMarkable'}>{label}</button>
-                                                        ) : <span className="subtle">(no ebook files)</span>}
-                                                    </div>
-                                                )
-                                            })}
-                                        </div> : null}
+                                        {ed.hasLocalFiles
+                                            ? <div className="subtle">
+                                                {ed.files.map(f => (
+                                                    <FileRow key={f.id} file={f}
+                                                        rmConnected={rmConnected}
+                                                        sendBusyIds={sendBusyIds}
+                                                        onSend={sendToRemarkable}
+                                                        onUnmatch={unmatchFile} />
+                                                ))}
+                                            </div>
+                                            : null}
                                     </td>
                                     <td>{ed.firstPublishYear ?? '—'}</td>
                                     <td>{ed.owned ? (ed.hasLocalFiles && ed.manuallyOwned ? 'Yes (files + manual)' : ed.hasLocalFiles ? 'Yes (files)' : 'Yes (manual)') : 'No'}</td>
@@ -752,115 +887,19 @@ export default function AuthorDetail() {
                 </div>
             ))}
 
-            {data.unmatchedLocal.length > 0 && (
-                <>
-                    <h3>Local files with no matching work</h3>
-                    <p className="subtle">
-                        Pick the work each file should count toward. Use this when
-                        a spelling or punctuation variant kept the scanner from
-                        matching automatically.
-                    </p>
-                    {matchError && <p className="error">Match failed: {matchError}</p>}
-                    <table className="grid">
-                        <thead>
-                            <tr>
-                                <th>Folder</th>
-                                <th>Type</th>
-                                <th>Path</th>
-                                <th>Match to work</th>
-                                <th></th>
-                                <th></th>
-                                <th></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {data.unmatchedLocal.map(u => {
-                                const busy = matchBusyIds.has(u.id)
-                                const returning = returnBusyIds.has(u.id)
-                                const selected = matchSel[u.id] ?? ''
-                                const formats = u.formats ?? []
-                                return (
-                                    <tr key={u.id}>
-                                        <td><code>{u.titleFolder}</code></td>
-                                        <td>
-                                            {formats.length > 0
-                                                ? formats.map(ext => (
-                                                    <span key={ext} className="filetype-tag" style={{ marginRight: '0.25rem' }}>{ext}</span>
-                                                ))
-                                                : <span className="subtle">—</span>}
-                                        </td>
-                                        <td className="subtle">{u.fullPath}</td>
-                                        <td>
-                                            <input
-                                                type="text"
-                                                placeholder="Filter…"
-                                                value={matchFilter[u.id] ?? ''}
-                                                disabled={busy || returning}
-                                                onChange={e => setMatchFilter(prev => ({ ...prev, [u.id]: e.target.value }))}
-                                                style={{ display: 'block', width: '100%', marginBottom: '0.25rem', boxSizing: 'border-box' }}
-                                            />
-                                            <select
-                                                value={selected}
-                                                disabled={busy || returning}
-                                                onChange={e => setMatchSel(prev => ({ ...prev, [u.id]: e.target.value }))}>
-                                                <option value="">— pick a work —</option>
-                                                {[...data.books]
-                                                    .sort((a, b) => (a.title ?? '').localeCompare(b.title ?? ''))
-                                                    .filter(b => {
-                                                        const f = matchFilter[u.id] ?? ''
-                                                        return !f || String(b.id) === selected || (b.title ?? '').toLowerCase().includes(f.toLowerCase())
-                                                    })
-                                                    .map(b => (
-                                                        <option key={b.id} value={b.id}>
-                                                            {b.title}{b.firstPublishYear ? ` (${b.firstPublishYear})` : ''}
-                                                        </option>
-                                                    ))}
-                                            </select>
-                                        </td>
-                                        <td>
-                                            <button
-                                                onClick={() => matchToBook(u.id)}
-                                                disabled={busy || returning || !selected}>
-                                                {busy ? 'Matching…' : 'Match'}
-                                            </button>
-                                        </td>
-                                        <td>
-                                            <button
-                                                onClick={() => returnToIncoming(u.id, u.titleFolder || u.fullPath)}
-                                                disabled={busy || returning}
-                                                title="Move this folder back to the incoming bucket and remove the library record">
-                                                {returning ? 'Returning…' : 'Return to incoming'}
-                                            </button>
-                                        </td>
-                                        <td>
-                                            {canSend(formats) ? (() => {
-                                                const convert = needsConvert(formats)
-                                                const label = sendBusyIds.has(u.id)
-                                                    ? (convert ? 'Converting…' : 'Sending…')
-                                                    : (convert ? 'Convert & send' : 'Send to reMarkable')
-                                                return (
-                                                    <button
-                                                        onClick={() => sendToRemarkable(u.id, formats)}
-                                                        disabled={!rmConnected || sendBusyIds.has(u.id) || busy || returning}
-                                                        title={!rmConnected
-                                                            ? 'Pair a reMarkable on the Settings page first'
-                                                            : convert
-                                                                ? 'Convert via Calibre, then send to reMarkable'
-                                                                : 'Send this file to reMarkable'}>
-                                                        {label}
-                                                    </button>
-                                                )
-                                            })() : (
-                                                <span className="subtle" title="No ebook files found in this folder">—</span>
-                                            )}
-                                        </td>
-                                    </tr>
-                                )
-                            })}
-                        </tbody>
-                    </table>
-                </>
-            )}
+            <UnmatchedFilesSection
+                unmatchedLocal={data.unmatchedLocal}
+                books={data.books}
+                matchError={matchError}
+                matchBusyIds={matchBusyIds}
+                returnBusyIds={returnBusyIds}
+                matchSel={matchSel} setMatchSel={setMatchSel}
+                matchFilter={matchFilter} setMatchFilter={setMatchFilter}
+                onMatch={matchToBook}
+                onReturn={returnToIncoming}
+                rmConnected={rmConnected}
+                sendBusyIds={sendBusyIds}
+                onSend={sendToRemarkable} />
         </section>
     )
 }

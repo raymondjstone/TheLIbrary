@@ -83,6 +83,49 @@ public class BooksController : ControllerBase
         return Ok(new { book.Id, book.Series, book.SeriesPosition });
     }
 
+    public sealed record WantedAuthorGroup(
+        int AuthorId,
+        string AuthorName,
+        IReadOnlyList<WantedBookRow> Books);
+
+    public sealed record WantedBookRow(
+        int Id,
+        string Title,
+        int? FirstPublishYear,
+        string? Series,
+        string? SeriesPosition,
+        string OpenLibraryWorkKey,
+        int? CoverId);
+
+    [HttpGet("wanted")]
+    public async Task<IReadOnlyList<WantedAuthorGroup>> GetWanted(CancellationToken ct)
+    {
+        var rows = await _db.Books.AsNoTracking()
+            .Where(b => b.Wanted)
+            .OrderBy(b => b.Author!.Name)
+            .ThenBy(b => b.Series)
+            .ThenBy(b => b.SeriesPosition)
+            .ThenBy(b => b.FirstPublishYear ?? int.MaxValue)
+            .ThenBy(b => b.Title)
+            .Select(b => new
+            {
+                AuthorId = b.Author!.Id,
+                AuthorName = b.Author.Name,
+                b.Id, b.Title, b.FirstPublishYear, b.Series, b.SeriesPosition,
+                b.OpenLibraryWorkKey, b.CoverId
+            })
+            .ToListAsync(ct);
+
+        return rows
+            .GroupBy(r => new { r.AuthorId, r.AuthorName })
+            .Select(g => new WantedAuthorGroup(
+                g.Key.AuthorId, g.Key.AuthorName,
+                g.Select(b => new WantedBookRow(
+                    b.Id, b.Title, b.FirstPublishYear, b.Series, b.SeriesPosition,
+                    b.OpenLibraryWorkKey, b.CoverId)).ToList()))
+            .ToList();
+    }
+
     public sealed record SeriesEntry(
         string Name,
         int BookCount,

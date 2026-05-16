@@ -25,11 +25,4 @@ public class RemarkableAuth
     public DateTime ConnectedAt { get; set; }
 
     public DateTime? LastSentAt { get; set; }
-
-    // JSON-serialised Dictionary<string, string> mapping canonical folder paths
-    // ("Books", "Books/Author Name", "Books/Author Name/Series") to their
-    // reMarkable cloud UUIDs. Avoids re-creating folders on every send without
-    // needing a list API (which the v2 endpoint does not support).
-    // Cleared on Disconnect so stale IDs don't accumulate across re-pairings.
-    public string? FolderMapJson { get; set; }
 }

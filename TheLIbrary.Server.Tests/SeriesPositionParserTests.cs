@@ -109,10 +109,42 @@ public class SeriesInfoFromTitleTests
     [InlineData("Title (A Subtitle)")]
     [InlineData("Title (revised edition)")]
     [InlineData("Title")]
+    [InlineData("Foo (Red, White, Blue)")]    // multi-comma, no keyword or number → no match
     public void NoMatch(string title)
     {
         var (name, pos) = Parse(title);
         Assert.Null(name);
         Assert.Null(pos);
+    }
+
+    // ── Edge cases that pin greedy / ambiguous regex behaviour ───────────────
+
+    [Fact]
+    public void FalsePositiveNovelSuffix()
+    {
+        // "(A Novel, Volume 1)" — pattern 1 treats "A Novel" as the series name
+        // because it precedes ", Volume 1". Documents known limitation.
+        var (name, pos) = Parse("Foo (A Novel, Volume 1)");
+        Assert.Equal("A Novel", name);
+        Assert.Equal("1", pos);
+    }
+
+    [Fact]
+    public void MultiCommaWithKeyword()
+    {
+        // "(Bar, Baz, Book 2)" — pattern 1 can't cross the first comma, so
+        // pattern 2 matches and captures "Bar, Baz," (trailing comma) as the
+        // series name. Documents known limitation.
+        var (name, pos) = Parse("Foo (Bar, Baz, Book 2)");
+        Assert.Equal("Bar, Baz,", name);
+        Assert.Equal("2", pos);
+    }
+
+    [Fact]
+    public void ThePrefixPreserved()
+    {
+        var (name, pos) = Parse("Foo (The Great Series, Part 5)");
+        Assert.Equal("The Great Series", name);
+        Assert.Equal("5", pos);
     }
 }

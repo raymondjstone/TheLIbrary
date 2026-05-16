@@ -139,27 +139,16 @@ public sealed class RemarkableClient
 
             var userToken = await GetOrRefreshUserTokenAsync(auth, ct);
 
-            // Build display name: "Author - Series - 001 - Title".
-            // The reMarkable v2 API has no folder-creation surface, so we encode
-            // the path into the filename so files sort into logical groups in root.
             var bookTitle  = !string.IsNullOrWhiteSpace(file.Book?.Title)
                 ? file.Book!.Title
                 : !string.IsNullOrWhiteSpace(file.TitleFolder)
                     ? file.TitleFolder
                     : Path.GetFileNameWithoutExtension(sourcePath);
-            var authorName = file.Author?.Name ?? file.Book?.Author?.Name;
-            var seriesName = file.Book?.Series;
-            var seriesPos  = file.Book?.SeriesPosition;
-
-            var parts = new List<string>();
-            if (!string.IsNullOrWhiteSpace(authorName)) parts.Add(SanitizeNamePart(authorName));
-            if (!string.IsNullOrWhiteSpace(seriesName)) parts.Add(SanitizeNamePart(seriesName));
-            if (!string.IsNullOrWhiteSpace(seriesName) && !string.IsNullOrWhiteSpace(seriesPos))
-                parts.Add(FormatSeriesPosition(seriesPos));
-            parts.Add(bookTitle);
-
-            var displayName = string.Join(" - ", parts);
-            if (displayName.Length > 200) displayName = displayName[..200];
+            var displayName = BuildDisplayName(
+                file.Author?.Name ?? file.Book?.Author?.Name,
+                file.Book?.Series,
+                file.Book?.SeriesPosition,
+                bookTitle);
 
             var metaJson = JsonSerializer.Serialize(new { file_name = displayName });
             var metaHeader = Convert.ToBase64String(Encoding.UTF8.GetBytes(metaJson));
@@ -207,6 +196,22 @@ public sealed class RemarkableClient
         if (long.TryParse(intStr, out var n))
             return dot >= 0 ? $"{n:D3}{pos[dot..]}" : $"{n:D3}";
         return pos;
+    }
+
+    // Builds "Author - Series - 001 - Title" display name for the reMarkable.
+    // Encodes the library path into the filename because the v2 API has no
+    // folder-creation surface; the dash-separated parts sort into logical groups.
+    internal static string BuildDisplayName(
+        string? authorName, string? seriesName, string? seriesPos, string bookTitle)
+    {
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(authorName)) parts.Add(SanitizeNamePart(authorName));
+        if (!string.IsNullOrWhiteSpace(seriesName)) parts.Add(SanitizeNamePart(seriesName));
+        if (!string.IsNullOrWhiteSpace(seriesName) && !string.IsNullOrWhiteSpace(seriesPos))
+            parts.Add(FormatSeriesPosition(seriesPos));
+        parts.Add(bookTitle);
+        var name = string.Join(" - ", parts);
+        return name.Length > 200 ? name[..200] : name;
     }
 
     // Strips characters that are illegal or confusing in a display name part.

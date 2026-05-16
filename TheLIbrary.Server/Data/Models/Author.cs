@@ -48,5 +48,8 @@ public class Author
 
     public string? Bio { get; set; }
 
+    // Free-text memo written by the user — not synced from OL, never overwritten.
+    public string? Notes { get; set; }
+
     public List<Book> Books { get; set; } = new();
 }

@@ -12,6 +12,7 @@ export default function Layout() {
                     <NavLink to="/all-releases">All Releases</NavLink>
                     <NavLink to="/starred">Starred Authors</NavLink>
                     <NavLink to="/missing">Missing Works</NavLink>
+                    <NavLink to="/wanted">Wanted</NavLink>
                     <NavLink to="/series">Series</NavLink>
                     <NavLink to="/stats">Stats</NavLink>
                     <NavLink to="/duplicates">Duplicates</NavLink>

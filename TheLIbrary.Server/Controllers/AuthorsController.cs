@@ -155,6 +155,7 @@ public class AuthorsController : ControllerBase
         int Priority,
         DateTime? LastSyncedAt,
         string? Bio,
+        string? Notes,
         IReadOnlyList<BookRow> Books,
         IReadOnlyList<UnmatchedRow> UnmatchedLocal);
 
@@ -269,7 +270,7 @@ public class AuthorsController : ControllerBase
         return new AuthorDetail(
             a.Id, a.Name, a.OpenLibraryKey, a.CalibreFolderName,
             a.Status.ToString(), a.ExclusionReason, a.Priority, a.LastSyncedAt,
-            a.Bio,
+            a.Bio, a.Notes,
             books, unmatched);
     }
 
@@ -324,6 +325,7 @@ public class AuthorsController : ControllerBase
 
         file.AuthorId = id;
         file.BookId = book.Id;
+        file.ManuallyUnmatched = false;
         await _db.SaveChangesAsync(ct);
         return await Get(id, ct);
     }
@@ -343,6 +345,7 @@ public class AuthorsController : ControllerBase
             return BadRequest(new { error = "File does not belong to this author" });
 
         file.BookId = null;
+        file.ManuallyUnmatched = true;
         await _db.SaveChangesAsync(ct);
         return await Get(id, ct);
     }
@@ -564,6 +567,18 @@ public class AuthorsController : ControllerBase
         author.Priority = body.Priority;
         await _db.SaveChangesAsync(ct);
         return NoContent();
+    }
+
+    public sealed record SaveNotesRequest(string? Notes);
+
+    [HttpPut("{id:int}/notes")]
+    public async Task<IActionResult> SaveNotes(int id, [FromBody] SaveNotesRequest body, CancellationToken ct)
+    {
+        var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (author is null) return NotFound();
+        author.Notes = string.IsNullOrWhiteSpace(body.Notes) ? null : body.Notes.Trim();
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { author.Id, author.Notes });
     }
 
     // On-demand refresh of a single author: resolves the OL key if missing,

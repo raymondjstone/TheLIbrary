@@ -470,7 +470,10 @@ public sealed class SyncService
         var norm = TitleNormalizer.Normalize(entry.TitleFolder);
         if (existingByPath.TryGetValue(canon, out var existing))
         {
-            var effectiveBookId = bookId ?? existing.BookId;
+            // Don't auto-match a file the user has explicitly unmatched; also
+            // don't override an existing match with a newly computed one (user
+            // may have manually corrected it via the match UI).
+            var effectiveBookId = existing.ManuallyUnmatched ? null : (bookId ?? existing.BookId);
             if (existing.SizeBytes == entry.SizeBytes &&
                 existing.ModifiedAt == entry.ModifiedAt &&
                 existing.AuthorId == authorId &&

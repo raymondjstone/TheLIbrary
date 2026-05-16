@@ -21,6 +21,10 @@ public class LocalBookFile
     public int? BookId { get; set; }
     public Book? Book { get; set; }
 
+    // Set by UnmatchLocalFile; tells the sync scanner not to auto-re-match
+    // this file. Cleared when the user manually assigns it to a book.
+    public bool ManuallyUnmatched { get; set; }
+
     public int? AuthorId { get; set; }
     public Author? Author { get; set; }
 
