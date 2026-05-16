@@ -55,13 +55,15 @@ public class RemarkableController : ControllerBase
         return NoContent();
     }
 
+
     public sealed record SendResult(string Title);
 
     [HttpPost("send/{localFileId:int}")]
     public async Task<ActionResult<SendResult>> Send(int localFileId, CancellationToken ct)
     {
         var file = await _db.LocalBookFiles
-            .Include(f => f.Book)
+            .Include(f => f.Book).ThenInclude(b => b!.Author)
+            .Include(f => f.Author)
             .FirstOrDefaultAsync(f => f.Id == localFileId, ct);
         if (file is null) return NotFound(new { error = "Local file not found" });
 

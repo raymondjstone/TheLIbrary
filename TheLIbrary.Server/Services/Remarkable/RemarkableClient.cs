@@ -139,17 +139,28 @@ public sealed class RemarkableClient
 
             var userToken = await GetOrRefreshUserTokenAsync(auth, ct);
 
-            // Display name on the device: prefer the work title if we have it,
-            // otherwise the Calibre title folder, else the ebook filename stem.
-            var displayName = !string.IsNullOrWhiteSpace(file.Book?.Title)
+            // Build display name: "Author - Series - 001 - Title".
+            // The reMarkable v2 API has no folder-creation surface, so we encode
+            // the path into the filename so files sort into logical groups in root.
+            var bookTitle  = !string.IsNullOrWhiteSpace(file.Book?.Title)
                 ? file.Book!.Title
                 : !string.IsNullOrWhiteSpace(file.TitleFolder)
                     ? file.TitleFolder
                     : Path.GetFileNameWithoutExtension(sourcePath);
+            var authorName = file.Author?.Name ?? file.Book?.Author?.Name;
+            var seriesName = file.Book?.Series;
+            var seriesPos  = file.Book?.SeriesPosition;
 
-            // rm-meta is a base64-encoded JSON blob; current clients send
-            // file_name (used as the display name). reMarkable ignores unknown
-            // fields and computes page metadata itself.
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(authorName)) parts.Add(SanitizeNamePart(authorName));
+            if (!string.IsNullOrWhiteSpace(seriesName)) parts.Add(SanitizeNamePart(seriesName));
+            if (!string.IsNullOrWhiteSpace(seriesName) && !string.IsNullOrWhiteSpace(seriesPos))
+                parts.Add(FormatSeriesPosition(seriesPos));
+            parts.Add(bookTitle);
+
+            var displayName = string.Join(" - ", parts);
+            if (displayName.Length > 200) displayName = displayName[..200];
+
             var metaJson = JsonSerializer.Serialize(new { file_name = displayName });
             var metaHeader = Convert.ToBase64String(Encoding.UTF8.GetBytes(metaJson));
 
@@ -184,6 +195,28 @@ public sealed class RemarkableClient
                 try { System.IO.File.Delete(tempFile); } catch { /* best effort */ }
             }
         }
+    }
+
+    // Pads the integer part of a series position to 3 digits so files sort
+    // numerically when listed alphabetically on the device.
+    //   "1"   → "001"   "12"  → "012"   "1.5" → "001.5"   "Prequel" → "Prequel"
+    private static string FormatSeriesPosition(string pos)
+    {
+        var dot = pos.IndexOf('.');
+        var intStr = dot >= 0 ? pos[..dot] : pos;
+        if (long.TryParse(intStr, out var n))
+            return dot >= 0 ? $"{n:D3}{pos[dot..]}" : $"{n:D3}";
+        return pos;
+    }
+
+    // Strips characters that are illegal or confusing in a display name part.
+    private static string SanitizeNamePart(string name)
+    {
+        var sb = new System.Text.StringBuilder(name.Length);
+        foreach (var c in name)
+            sb.Append(c is '/' or '\\' or ':' or '*' or '?' or '"' or '<' or '>' or '|' ? '-' : c);
+        var result = sb.ToString().Trim().TrimEnd('.');
+        return result.Length == 0 ? "Unknown" : result;
     }
 
     // Resolves the path to upload. Returns (pathToUpload, tempFileToDelete).

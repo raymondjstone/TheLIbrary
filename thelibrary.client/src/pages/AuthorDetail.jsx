@@ -159,6 +159,12 @@ export default function AuthorDetail() {
         }
     }
 
+    const unmatchFile = async (fileId) => {
+        const r = await fetch(`/api/authors/${id}/unmatched/${fileId}/match`, { method: 'DELETE' })
+        if (r.ok) refresh()
+        else setError((await r.json().catch(() => ({}))).error || r.statusText)
+    }
+
     const matchToBook = async (fileId) => {
         const bookId = matchSel[fileId]
         if (!bookId) return
@@ -492,6 +498,14 @@ export default function AuthorDetail() {
                                                         ) : (
                                                             <span className="subtle">(no ebook files)</span>
                                                         )}
+                                                        {' '}
+                                                        <button
+                                                            className="btn-ghost"
+                                                            style={{ fontSize: '0.75em', color: 'var(--subtle)' }}
+                                                            title="Remove the link between this file and this book — the file moves to the unmatched list"
+                                                            onClick={() => unmatchFile(f.id)}>
+                                                            Unmatch
+                                                        </button>
                                                     </div>
                                                 )
                                             })}
