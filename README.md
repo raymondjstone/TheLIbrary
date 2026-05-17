@@ -33,7 +33,7 @@ from a drop folder and re-running matching against previously-unmatched files.
 | All Releases | `/all-releases` | New works from all tracked authors |
 | Missing Works | `/missing` | Unowned books from starred authors — bulk-own, wanted flag, genre filter, search |
 | Starred Authors | `/starred` | Authors with priority ≥ 1 |
-| Series | `/series` | All series with owned/total progress bars; inline edit of name, primary author, and additional authors; deep-linkable via `?q=SeriesName` |
+| Series | `/series` | Hierarchical series tree with owned/total progress bars; create new series; inline edit of name, primary author, additional authors, parent series, and reading order position; deep-linkable via `?q=SeriesName` |
 | Stats | `/stats` | KPI cards, books-read-by-year chart, top genres, per-author coverage |
 | Duplicates | `/duplicates` | Books matched to more than one local file folder |
 | Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket |
@@ -220,7 +220,10 @@ before they're slotted into the library.
 ## Series organizer
 
 The series organizer enforces a canonical flat-file layout across every tracked
-library location:
+library location. Books are filed under their **direct** series name (the leaf
+series, not the parent). For example, a book in "The Belgariad" (a child of
+"The Belgariad & Mallorean Saga") is filed under `The Belgariad/`, not under
+the parent saga folder:
 
 ```
 <Root>/<Author>/<Series Name>/book.epub   (book belongs to a series)
@@ -500,9 +503,10 @@ as they process each file.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET    | `/api/series` | Lightweight series list for dropdowns (id, name, primary author) |
-| GET    | `/api/series/{id}` | Series detail including additional authors |
-| PUT    | `/api/series/{id}` | Update series name, primary author, and additional authors |
+| GET    | `/api/series` | Lightweight series list for dropdowns (id, name, primary author, parent) |
+| POST   | `/api/series` | Create a new series (name, optional primary author, optional parent + position) |
+| GET    | `/api/series/{id}` | Series detail including additional authors, parent, and child series |
+| PUT    | `/api/series/{id}` | Update series name, primary author, additional authors, parent series, and position in parent |
 
 ### Stats & import
 
@@ -605,8 +609,10 @@ trusted LAN).
   Excluded / NotFound), exclusion reason, priority (0–5), bio (from OL),
   last-synced timestamp, next-fetch-due-at, `CalibreScannedAt` (for fair scan
   ordering), `RefreshIntervalDays` (optional fixed cadence override in days).
-- `Series` — normalised series name, optional FK to primary `Author`. A series can
-  be shared across authors (e.g. co-written or continued by another writer).
+- `Series` — normalised series name, optional FK to primary `Author`, optional
+  `ParentSeriesId` self-referential FK (up to 5 levels deep), `PositionInParent`
+  string for reading-order sorting within the parent. A series can be shared
+  across authors (e.g. co-written or continued by another writer).
 - `SeriesAuthor` — join table linking `Series` ↔ `Author` for additional/co-authors
   beyond the primary.
 - `Book` — OL work key (unique per author), title, first-publish year, cover id,

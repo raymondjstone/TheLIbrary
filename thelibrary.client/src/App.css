@@ -45,7 +45,7 @@
 body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; font-size: 15px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
 
 /* ── Layout ──────────────────────────────────────────────────── */
-.layout { display: grid; grid-template-columns: var(--nav-w) 1fr; min-height: 100vh; max-width: 1480px; margin: 0 auto; }
+.layout { display: grid; grid-template-columns: var(--nav-w) 1fr; min-height: 100vh; width: 100%; }
 
 /* ── Sidebar ─────────────────────────────────────────────────── */
 .topbar {

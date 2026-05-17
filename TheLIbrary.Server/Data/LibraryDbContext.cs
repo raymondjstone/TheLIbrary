@@ -49,10 +49,15 @@ public class LibraryDbContext : DbContext
         b.Entity<Series>(e =>
         {
             e.HasIndex(x => x.NormalizedName);
+            e.HasIndex(x => x.ParentSeriesId);
             e.HasOne(x => x.PrimaryAuthor)
                 .WithMany()
                 .HasForeignKey(x => x.PrimaryAuthorId)
                 .OnDelete(DeleteBehavior.SetNull);
+            e.HasOne(x => x.ParentSeries)
+                .WithMany(x => x.ChildSeries)
+                .HasForeignKey(x => x.ParentSeriesId)
+                .OnDelete(DeleteBehavior.ClientSetNull);
         });
 
         b.Entity<SeriesAuthor>(e =>

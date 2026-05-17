@@ -154,6 +154,9 @@ public class BooksController : ControllerBase
         string Name,
         int? PrimaryAuthorId,
         string? PrimaryAuthorName,
+        int? ParentSeriesId,
+        string? ParentSeriesName,
+        string? PositionInParent,
         int BookCount,
         int OwnedCount,
         IReadOnlyList<SeriesBookRow> Books);
@@ -180,6 +183,10 @@ public class BooksController : ControllerBase
             .OrderBy(s => s.Name)
             .ToListAsync(ct);
 
+        // Resolve parent names from the already-loaded list to avoid a self-referential Include
+        // combining with multi-collection includes (Books.Author + Books.LocalFiles).
+        var nameById = series.ToDictionary(s => s.Id, s => s.Name);
+
         return series.Select(s =>
         {
             var books = s.Books
@@ -191,8 +198,11 @@ public class BooksController : ControllerBase
                     b.OpenLibraryWorkKey, b.AuthorId, b.Author.Name,
                     b.ManuallyOwned || b.LocalFiles.Any(), b.ReadStatus.ToString()))
                 .ToList();
-            return new SeriesEntry(s.Id, s.Name, s.PrimaryAuthorId,
-                s.PrimaryAuthor?.Name, books.Count, books.Count(b => b.Owned), books);
+            var parentName = s.ParentSeriesId.HasValue
+                && nameById.TryGetValue(s.ParentSeriesId.Value, out var pn) ? pn : null;
+            return new SeriesEntry(s.Id, s.Name, s.PrimaryAuthorId, s.PrimaryAuthor?.Name,
+                s.ParentSeriesId, parentName, s.PositionInParent,
+                books.Count, books.Count(b => b.Owned), books);
         }).ToList();
     }
 
