@@ -57,4 +57,5 @@ public class Author
     public string? Notes { get; set; }
 
     public List<Book> Books { get; set; } = new();
+    public List<SeriesAuthor> SeriesAuthors { get; set; } = new();
 }

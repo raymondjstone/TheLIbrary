@@ -1,6 +1,66 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import StarRating from '../components/StarRating.jsx'
+
+// Custom series name input — shows all associated series on focus regardless of
+// current value, filters as the user types, and allows free-text for new series.
+function SeriesNamePicker({ value, onChange, options, currentAuthorName }) {
+    const [text, setText] = useState(value)
+    const [open, setOpen] = useState(false)
+    const ref = useRef(null)
+
+    useEffect(() => { setText(value) }, [value])
+
+    const matches = options.filter(s =>
+        !text || s.name.toLowerCase().includes(text.toLowerCase())
+    ).slice(0, 40)
+
+    const select = (s) => { setText(s.name); onChange(s.name); setOpen(false) }
+    const clear   = ()  => { setText('');    onChange('');     setOpen(false) }
+
+    return (
+        <div ref={ref} style={{ position: 'relative', flex: '1 1 160px' }}>
+            <input
+                type="text"
+                placeholder="Series name (blank to clear)"
+                value={text}
+                onChange={e => { setText(e.target.value); onChange(e.target.value); setOpen(true) }}
+                onFocus={() => setOpen(true)}
+                onBlur={() => setTimeout(() => setOpen(false), 150)}
+                style={{ width: '100%', padding: '0.2rem 0.4rem', fontSize: '0.85rem', border: '1px solid var(--border)', borderRadius: '4px' }} />
+            {open && (
+                <div style={{
+                    position: 'absolute', top: '100%', left: 0, zIndex: 300, minWidth: '100%',
+                    background: 'var(--card)', border: '1px solid var(--border)', borderRadius: '4px',
+                    maxHeight: '200px', overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,.15)'
+                }}>
+                    {text && (
+                        <div onMouseDown={clear}
+                            style={{ padding: '0.2rem 0.5rem', cursor: 'pointer', fontSize: '0.82rem', color: 'var(--subtle)', borderBottom: '1px solid var(--border)' }}>
+                            — Clear series —
+                        </div>
+                    )}
+                    {matches.length === 0 && (
+                        <div style={{ padding: '0.2rem 0.5rem', fontSize: '0.82rem', color: 'var(--subtle)' }}>
+                            {text ? `Create "${text}"` : 'No series found'}
+                        </div>
+                    )}
+                    {matches.map(s => (
+                        <div key={s.name} onMouseDown={() => select(s)}
+                            style={{ padding: '0.2rem 0.5rem', cursor: 'pointer', fontSize: '0.82rem' }}>
+                            {s.name}
+                            {s.primaryAuthorName && s.primaryAuthorName !== currentAuthorName && (
+                                <span style={{ color: 'var(--subtle)', marginLeft: '0.35rem' }}>
+                                    ({s.primaryAuthorName})
+                                </span>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    )
+}
 
 function UnmatchedFilesSection({
     unmatchedLocal, books,
@@ -185,6 +245,7 @@ export default function AuthorDetail() {
             .then(setData)
             .catch(err => setData({ error: String(err) }))
     }, [id])
+
 
     useEffect(() => {
         fetch('/api/remarkable/status')
@@ -408,10 +469,11 @@ export default function AuthorDetail() {
             })
             if (!r.ok) throw new Error(r.statusText)
             const body = await r.json()
+            const newSeries = seriesEdit.name.trim() || null
             setData(prev => ({
                 ...prev,
                 books: prev.books.map(b => b.id === book.id
-                    ? { ...b, series: body.series, seriesPosition: body.seriesPosition }
+                    ? { ...b, series: newSeries, seriesPosition: body.seriesPosition ?? null }
                     : b)
             }))
         } catch (e) {
@@ -490,7 +552,21 @@ export default function AuthorDetail() {
 
     const visibleBooks = ownedOnly ? data.books.filter(b => b.owned) : data.books
     const ownedCount = data.books.filter(b => b.owned).length
-    const knownSeries = [...new Set(data.books.map(b => b.series).filter(Boolean))].sort()
+
+    // Series suggestions for the datalist: all series where this author is primary
+    // or secondary, plus any series already on books on this page. Typing a name
+    // not in the list creates a new series when saved.
+    const knownSeries = (() => {
+        const m = new Map()
+        for (const s of (data.associatedSeries ?? [])) {
+            m.set(s.name, { id: s.id, name: s.name, primaryAuthorName: s.primaryAuthorName })
+        }
+        for (const b of data.books) {
+            if (b.series && !m.has(b.series))
+                m.set(b.series, { id: b.seriesId, name: b.series, primaryAuthorName: b.seriesPrimaryAuthorName })
+        }
+        return [...m.values()].sort((a, b) => a.name.localeCompare(b.name))
+    })()
 
     const seriesGroups = (() => {
         const dedupe = books => {
@@ -661,7 +737,9 @@ export default function AuthorDetail() {
                 <div key={series ?? '__noseries'}>
                     {(series || hasNamedSeries) && (
                         <h3 style={{ margin: '1.5rem 0 0.5rem', fontWeight: 600, fontSize: '1rem', color: 'var(--subtle)' }}>
-                            {series ? `Series: ${series}` : 'No Series'}
+                            {series
+                                ? <>Series: <Link to={`/series?q=${encodeURIComponent(series)}`}>{series}</Link></>
+                                : 'No Series'}
                         </h3>
                     )}
             <table className="grid">
@@ -694,16 +772,11 @@ export default function AuthorDetail() {
                                     <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{b.title}</a>
                                     {editingSeriesId === b.id ? (
                                         <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                                            <input
-                                                type="text"
-                                                list={`series-list-${b.id}`}
-                                                placeholder="Series name"
+                                            <SeriesNamePicker
                                                 value={seriesEdit.name}
-                                                onChange={e => setSeriesEdit(p => ({ ...p, name: e.target.value }))}
-                                                style={{ flex: '1 1 160px', padding: '0.2rem 0.4rem', fontSize: '0.85rem', border: '1px solid var(--border)', borderRadius: '4px' }} />
-                                            <datalist id={`series-list-${b.id}`}>
-                                                {knownSeries.map(s => <option key={s} value={s} />)}
-                                            </datalist>
+                                                onChange={name => setSeriesEdit(p => ({ ...p, name }))}
+                                                options={knownSeries}
+                                                currentAuthorName={data.name} />
                                             <input
                                                 type="text"
                                                 placeholder="#"
@@ -863,10 +936,11 @@ export default function AuthorDetail() {
                                     <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{b.title}</a>
                                     {editingSeriesId === b.id ? (
                                         <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                                            <input type="text" list={`series-list-${b.id}`} placeholder="Series name"
-                                                value={seriesEdit.name} onChange={e => setSeriesEdit(p => ({ ...p, name: e.target.value }))}
-                                                style={{ flex: '1 1 160px', padding: '0.2rem 0.4rem', fontSize: '0.85rem', border: '1px solid var(--border)', borderRadius: '4px' }} />
-                                            <datalist id={`series-list-${b.id}`}>{knownSeries.map(s => <option key={s} value={s} />)}</datalist>
+                                            <SeriesNamePicker
+                                                value={seriesEdit.name}
+                                                onChange={name => setSeriesEdit(p => ({ ...p, name }))}
+                                                options={knownSeries}
+                                                currentAuthorName={data.name} />
                                             <input type="text" placeholder="#" value={seriesEdit.position}
                                                 onChange={e => setSeriesEdit(p => ({ ...p, position: e.target.value }))}
                                                 style={{ width: '4rem', padding: '0.2rem 0.4rem', fontSize: '0.85rem', border: '1px solid var(--border)', borderRadius: '4px' }} />

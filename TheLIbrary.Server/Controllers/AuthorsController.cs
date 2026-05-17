@@ -145,6 +145,8 @@ public class AuthorsController : ControllerBase
         )).ToList();
     }
 
+    public sealed record SeriesSuggestion(int Id, string Name, string? PrimaryAuthorName);
+
     public sealed record AuthorDetail(
         int Id,
         string Name,
@@ -159,7 +161,8 @@ public class AuthorsController : ControllerBase
         string? Bio,
         string? Notes,
         IReadOnlyList<BookRow> Books,
-        IReadOnlyList<UnmatchedRow> UnmatchedLocal);
+        IReadOnlyList<UnmatchedRow> UnmatchedLocal,
+        IReadOnlyList<SeriesSuggestion> AssociatedSeries);
 
     public sealed record BookRow(
         int Id,
@@ -177,7 +180,9 @@ public class AuthorsController : ControllerBase
         string? Subjects,
         string? Series,
         string? SeriesPosition,
-        IReadOnlyList<LocalFileRow> Files);
+        IReadOnlyList<LocalFileRow> Files,
+        int? SeriesId = null,
+        string? SeriesPrimaryAuthorName = null);
 
     public sealed record LocalFileRow(int Id, string FullPath, IReadOnlyList<string> Formats);
 
@@ -228,15 +233,19 @@ public class AuthorsController : ControllerBase
         // per-file folder on disk for formats outside the EF query.
         var rawBooks = await _db.Books.AsNoTracking()
             .Where(b => b.AuthorId == id)
-            .OrderBy(b => b.Series == null ? 1 : 0)
-            .ThenBy(b => b.Series)
+            .OrderBy(b => b.SeriesId == null ? 1 : 0)
+            .ThenBy(b => b.Series!.Name)
             .ThenBy(b => b.SeriesPosition)
             .ThenBy(b => b.FirstPublishYear ?? int.MaxValue)
             .ThenBy(b => b.Title)
             .Select(b => new
             {
                 b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
-                b.ManuallyOwned, b.ReadStatus, b.ReadAt, b.Wanted, b.Subjects, b.Series, b.SeriesPosition,
+                b.ManuallyOwned, b.ReadStatus, b.ReadAt, b.Wanted, b.Subjects,
+                SeriesName = b.Series != null ? b.Series.Name : null,
+                b.SeriesId,
+                SeriesPrimaryAuthorName = b.Series != null && b.Series.PrimaryAuthor != null ? b.Series.PrimaryAuthor.Name : null,
+                b.SeriesPosition,
                 Files = b.LocalFiles.Select(f => new { f.Id, f.FullPath }).ToList()
             })
             .ToListAsync(ct);
@@ -250,9 +259,11 @@ public class AuthorsController : ControllerBase
             b.ReadAt,
             b.Wanted,
             b.Subjects,
-            b.Series,
+            b.SeriesName,
             b.SeriesPosition,
-            b.Files.Select(f => new LocalFileRow(f.Id, f.FullPath, FormatsInFolder(f.FullPath))).ToList()
+            b.Files.Select(f => new LocalFileRow(f.Id, f.FullPath, FormatsInFolder(f.FullPath))).ToList(),
+            b.SeriesId,
+            b.SeriesPrimaryAuthorName
         )).ToList();
 
         // Include orphan rows (AuthorId == null) whose Calibre folder matches
@@ -273,11 +284,17 @@ public class AuthorsController : ControllerBase
             .Select(f => new UnmatchedRow(f.Id, f.TitleFolder, f.FullPath, FormatsInFolder(f.FullPath)))
             .ToList();
 
+        var associatedSeries = await _db.Series
+            .Where(s => s.PrimaryAuthorId == id || s.SeriesAuthors.Any(sa => sa.AuthorId == id))
+            .OrderBy(s => s.Name)
+            .Select(s => new SeriesSuggestion(s.Id, s.Name, s.PrimaryAuthor != null ? s.PrimaryAuthor.Name : null))
+            .ToListAsync(ct);
+
         return new AuthorDetail(
             a.Id, a.Name, a.OpenLibraryKey, a.CalibreFolderName,
             a.Status.ToString(), a.ExclusionReason, a.Priority, a.LastSyncedAt, a.NextFetchAt, a.RefreshIntervalDays,
             a.Bio, a.Notes,
-            books, unmatched);
+            books, unmatched, associatedSeries);
     }
 
     private static List<string> FolderCandidatesFor(Author a)

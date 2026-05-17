@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
+using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.Scheduling;
 
@@ -84,7 +85,7 @@ public sealed class SeriesOrganizerService
             .ToDictionaryAsync(a => a.Id, a => a.Priority, ct);
 
         var files = await db.LocalBookFiles
-            .Include(f => f.Book)
+            .Include(f => f.Book).ThenInclude(b => b!.Series)
             .ToListAsync(ct);
 
         files.Sort((x, y) =>
@@ -146,34 +147,96 @@ public sealed class SeriesOrganizerService
             var libRoot = location.Path.TrimEnd('\\', '/');
             var authorDir = Path.Combine(libRoot, file.AuthorFolder);
 
-            var series = file.Book?.Series;
+            // Series resolution — three steps, in priority order:
+            //
+            // 1. Book.Series from DB: the user's explicit value always wins.
+            //    A null value means "not yet known" (fallthrough); an empty
+            //    string means "user explicitly cleared it" → author root.
+            //
+            // 2. Auto-clean bad stored values: if Book.Series itself looks like
+            //    a title-folder string ("Midkemia 02 - The King's Buccaneer"),
+            //    extract the clean series name and fix the DB so the correct
+            //    folder is used from now on.
+            //
+            // 3. Filename fallback: when DB series is null, parse the filename
+            //    ("Midkemia 02 - Title.epub" → "Midkemia") and backfill the DB.
+            var stem = Path.GetFileNameWithoutExtension(effectivePath);
+            // series is now the Name string from the Series navigation property (or null/empty)
+            var seriesName = file.Book?.Series?.Name;
 
-            // When the DB has no series (OL hasn't supplied one yet), try to
-            // extract it from the filename — e.g. "Chaoswar Saga 03 - Title.epub".
-            if (string.IsNullOrWhiteSpace(series))
+            if (!string.IsNullOrWhiteSpace(seriesName))
             {
-                var stem = Path.GetFileNameWithoutExtension(effectivePath);
+                // Step 2 — clean up values that look like title-folder format.
+                var (cleanedSeries, _, _, _) = TitleNormalizer.TryParseSeriesFilename(seriesName);
+                if (!string.IsNullOrWhiteSpace(cleanedSeries)
+                    && !string.Equals(cleanedSeries, seriesName, StringComparison.OrdinalIgnoreCase))
+                {
+                    seriesName = cleanedSeries;
+                    if (file.BookId.HasValue)
+                    {
+                        var normalizedCleaned = TitleNormalizer.Normalize(cleanedSeries);
+                        var cleanedRecord = await db.Series.FirstOrDefaultAsync(
+                            s => s.NormalizedName == normalizedCleaned, ct);
+                        if (cleanedRecord is null)
+                        {
+                            cleanedRecord = new Series
+                            {
+                                Name = cleanedSeries,
+                                NormalizedName = normalizedCleaned,
+                                PrimaryAuthorId = file.AuthorId,
+                            };
+                            db.Series.Add(cleanedRecord);
+                            await db.SaveChangesAsync(ct);
+                        }
+                        var cleanedSeriesId = cleanedRecord.Id;
+                        await db.Books
+                            .Where(b => b.Id == file.BookId.Value)
+                            .ExecuteUpdateAsync(s => s
+                                .SetProperty(b => b.SeriesId, _ => cleanedSeriesId), ct);
+                    }
+                }
+            }
+            else if (seriesName is null && file.Book?.SeriesId is null)
+            {
+                // Step 3 — filename fallback only when the DB has no series at all.
                 var (parsedSeries, parsedPos, _, _) = TitleNormalizer.TryParseSeriesFilename(stem);
                 if (!string.IsNullOrWhiteSpace(parsedSeries))
                 {
-                    series = parsedSeries;
-                    // Persist so subsequent runs (and the UI) don't need to re-parse.
+                    seriesName = parsedSeries;
                     if (file.BookId.HasValue)
                     {
+                        var normalizedParsed = TitleNormalizer.Normalize(parsedSeries);
+                        var parsedRecord = await db.Series.FirstOrDefaultAsync(
+                            s => s.NormalizedName == normalizedParsed, ct);
+                        if (parsedRecord is null)
+                        {
+                            parsedRecord = new Series
+                            {
+                                Name = parsedSeries,
+                                NormalizedName = normalizedParsed,
+                                PrimaryAuthorId = file.AuthorId,
+                            };
+                            db.Series.Add(parsedRecord);
+                            await db.SaveChangesAsync(ct);
+                        }
+                        var parsedSeriesId = parsedRecord.Id;
                         await db.Books
-                            .Where(b => b.Id == file.BookId.Value && b.Series == null)
+                            .Where(b => b.Id == file.BookId.Value && b.SeriesId == null)
                             .ExecuteUpdateAsync(s => s
-                                .SetProperty(b => b.Series, _ => parsedSeries)
+                                .SetProperty(b => b.SeriesId, _ => parsedSeriesId)
                                 .SetProperty(b => b.SeriesPosition, b =>
                                     b.SeriesPosition == null ? parsedPos : b.SeriesPosition),
                             ct);
                     }
                 }
             }
+            // seriesName == null (book has SeriesId set) means it was already loaded;
+            // seriesName == "" → not possible via nav property (Series.Name is never empty after migration)
+            // A book with no Series navigation → targetDir = authorDir (no series folder)
 
-            var targetDir = string.IsNullOrWhiteSpace(series)
+            var targetDir = string.IsNullOrWhiteSpace(seriesName)
                 ? authorDir
-                : Path.Combine(authorDir, SanitizeFolderName(series));
+                : Path.Combine(authorDir, SanitizeFolderName(seriesName));
 
             string? sourceContainer;
             string? primaryEbook;
@@ -258,11 +321,24 @@ public sealed class SeriesOrganizerService
             {
                 Directory.CreateDirectory(targetDir);
 
+                // Flat-file layout: FullPath points to a specific file sitting
+                // directly in the author or series folder. Each LocalBookFile
+                // record owns exactly one file — move only that file. Sweeping
+                // the whole sourceContainer would drag sibling books (which
+                // have their own records) into the wrong series subfolder.
+                //
+                // Classic Calibre layout: FullPath is a title folder whose
+                // entire contents belong to this one book. Enumerate everything.
+                bool isFlatFile = primaryEbook is not null
+                    && File.Exists(primaryEbook)
+                    && string.Equals(primaryEbook, effectivePath, StringComparison.OrdinalIgnoreCase);
+
                 List<string> filesToMove;
                 try
                 {
-                    filesToMove = Directory.EnumerateFiles(
-                        sourceContainer, "*", SearchOption.AllDirectories).ToList();
+                    filesToMove = isFlatFile
+                        ? new List<string> { primaryEbook! }
+                        : Directory.EnumerateFiles(sourceContainer, "*", SearchOption.AllDirectories).ToList();
                 }
                 catch (Exception ex)
                 {
@@ -277,8 +353,9 @@ public sealed class SeriesOrganizerService
                 {
                     var ext = Path.GetExtension(src);
 
-                    // Delete junk files in place rather than propagating them
-                    // to the target directory.
+                    // Delete junk files in place — only relevant for the
+                    // title-folder (classic) path; flat-file records point to
+                    // known ebook/archive files so this branch is never hit.
                     if (CalibreScanner.JunkExtensions.Contains(ext))
                     {
                         try { File.Delete(src); }
@@ -306,8 +383,14 @@ public sealed class SeriesOrganizerService
                                  ?? movedEbooks[0];
                 }
 
-                PruneEmptyDirs(sourceContainer);
-                DeleteEmptyAncestors(sourceContainer, authorDir, targetDir);
+                // Only prune the source container when it was a dedicated title
+                // folder — never delete the author dir or a series subfolder
+                // that other books still live in.
+                if (!isFlatFile)
+                {
+                    PruneEmptyDirs(sourceContainer);
+                    DeleteEmptyAncestors(sourceContainer, authorDir, targetDir);
+                }
 
                 _log.LogInformation("Moved {Count} file(s): {Old} -> {New}",
                     filesToMove.Count, sourceContainer, targetDir);

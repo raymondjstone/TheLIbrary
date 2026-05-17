@@ -34,8 +34,8 @@ public class Book
     // Semicolon-separated OL subject tags (e.g. "Science fiction;Fiction;Space opera (Fiction)")
     public string? Subjects { get; set; }
 
-    [MaxLength(512)]
-    public string? Series { get; set; }
+    public int? SeriesId { get; set; }
+    public Series? Series { get; set; }
 
     [MaxLength(50)]
     public string? SeriesPosition { get; set; }

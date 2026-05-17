@@ -120,7 +120,7 @@ public sealed class AuthorRefresher
         // backfill subjects/series for books that predate this feature.
         var existingBooks = await _db.Books
             .Where(b => b.AuthorId == author.Id)
-            .Select(b => new { b.Id, b.OpenLibraryWorkKey, b.Subjects, b.Series, b.SeriesPosition })
+            .Select(b => new { b.Id, b.OpenLibraryWorkKey, b.Subjects, b.SeriesId, b.SeriesPosition })
             .ToListAsync(ct);
         var existingByKey = existingBooks.ToDictionary(
             b => b.OpenLibraryWorkKey, b => b, StringComparer.OrdinalIgnoreCase);
@@ -159,19 +159,32 @@ public sealed class AuthorRefresher
                 if (existingByKey.TryGetValue(workKey, out var existing))
                 {
                     bool needsSubjects = existing.Subjects is null;
-                    bool needsSeriesName = existing.Series is null && seriesName is not null;
+                    bool needsSeriesName = existing.SeriesId is null && seriesName is not null;
                     bool needsPosition = existing.SeriesPosition is null && seriesPos is not null;
                     if (needsSubjects || needsSeriesName || needsPosition)
                     {
+                        int? newSeriesId = existing.SeriesId;
+                        if (needsSeriesName && seriesName is not null)
+                        {
+                            var s = await FindOrCreateSeriesAsync(seriesName, author.Id, ct);
+                            newSeriesId = s.Id;
+                        }
                         await _db.Books
                             .Where(b => b.Id == existing.Id)
                             .ExecuteUpdateAsync(s => s
                                 .SetProperty(b => b.Subjects, _ => needsSubjects ? BuildSubjects(doc.Subject) : existing.Subjects)
-                                .SetProperty(b => b.Series, _ => seriesName ?? existing.Series)
+                                .SetProperty(b => b.SeriesId, _ => newSeriesId)
                                 .SetProperty(b => b.SeriesPosition, _ => needsPosition ? seriesPos : existing.SeriesPosition), ct);
                     }
                 }
                 continue;
+            }
+
+            int? seriesId = null;
+            if (seriesName is not null)
+            {
+                var seriesRecord = await FindOrCreateSeriesAsync(seriesName, author.Id, ct);
+                seriesId = seriesRecord.Id;
             }
 
             _db.Books.Add(new Book
@@ -183,7 +196,7 @@ public sealed class AuthorRefresher
                 CoverId = doc.CoverId,
                 AuthorId = author.Id,
                 Subjects = BuildSubjects(doc.Subject), // "" when OL has none
-                Series = seriesName,
+                SeriesId = seriesId,
                 SeriesPosition = seriesPos,
             });
             fetched++;
@@ -288,6 +301,31 @@ public sealed class AuthorRefresher
         var name = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[3].Value;
         var pos  = m.Groups[2].Success ? m.Groups[2].Value : m.Groups[4].Value;
         return (name.Trim(), string.IsNullOrEmpty(pos) ? null : pos);
+    }
+
+    // Finds an existing Series by NormalizedName or creates a new one.
+    // Sets PrimaryAuthorId if not already set and authorId is provided.
+    private async Task<Series> FindOrCreateSeriesAsync(string name, int? authorId, CancellationToken ct)
+    {
+        var normalizedName = TitleNormalizer.Normalize(name);
+        var series = await _db.Series.FirstOrDefaultAsync(s => s.NormalizedName == normalizedName, ct);
+        if (series is null)
+        {
+            series = new Series
+            {
+                Name = name.Trim(),
+                NormalizedName = normalizedName,
+                PrimaryAuthorId = authorId,
+            };
+            _db.Series.Add(series);
+            await _db.SaveChangesAsync(ct);
+        }
+        else if (series.PrimaryAuthorId is null && authorId is not null)
+        {
+            series.PrimaryAuthorId = authorId;
+            await _db.SaveChangesAsync(ct);
+        }
+        return series;
     }
 
     // OL stores bio as either a plain string or {"type":"/type/text","value":"..."}.

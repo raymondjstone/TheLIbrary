@@ -111,8 +111,8 @@ public class OPDSController : ControllerBase
                 new XAttribute("title", "OpenLibrary")));
 
             var summary = new StringBuilder();
-            if (!string.IsNullOrWhiteSpace(b.Series))
-                summary.Append($"Series: {b.Series}");
+            if (!string.IsNullOrWhiteSpace(b.Series?.Name))
+                summary.Append($"Series: {b.Series!.Name}");
             if (!string.IsNullOrWhiteSpace(b.SeriesPosition))
                 summary.Append($" #{b.SeriesPosition}");
             summary.Append(b.Owned ? " · Owned" : " · Missing");

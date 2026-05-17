@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.Sync;
 
 namespace TheLibrary.Server.Controllers;
 
@@ -77,10 +78,30 @@ public class BooksController : ControllerBase
     {
         var book = await _db.Books.FirstOrDefaultAsync(b => b.Id == id, ct);
         if (book is null) return NotFound();
-        book.Series = string.IsNullOrWhiteSpace(body.SeriesName) ? null : body.SeriesName.Trim();
+        if (string.IsNullOrWhiteSpace(body.SeriesName))
+        {
+            book.SeriesId = null;
+        }
+        else
+        {
+            var name = body.SeriesName.Trim();
+            var normalizedName = Services.Sync.TitleNormalizer.Normalize(name);
+            var series = await _db.Series.FirstOrDefaultAsync(s => s.NormalizedName == normalizedName, ct);
+            if (series is null)
+            {
+                series = new Data.Models.Series { Name = name, NormalizedName = normalizedName, PrimaryAuthorId = book.AuthorId };
+                _db.Series.Add(series);
+                await _db.SaveChangesAsync(ct);
+            }
+            else if (series.PrimaryAuthorId is null)
+            {
+                series.PrimaryAuthorId = book.AuthorId;
+            }
+            book.SeriesId = series.Id;
+        }
         book.SeriesPosition = string.IsNullOrWhiteSpace(body.Position) ? null : body.Position.Trim();
         await _db.SaveChangesAsync(ct);
-        return Ok(new { book.Id, book.Series, book.SeriesPosition });
+        return Ok(new { book.Id, book.SeriesId, book.SeriesPosition });
     }
 
     public sealed record WantedAuthorGroup(
@@ -103,7 +124,7 @@ public class BooksController : ControllerBase
         var rows = await _db.Books.AsNoTracking()
             .Where(b => b.Wanted)
             .OrderBy(b => b.Author!.Name)
-            .ThenBy(b => b.Series)
+            .ThenBy(b => b.Series!.Name)
             .ThenBy(b => b.SeriesPosition)
             .ThenBy(b => b.FirstPublishYear ?? int.MaxValue)
             .ThenBy(b => b.Title)
@@ -111,7 +132,9 @@ public class BooksController : ControllerBase
             {
                 AuthorId = b.Author!.Id,
                 AuthorName = b.Author.Name,
-                b.Id, b.Title, b.FirstPublishYear, b.Series, b.SeriesPosition,
+                b.Id, b.Title, b.FirstPublishYear,
+                SeriesName = b.Series != null ? b.Series.Name : null,
+                b.SeriesPosition,
                 b.OpenLibraryWorkKey, b.CoverId
             })
             .ToListAsync(ct);
@@ -121,13 +144,16 @@ public class BooksController : ControllerBase
             .Select(g => new WantedAuthorGroup(
                 g.Key.AuthorId, g.Key.AuthorName,
                 g.Select(b => new WantedBookRow(
-                    b.Id, b.Title, b.FirstPublishYear, b.Series, b.SeriesPosition,
+                    b.Id, b.Title, b.FirstPublishYear, b.SeriesName, b.SeriesPosition,
                     b.OpenLibraryWorkKey, b.CoverId)).ToList()))
             .ToList();
     }
 
     public sealed record SeriesEntry(
+        int Id,
         string Name,
+        int? PrimaryAuthorId,
+        string? PrimaryAuthorName,
         int BookCount,
         int OwnedCount,
         IReadOnlyList<SeriesBookRow> Books);
@@ -147,33 +173,27 @@ public class BooksController : ControllerBase
     [HttpGet("series")]
     public async Task<IReadOnlyList<SeriesEntry>> AllSeries(CancellationToken ct)
     {
-        var rows = await _db.Books.AsNoTracking()
-            .Where(b => b.Series != null && b.Series != "")
-            .Select(b => new
-            {
-                b.Id, b.Title, b.Series, b.SeriesPosition, b.FirstPublishYear, b.CoverId,
-                b.OpenLibraryWorkKey, b.AuthorId, AuthorName = b.Author.Name,
-                Owned = b.ManuallyOwned || b.LocalFiles.Any(),
-                ReadStatusStr = b.ReadStatus.ToString(),
-            })
+        var series = await _db.Series
+            .Include(s => s.PrimaryAuthor)
+            .Include(s => s.Books).ThenInclude(b => b.Author)
+            .Include(s => s.Books).ThenInclude(b => b.LocalFiles)
+            .OrderBy(s => s.Name)
             .ToListAsync(ct);
 
-        return rows
-            .GroupBy(r => r.Series!, StringComparer.OrdinalIgnoreCase)
-            .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(g =>
-            {
-                var books = g
-                    .OrderBy(b => TryParsePos(b.SeriesPosition))
-                    .ThenBy(b => b.FirstPublishYear ?? int.MaxValue)
-                    .ThenBy(b => b.Title, StringComparer.OrdinalIgnoreCase)
-                    .Select(b => new SeriesBookRow(
-                        b.Id, b.Title, b.SeriesPosition, b.FirstPublishYear, b.CoverId,
-                        b.OpenLibraryWorkKey, b.AuthorId, b.AuthorName, b.Owned, b.ReadStatusStr))
-                    .ToList();
-                return new SeriesEntry(g.Key, books.Count, books.Count(b => b.Owned), books);
-            })
-            .ToList();
+        return series.Select(s =>
+        {
+            var books = s.Books
+                .OrderBy(b => TryParsePos(b.SeriesPosition))
+                .ThenBy(b => b.FirstPublishYear ?? int.MaxValue)
+                .ThenBy(b => b.Title, StringComparer.OrdinalIgnoreCase)
+                .Select(b => new SeriesBookRow(
+                    b.Id, b.Title, b.SeriesPosition, b.FirstPublishYear, b.CoverId,
+                    b.OpenLibraryWorkKey, b.AuthorId, b.Author.Name,
+                    b.ManuallyOwned || b.LocalFiles.Any(), b.ReadStatus.ToString()))
+                .ToList();
+            return new SeriesEntry(s.Id, s.Name, s.PrimaryAuthorId,
+                s.PrimaryAuthor?.Name, books.Count, books.Count(b => b.Owned), books);
+        }).ToList();
     }
 
     private static double TryParsePos(string? pos)
@@ -277,7 +297,7 @@ public class BooksController : ControllerBase
                 b.Author.Priority,
                 b.Wanted,
                 b.Subjects,
-                b.Series))
+                b.Series != null ? b.Series.Name : null))
             .ToListAsync(ct);
     }
 
@@ -321,7 +341,8 @@ public class BooksController : ControllerBase
             .Select(b => new
             {
                 b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId,
-                b.OpenLibraryWorkKey, b.AuthorId, b.Subjects, b.Series,
+                b.OpenLibraryWorkKey, b.AuthorId, b.Subjects,
+                SeriesName = b.Series != null ? b.Series.Name : null,
                 AuthorName = b.Author.Name, AuthorPriority = b.Author.Priority,
                 Owned = b.ManuallyOwned || b.LocalFiles.Any(),
                 ReadStatusStr = b.ReadStatus.ToString(),
@@ -338,7 +359,7 @@ public class BooksController : ControllerBase
             .Select(r => new RecentReleaseRow(
                 r.Id, r.Title, r.FirstPublishYear!.Value, r.CoverId,
                 r.OpenLibraryWorkKey, r.AuthorId, r.AuthorName, r.AuthorPriority,
-                r.Owned, r.ReadStatusStr, r.Series, r.Subjects))
+                r.Owned, r.ReadStatusStr, r.SeriesName, r.Subjects))
             .ToList();
     }
 }

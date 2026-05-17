@@ -33,6 +33,7 @@ from a drop folder and re-running matching against previously-unmatched files.
 | All Releases | `/all-releases` | New works from all tracked authors |
 | Missing Works | `/missing` | Unowned books from starred authors — bulk-own, wanted flag, genre filter, search |
 | Starred Authors | `/starred` | Authors with priority ≥ 1 |
+| Series | `/series` | All series with owned/total progress bars; inline edit of name, primary author, and additional authors; deep-linkable via `?q=SeriesName` |
 | Stats | `/stats` | KPI cards, books-read-by-year chart, top genres, per-author coverage |
 | Duplicates | `/duplicates` | Books matched to more than one local file folder |
 | Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket |
@@ -231,16 +232,18 @@ author folder. On each pass:
 
 1. Every `LocalBookFile` record is evaluated (starred authors first, then
    alphabetically by author folder).
-2. Files already at the correct location are skipped; their DB paths are
+2. **Series resolution** uses a three-step priority chain per file:
+   1. `Book.SeriesId` (FK to the `Series` table) — the user's explicit value always wins. A null FK means "not yet known" (fall through). An empty-string series name (user explicitly cleared it) sends the book to the author root.
+   2. **Auto-clean bad stored values** — if the stored series name itself looks like a title-folder string (`"Midkemia 02 - The King's Buccaneer"`), the clean series name is extracted, the DB is updated, and the clean name is used for the move.
+   3. **Filename fallback** — when the DB has no series at all, the filename is parsed (`"Chaoswar Saga 03 - Title.epub"` → series `"Chaoswar Saga"`, position `3`) and backfilled into the database.
+3. Files already at the correct location are skipped; their DB paths are
    updated from the legacy directory format to the actual file path if needed.
-3. Files in title subfolders or grouping folders are moved to the target
-   directory. All files in a source container are moved together using
-   recursive enumeration, so nested structures collapse in one pass.
-4. Junk files (`.xml`, `.inf`, etc.) encountered during a move are deleted
+4. **Flat-file vs. classic layout** — when `FullPath` points to a file (flat-file), only that file is moved. When it points to a folder (classic Calibre layout), all folder contents are moved together so nested structures collapse in one pass.
+5. Junk files (`.xml`, `.inf`, etc.) encountered during a move are deleted
    rather than copied to the target.
-5. Source containers and their empty ancestors are pruned bottom-up after each
+6. Source containers and their empty ancestors are pruned bottom-up after each
    move, up to (but not including) the author root.
-6. `LocalBookFile.FullPath` is updated to the moved ebook file path immediately
+7. `LocalBookFile.FullPath` is updated to the moved ebook file path immediately
    after each operation so a subsequent sync sees the correct paths.
 
 Name conflicts at the destination are resolved by appending `_N` to the file
@@ -467,7 +470,7 @@ as they process each file.
 |--------|------|---------|
 | GET    | `/api/authors` | List tracked authors |
 | POST   | `/api/authors` | Add an author to the watchlist from an OL key |
-| GET    | `/api/authors/{id}` | Author detail + books (with genres, series, read status) + unmatched local files |
+| GET    | `/api/authors/{id}` | Author detail + books (with genres, series, read status) + unmatched local files + associated series (primary and secondary) |
 | PUT    | `/api/authors/{id}/priority` | Set 0–5 star priority |
 | PUT    | `/api/authors/{id}/refresh-interval` | Set or clear a fixed works-refresh interval (days) |
 | POST   | `/api/authors/{id}/refresh` | On-demand single-author OpenLibrary refresh |
@@ -490,6 +493,16 @@ as they process each file.
 | GET    | `/api/books/recent-releases/all` | Works published in the last 5 years (all authors) |
 | GET    | `/api/books/duplicates` | Books matched to more than one local file folder |
 | GET    | `/api/books/genres` | All distinct subject tags sorted by frequency |
+| GET    | `/api/books/series` | All series with book lists, owned counts, and primary author |
+| PUT    | `/api/books/{id}/series` | Set or clear a book's series name and position |
+
+### Series
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET    | `/api/series` | Lightweight series list for dropdowns (id, name, primary author) |
+| GET    | `/api/series/{id}` | Series detail including additional authors |
+| PUT    | `/api/series/{id}` | Update series name, primary author, and additional authors |
 
 ### Stats & import
 
@@ -592,11 +605,15 @@ trusted LAN).
   Excluded / NotFound), exclusion reason, priority (0–5), bio (from OL),
   last-synced timestamp, next-fetch-due-at, `CalibreScannedAt` (for fair scan
   ordering), `RefreshIntervalDays` (optional fixed cadence override in days).
+- `Series` — normalised series name, optional FK to primary `Author`. A series can
+  be shared across authors (e.g. co-written or continued by another writer).
+- `SeriesAuthor` — join table linking `Series` ↔ `Author` for additional/co-authors
+  beyond the primary.
 - `Book` — OL work key (unique per author), title, first-publish year, cover id,
   `ManuallyOwned` flag + timestamp, `Subjects` (semicolon-delimited OL subject
-  tags; `NULL` = never checked, `""` = checked/none found), `Series`,
-  `SeriesPosition`, `ReadStatus` (Unread/Reading/Read/Dnf), `ReadAt`, `Wanted`,
-  FK to Author.
+  tags; `NULL` = never checked, `""` = checked/none found), `SeriesId` (FK to
+  `Series`), `SeriesPosition`, `ReadStatus` (Unread/Reading/Read/Dnf), `ReadAt`,
+  `Wanted`, FK to Author.
 - `LocalBookFile` — path on disk (file path after organizer runs, directory path
   in classic Calibre layout), Calibre folder names, optional FKs to Author
   and Book (null FK = unmatched).

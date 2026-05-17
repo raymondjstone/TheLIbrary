@@ -17,6 +17,8 @@ public class LibraryDbContext : DbContext
     public DbSet<RemarkableAuth> RemarkableAuths => Set<RemarkableAuth>();
     public DbSet<AuthorBlacklist> AuthorBlacklist => Set<AuthorBlacklist>();
     public DbSet<NzbSite> NzbSites => Set<NzbSite>();
+    public DbSet<Series> Series => Set<Series>();
+    public DbSet<SeriesAuthor> SeriesAuthors => Set<SeriesAuthor>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -38,6 +40,26 @@ public class LibraryDbContext : DbContext
                 .WithMany(a => a.Books)
                 .HasForeignKey(x => x.AuthorId)
                 .OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.Series)
+                .WithMany(s => s.Books)
+                .HasForeignKey(x => x.SeriesId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        b.Entity<Series>(e =>
+        {
+            e.HasIndex(x => x.NormalizedName);
+            e.HasOne(x => x.PrimaryAuthor)
+                .WithMany()
+                .HasForeignKey(x => x.PrimaryAuthorId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        b.Entity<SeriesAuthor>(e =>
+        {
+            e.HasKey(x => new { x.SeriesId, x.AuthorId });
+            e.HasOne(x => x.Series).WithMany(s => s.SeriesAuthors).HasForeignKey(x => x.SeriesId);
+            e.HasOne(x => x.Author).WithMany(a => a.SeriesAuthors).HasForeignKey(x => x.AuthorId).OnDelete(DeleteBehavior.Cascade);
         });
 
         b.Entity<LibraryLocation>(e =>

@@ -146,7 +146,7 @@ public sealed class RemarkableClient
                     : Path.GetFileNameWithoutExtension(sourcePath);
             var displayName = BuildDisplayName(
                 file.Author?.Name ?? file.Book?.Author?.Name,
-                file.Book?.Series,
+                file.Book?.Series?.Name,
                 file.Book?.SeriesPosition,
                 bookTitle);
 
