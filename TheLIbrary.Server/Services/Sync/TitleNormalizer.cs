@@ -6,6 +6,13 @@ namespace TheLibrary.Server.Services.Sync;
 
 public static class TitleNormalizer
 {
+    // Matches the trailing "series number" in the first " - " segment of a filename,
+    // e.g. "Chaoswar Saga 03" → series="Chaoswar Saga", position="3".
+    // Requires at least one non-digit word before the number so bare numbers like
+    // "1984" don't accidentally match.
+    private static readonly Regex SeriesSegmentRx = new(
+        @"^(.+?)\s+#?(\d+(?:\.\d+)?)$", RegexOptions.Compiled);
+
     // Calibre appends "(123)" — strip the trailing id in parens.
     private static readonly Regex TrailingIdParens = new(@"\s*\(\d+\)\s*$", RegexOptions.Compiled);
     private static readonly Regex NonAlnum = new(@"[^a-z0-9]+", RegexOptions.Compiled);
@@ -103,6 +110,40 @@ public static class TitleNormalizer
         if (letters.Length < 4) return false;
         if (!letters.Any(char.IsUpper)) return false;
         return true;
+    }
+
+    // Parses a filename stem following the series naming convention:
+    //   "{Series Name} [#]N[.M] - {Title} - {Author, Last}"
+    //   "{Series Name} [#]N[.M] - {Title}"
+    //
+    // Returns (null,null,null,null) if the stem doesn't match the pattern.
+    // Author, when present, is in "Last, First" sort format; strip trailing
+    // underscores that some download tools append.
+    public static (string? Series, string? Position, string? Title, string? Author) TryParseSeriesFilename(string? stem)
+    {
+        if (string.IsNullOrWhiteSpace(stem)) return (null, null, null, null);
+
+        var parts = stem.Split(" - ", StringSplitOptions.None);
+        if (parts.Length < 2) return (null, null, null, null);
+
+        var m = SeriesSegmentRx.Match(parts[0].Trim());
+        if (!m.Success) return (null, null, null, null);
+
+        var series = m.Groups[1].Value.Trim();
+        if (string.IsNullOrWhiteSpace(series)) return (null, null, null, null);
+
+        // Normalise "03" → "3", "3.0" → "3"
+        var rawPos = m.Groups[2].Value.TrimStart('0');
+        if (string.IsNullOrEmpty(rawPos)) rawPos = "0";
+        if (rawPos.EndsWith(".0", StringComparison.Ordinal))
+            rawPos = rawPos[..^2];
+
+        var title = parts[1].Trim();
+        var author = parts.Length >= 3
+            ? parts[^1].Trim().TrimEnd('_', ' ', '.')
+            : null;
+
+        return (series, rawPos, title, string.IsNullOrWhiteSpace(author) ? null : author);
     }
 
     public static string NormalizeAuthor(string? input)

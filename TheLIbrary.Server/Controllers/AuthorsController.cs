@@ -154,6 +154,8 @@ public class AuthorsController : ControllerBase
         string? ExclusionReason,
         int Priority,
         DateTime? LastSyncedAt,
+        DateTime? NextFetchAt,
+        int? RefreshIntervalDays,
         string? Bio,
         string? Notes,
         IReadOnlyList<BookRow> Books,
@@ -190,16 +192,20 @@ public class AuthorsController : ControllerBase
         ".fb2", ".fbz", ".pdf", ".lit", ".cbz", ".docx", ".odt"
     };
 
-    // FullPath on LocalBookFile is the title folder, not an individual file.
-    // Enumerate it once per row so the UI can show actual formats (and pick
-    // which files are sendable to reMarkable).
-    private static IReadOnlyList<string> FormatsInFolder(string folderPath)
+    // FullPath may be a file path (flat-file layout after organizer runs) or a
+    // directory path (classic Calibre layout). Handle both so the UI shows formats.
+    private static IReadOnlyList<string> FormatsInFolder(string path)
     {
-        if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
-            return Array.Empty<string>();
+        if (string.IsNullOrWhiteSpace(path)) return Array.Empty<string>();
+        if (System.IO.File.Exists(path))
+        {
+            var ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+            return EbookExtensions.Contains("." + ext) ? new[] { ext } : Array.Empty<string>();
+        }
+        if (!Directory.Exists(path)) return Array.Empty<string>();
         try
         {
-            return Directory.EnumerateFiles(folderPath)
+            return Directory.EnumerateFiles(path)
                 .Select(p => Path.GetExtension(p).TrimStart('.').ToLowerInvariant())
                 .Where(ext => EbookExtensions.Contains("." + ext))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -269,7 +275,7 @@ public class AuthorsController : ControllerBase
 
         return new AuthorDetail(
             a.Id, a.Name, a.OpenLibraryKey, a.CalibreFolderName,
-            a.Status.ToString(), a.ExclusionReason, a.Priority, a.LastSyncedAt,
+            a.Status.ToString(), a.ExclusionReason, a.Priority, a.LastSyncedAt, a.NextFetchAt, a.RefreshIntervalDays,
             a.Bio, a.Notes,
             books, unmatched);
     }
@@ -565,6 +571,23 @@ public class AuthorsController : ControllerBase
         var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
         if (author is null) return NotFound();
         author.Priority = body.Priority;
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    public sealed record SetRefreshIntervalRequest(int? Days);
+
+    // Sets a fixed works-refresh cadence for this author. When Days is null the
+    // calculated interval (based on most-recent publication year) is restored.
+    // Validated to 1–3650 so the column never holds zero or absurdly large values.
+    [HttpPut("{id:int}/refresh-interval")]
+    public async Task<IActionResult> SetRefreshInterval(int id, [FromBody] SetRefreshIntervalRequest body, CancellationToken ct)
+    {
+        if (body.Days.HasValue && (body.Days.Value < 1 || body.Days.Value > 3650))
+            return BadRequest(new { error = "Days must be between 1 and 3650" });
+        var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (author is null) return NotFound();
+        author.RefreshIntervalDays = body.Days;
         await _db.SaveChangesAsync(ct);
         return NoContent();
     }

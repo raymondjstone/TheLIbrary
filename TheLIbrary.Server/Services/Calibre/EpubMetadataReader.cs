@@ -3,7 +3,14 @@ using System.Xml.Linq;
 
 namespace TheLibrary.Server.Services.Calibre;
 
-public sealed record EpubMetadata(string? Title, string? Author, string? AuthorSort, string? Language, string? Subject);
+public sealed record EpubMetadata(
+    string? Title,
+    string? Author,
+    string? AuthorSort,
+    string? Language,
+    string? Subject,
+    string? Series = null,
+    string? SeriesPosition = null);
 
 // Reads Dublin Core metadata out of an .epub file. EPUB is a zip whose
 // META-INF/container.xml points at an OPF file containing
@@ -60,12 +67,26 @@ public static class EpubMetadataReader
                 .ToList();
             var subject = subjects.Count > 0 ? string.Join(";", subjects) : null;
 
+            // Calibre stores series info as <meta name="calibre:series" content="..."/>
+            // and <meta name="calibre:series_index" content="3.0"/>.
+            string? series = null;
+            string? seriesPos = null;
+            foreach (var m in meta.Elements().Where(e => e.Name.LocalName == "meta"))
+            {
+                var name = m.Attribute("name")?.Value;
+                var content = Trim(m.Attribute("content")?.Value);
+                if (name == "calibre:series") series = content;
+                else if (name == "calibre:series_index") seriesPos = content?.TrimEnd('0').TrimEnd('.');
+            }
+
             return new EpubMetadata(
                 Trim(meta.Elements(Dc + "title").FirstOrDefault()?.Value),
                 Trim(creator?.Value),
                 Trim(authorSort),
                 Trim(meta.Elements(Dc + "language").FirstOrDefault()?.Value),
-                subject);
+                subject,
+                series,
+                seriesPos);
         }
         catch
         {

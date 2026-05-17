@@ -153,14 +153,14 @@ public sealed class IncomingProcessor
             // a weird permission blip) doesn't abort the entire run.
             try
             {
-            // Covers aren't books — delete them immediately.
+            // Covers and junk files aren't books — delete them immediately.
             var remaining = new List<string>(filesInDir.Count);
             foreach (var f in filesInDir)
             {
                 var fext = Path.GetExtension(f).ToLowerInvariant();
-                if (fext is ".jpg" or ".jpeg")
+                if (fext is ".jpg" or ".jpeg" || CalibreScanner.JunkExtensions.Contains(fext))
                 {
-                    try { DeleteAndWait(f); Report(null, $"deleted cover: {f}"); }
+                    try { DeleteAndWait(f); Report(null, $"deleted junk: {f}"); }
                     catch (Exception ex) { errors++; Report(null, $"error deleting {f}: {ex.Message}"); }
                 }
                 else remaining.Add(f);
@@ -374,7 +374,9 @@ public sealed class IncomingProcessor
         !string.IsNullOrWhiteSpace(a?.Author) ? a!.Author : b.Author,
         !string.IsNullOrWhiteSpace(a?.AuthorSort) ? a!.AuthorSort : b.AuthorSort,
         !string.IsNullOrWhiteSpace(a?.Language) ? a!.Language : b.Language,
-        a?.Subject ?? b.Subject);
+        a?.Subject ?? b.Subject,
+        a?.Series ?? b.Series,
+        a?.SeriesPosition ?? b.SeriesPosition);
 
     // Walks ancestors of folderPath upward (excluding sourceRoot and the
     // __unknown quarantine folder) and asks the OpenLibrary catalog about
@@ -622,9 +624,23 @@ public sealed class IncomingProcessor
         };
         if (m is not null && (m.Title is not null || m.Author is not null)) return m;
 
-        // Fallback: infer from the filename. "Author - Title.ext" is the common
-        // Library Genesis / calibre-plugin-export convention.
+        // Fallback: infer from the filename.
+        //
+        // Pattern 1 — series convention: "{Series} [#]N - {Title} - {Author, Last}"
+        //   e.g. "Chaoswar Saga 03 - Magician's End - Feist, Raymond E_.epub"
+        //
+        // Pattern 2 — libgen / calibre convention: "{Author} - {Title}.ext"
         var stem = Path.GetFileNameWithoutExtension(file);
+        var (series, seriesPos, parsedTitle, parsedAuthor) = TitleNormalizer.TryParseSeriesFilename(stem);
+        if (parsedTitle is not null)
+        {
+            // Author from this pattern is in "Last, First" sort order — use as
+            // both Author and AuthorSort so the matcher can normalise it.
+            return new EpubMetadata(parsedTitle, parsedAuthor, parsedAuthor, m?.Language, null,
+                series, seriesPos);
+        }
+
+        // Pattern 2: "Author - Title" (author first).
         var dash = stem.IndexOf(" - ", StringComparison.Ordinal);
         if (dash > 0)
         {

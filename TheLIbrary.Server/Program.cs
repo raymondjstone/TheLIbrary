@@ -44,6 +44,8 @@ builder.Services.AddSingleton<TheLibrary.Server.Services.Calibre.CalibreConverte
 builder.Services.AddScoped<TheLibrary.Server.Services.Remarkable.RemarkableClient>();
 builder.Services.AddSingleton<BackgroundTaskCoordinator>();
 builder.Services.AddSingleton<SyncService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.SeriesOrganizerService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnzipService>();
 
 // Hangfire uses the same SQL Server database for its job store so a restart
 // doesn't drop the schedule. WorkerCount=1 is the mutual-exclusion lever:

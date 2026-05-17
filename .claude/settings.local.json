@@ -38,7 +38,8 @@
       "Bash(Select-String -Path \"C:\\\\Code\\\\TheLibrary\\\\thelibrary.client\\\\src\\\\pages\\\\Settings.jsx\" -Pattern \"return \\\\\\(\")",
       "Bash(Select-Object -First 1 -ExpandProperty LineNumber)",
       "Bash(Get-ChildItem *)",
-      "Bash(Remove-Item \"C:\\\\Code\\\\TheLibrary\\\\TheLIbrary.Server.Tests\\\\bin\\\\Debug\\\\net10.0\\\\.msCoverageSourceRootsMapping_TheLIbrary.Server.Tests\" -Force -ErrorAction SilentlyContinue)"
+      "Bash(Remove-Item \"C:\\\\Code\\\\TheLibrary\\\\TheLIbrary.Server.Tests\\\\bin\\\\Debug\\\\net10.0\\\\.msCoverageSourceRootsMapping_TheLIbrary.Server.Tests\" -Force -ErrorAction SilentlyContinue)",
+      "Bash(Select-Object -ExpandProperty FullName)"
     ]
   }
 }

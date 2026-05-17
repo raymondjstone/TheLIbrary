@@ -1,4 +1,5 @@
 using System.Data;
+using Hangfire;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
@@ -263,6 +264,19 @@ public sealed class SyncService
         var existingByPath = new Dictionary<string, LocalBookFile>(StringComparer.Ordinal);
         foreach (var f in existingList) existingByPath[Canon(f.FullPath)] = f;
 
+        // Migration bridge: for records whose FullPath points to a folder (classic
+        // Calibre layout), also index by the primary ebook file inside that folder.
+        // This lets the updated scanner (which returns file-path entries for the
+        // flat-file layout) find and migrate old folder-path records transparently
+        // on the first sync after the series organizer has moved the files.
+        foreach (var lbf in existingList)
+        {
+            if (!Directory.Exists(lbf.FullPath)) continue;
+            var primary = PrimaryEbookInFolder(lbf.FullPath);
+            if (primary is not null)
+                existingByPath.TryAdd(Canon(primary), lbf);
+        }
+
         // Identify which author-folder keys have any file change (new, modified,
         // or removed). Authors with no changes are skipped entirely — no DB write,
         // no matching pass. This is the primary driver of the whole sync.
@@ -364,9 +378,15 @@ public sealed class SyncService
         // location offline, misconfigured path, etc.) — never wipe the catalogue.
         // Guard: if more than 1000 rows would be removed, something is almost
         // certainly wrong (drive remapped, UNC path changed, etc.); refuse and log.
+        // Exclude records that were updated this run — when a folder-path record was
+        // migrated to a file path, its old folder-path key is absent from deduped but
+        // the record is live under its new file-path key. Deleting it would undo the
+        // migration. Also de-duplicate since secondary keys can produce the same Id twice.
+        var updatedIds = new HashSet<int>(toUpdate.Select(f => f.Id));
         var removedIds = existingByPath
-            .Where(kvp => !deduped.ContainsKey(kvp.Key))
+            .Where(kvp => !deduped.ContainsKey(kvp.Key) && !updatedIds.Contains(kvp.Value.Id))
             .Select(kvp => kvp.Value.Id)
+            .Distinct()
             .ToList();
         if (removedIds.Count == 0)
         {
@@ -410,6 +430,23 @@ public sealed class SyncService
             await db.LocalBookFiles.Where(f => staleOrphanIds.Contains(f.Id)).ExecuteDeleteAsync(ct);
             MutateState(s => s.LocalFilesSeen -= staleOrphanIds.Count);
         }
+    }
+
+    // Returns the primary ebook file inside a folder (epub > pdf > other).
+    // Used to build a secondary existingByPath key so file-path scanner entries
+    // can find and migrate old folder-path DB records during the transition.
+    private static string? PrimaryEbookInFolder(string folder)
+    {
+        try
+        {
+            var files = Directory.EnumerateFiles(folder)
+                .Where(f => CalibreScanner.EbookExtensions.Contains(Path.GetExtension(f)))
+                .ToList();
+            return files.FirstOrDefault(f => Path.GetExtension(f).Equals(".epub", StringComparison.OrdinalIgnoreCase))
+                ?? files.FirstOrDefault(f => Path.GetExtension(f).Equals(".pdf", StringComparison.OrdinalIgnoreCase))
+                ?? files.FirstOrDefault();
+        }
+        catch { return null; }
     }
 
     private static void MatchAuthorFiles(
@@ -480,10 +517,13 @@ public sealed class SyncService
                 existing.BookId == effectiveBookId &&
                 existing.NormalizedTitle == norm &&
                 existing.AuthorFolder == entry.AuthorFolder &&
-                existing.TitleFolder == entry.TitleFolder)
+                existing.TitleFolder == entry.TitleFolder &&
+                // Include FullPath so a folder-path → file-path migration is persisted.
+                string.Equals(existing.FullPath, entry.FullPath, StringComparison.OrdinalIgnoreCase))
             {
                 return;
             }
+            existing.FullPath = entry.FullPath;
             existing.AuthorFolder = entry.AuthorFolder;
             existing.TitleFolder = entry.TitleFolder;
             existing.NormalizedTitle = norm;
@@ -560,6 +600,7 @@ public sealed class SyncService
         await using (var cmd = new SqlCommand(@"
             CREATE TABLE #lbf_upd (
                 Id              int             NOT NULL PRIMARY KEY,
+                FullPath        nvarchar(2048)  NOT NULL,
                 AuthorFolder    nvarchar(1024)  NOT NULL,
                 TitleFolder     nvarchar(1024)  NOT NULL,
                 NormalizedTitle nvarchar(1024),
@@ -572,6 +613,7 @@ public sealed class SyncService
 
         var dt = new DataTable();
         dt.Columns.Add("Id",              typeof(int));
+        dt.Columns.Add("FullPath",        typeof(string));
         dt.Columns.Add("AuthorFolder",    typeof(string));
         dt.Columns.Add("TitleFolder",     typeof(string));
         dt.Columns.Add("NormalizedTitle", typeof(string));
@@ -580,7 +622,7 @@ public sealed class SyncService
         dt.Columns.Add("SizeBytes",       typeof(long));
         dt.Columns.Add("ModifiedAt",      typeof(DateTime));
         foreach (var r in updates)
-            dt.Rows.Add(r.Id, r.AuthorFolder, r.TitleFolder,
+            dt.Rows.Add(r.Id, r.FullPath, r.AuthorFolder, r.TitleFolder,
                 (object?)r.NormalizedTitle ?? DBNull.Value,
                 (object?)r.AuthorId        ?? DBNull.Value,
                 (object?)r.BookId          ?? DBNull.Value,
@@ -592,6 +634,7 @@ public sealed class SyncService
 
         await using (var cmd = new SqlCommand(@"
             UPDATE f SET
+                f.FullPath        = t.FullPath,
                 f.AuthorFolder    = t.AuthorFolder,
                 f.TitleFolder     = t.TitleFolder,
                 f.NormalizedTitle = t.NormalizedTitle,
@@ -831,7 +874,8 @@ public sealed class SyncService
                     .ToListAsync(hostCt);
 
                 int earlyCount = 0;
-                if (authorIds.Count < MinimumBatch)
+                var enqueuedJobs = JobStorage.Current.GetMonitoringApi().GetStatistics().Enqueued;
+                if (enqueuedJobs < 5)
                 {
                     var extra = await db.Authors
                         .Where(a => a.NextFetchAt > now)
@@ -851,7 +895,7 @@ public sealed class SyncService
                     s.Message = authorIds.Count == 0
                         ? "No authors due for refresh"
                         : earlyCount > 0
-                            ? $"Refreshing {authorIds.Count} author(s) ({earlyCount} pulled early to reach minimum of {MinimumBatch})"
+                            ? $"Refreshing {authorIds.Count} author(s) ({earlyCount} pulled early; queue had {enqueuedJobs} job(s))"
                             : $"Refreshing {authorIds.Count} due author(s)";
                 });
 

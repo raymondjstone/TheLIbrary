@@ -73,7 +73,8 @@ public sealed class AuthorRefresher
                 author.LastSyncedAt = DateTime.UtcNow;
                 // No works to base an interval on — defer the longest bucket
                 // so unresolved authors don't get retried every run.
-                author.NextFetchAt = author.LastSyncedAt.Value.AddDays(28);
+                author.NextFetchAt = author.LastSyncedAt.Value.AddDays(
+                    author.RefreshIntervalDays ?? 28);
                 await _db.SaveChangesAsync(ct);
                 return new AuthorRefreshOutcome(
                     author.Id, false, null, author.Status.ToString(),
@@ -219,7 +220,10 @@ public sealed class AuthorRefresher
             author.ExclusionReason = null;
         }
         author.LastSyncedAt = DateTime.UtcNow;
-        author.NextFetchAt = author.LastSyncedAt.Value.Add(NextFetchInterval(years));
+        author.NextFetchAt = author.LastSyncedAt.Value.Add(
+            author.RefreshIntervalDays.HasValue
+                ? TimeSpan.FromDays(author.RefreshIntervalDays.Value)
+                : NextFetchInterval(years));
 
         // Fetch and store author bio if we don't have one yet.
         if (string.IsNullOrWhiteSpace(author.Bio))

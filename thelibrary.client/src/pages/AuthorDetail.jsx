@@ -48,7 +48,7 @@ function UnmatchedFilesSection({
                                         ))
                                         : <span className="subtle">—</span>}
                                 </td>
-                                <td className="subtle">{u.fullPath}</td>
+                                <td className="subtle" style={{ wordBreak: 'break-all' }}>{u.fullPath}</td>
                                 <td>
                                     <input type="text" placeholder="Filter…"
                                         value={matchFilter[u.id] ?? ''}
@@ -120,7 +120,7 @@ function FileRow({ file, rmConnected, sendBusyIds, onSend, onUnmatch }) {
                     <span key={ext} className="filetype-tag" style={{ marginRight: '0.25rem' }}>{ext}</span>
                 ))
                 : <span className="filetype-tag" title="No ebook files found in this folder">empty</span>}
-            {' '}{file.fullPath}{' '}
+            {' '}<span style={{ wordBreak: 'break-all' }}>{file.fullPath}</span>{' '}
             {sendable
                 ? <button
                     onClick={() => onSend(file.id, formats)}
@@ -167,6 +167,9 @@ export default function AuthorDetail() {
     const [editingNotes, setEditingNotes] = useState(false)
     const [notesDraft, setNotesDraft] = useState('')
     const [notesSaving, setNotesSaving] = useState(false)
+    const [editingInterval, setEditingInterval] = useState(false)
+    const [intervalDraft, setIntervalDraft] = useState('')
+    const [intervalSaving, setIntervalSaving] = useState(false)
 
     useEffect(() => {
         fetch('/api/nzb-sites')
@@ -455,6 +458,24 @@ export default function AuthorDetail() {
         }
     }
 
+    const saveInterval = async (days) => {
+        setIntervalSaving(true)
+        try {
+            const r = await fetch(`/api/authors/${id}/refresh-interval`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ days: days ?? null })
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            setData(prev => prev ? { ...prev, refreshIntervalDays: days ?? null } : prev)
+            setEditingInterval(false)
+        } catch (e) {
+            alert(`Failed to save refresh interval: ${e.message}`)
+        } finally {
+            setIntervalSaving(false)
+        }
+    }
+
     const sendAllUnread = async () => {
         const files = (data?.books ?? [])
             .filter(b => b.readStatus === 'Unread' || b.readStatus === 'Reading')
@@ -571,6 +592,49 @@ export default function AuthorDetail() {
                             {data.notes ? 'Edit notes' : '+ Add notes'}
                         </button>
                     </div>
+                )}
+            </div>
+
+            <div style={{ marginBottom: '0.75rem', fontSize: '0.875em', color: 'var(--subtle)' }}>
+                {data.nextFetchAt
+                    ? <>Next refresh: {new Date(data.nextFetchAt).toLocaleDateString()}{' · '}</>
+                    : <>Next refresh: due now{' · '}</>}
+                {editingInterval ? (
+                    <span>
+                        <input
+                            type="number" min="1" max="3650"
+                            value={intervalDraft}
+                            onChange={e => setIntervalDraft(e.target.value)}
+                            style={{ width: '4em', marginRight: '0.25rem' }} />
+                        {' days '}
+                        <button
+                            disabled={intervalSaving || !intervalDraft || Number(intervalDraft) < 1}
+                            onClick={() => saveInterval(Number(intervalDraft))}>
+                            {intervalSaving ? 'Saving…' : 'Save'}
+                        </button>
+                        {data.refreshIntervalDays && (
+                            <button className="btn-ghost" style={{ marginLeft: '0.4rem' }}
+                                disabled={intervalSaving}
+                                onClick={() => saveInterval(null)}>
+                                Reset to calculated
+                            </button>
+                        )}
+                        <button className="btn-ghost" style={{ marginLeft: '0.4rem' }}
+                            onClick={() => setEditingInterval(false)}>
+                            Cancel
+                        </button>
+                    </span>
+                ) : (
+                    <span>
+                        {data.refreshIntervalDays
+                            ? `Interval: every ${data.refreshIntervalDays} days (fixed)`
+                            : 'Interval: calculated from release dates'}
+                        {' '}
+                        <button className="btn-ghost" style={{ fontSize: '0.85em', opacity: 0.7 }}
+                            onClick={() => { setIntervalDraft(String(data.refreshIntervalDays ?? '')); setEditingInterval(true) }}>
+                            {data.refreshIntervalDays ? 'Change' : 'Set fixed'}
+                        </button>
+                    </span>
                 )}
             </div>
 

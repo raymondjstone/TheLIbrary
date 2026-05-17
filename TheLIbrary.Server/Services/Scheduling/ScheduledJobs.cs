@@ -18,6 +18,8 @@ public sealed class ScheduledJobs
 {
     private readonly SyncService _sync;
     private readonly IncomingService _incoming;
+    private readonly SeriesOrganizerService _organizer;
+    private readonly UnzipService _unzip;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -25,12 +27,14 @@ public sealed class ScheduledJobs
     public ScheduledJobs(
         SyncService sync,
         IncomingService incoming,
+        SeriesOrganizerService organizer,
+        UnzipService unzip,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
     {
-        _sync = sync; _incoming = incoming; _schedules = schedules;
-        _lifetime = lifetime; _log = log;
+        _sync = sync; _incoming = incoming; _organizer = organizer; _unzip = unzip;
+        _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
     [AutomaticRetry(Attempts = 0)]
@@ -68,6 +72,18 @@ public sealed class ScheduledJobs
         ScheduleJobIds.RefreshWorks, manualTrigger,
         ct => _sync.TryStartRefreshDueWorks(ct, out var err) ? (true, err) : (false, err),
         () => _sync.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunOrganizeSeries(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.OrganizeSeries, manualTrigger,
+        ct => _organizer.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _organizer.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunUnzip(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.Unzip, manualTrigger,
+        ct => _unzip.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _unzip.IsRunning);
 
     private async Task RunWithPolling(
         string jobId,

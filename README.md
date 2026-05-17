@@ -15,9 +15,10 @@ from a drop folder and re-running matching against previously-unmatched files.
 - **NZB search** — configurable URL-template sites let you jump straight to an
   NZB search for any unowned book
 - **Author management** — priority ratings (0–5), blacklist, per-author
-  next-fetch scheduling, exclusion reasons
-- **Data source of truth** — OpenLibrary (works only, English, published 1970 or later)
-- **Local source** — a Calibre folder tree of the form `<Root>/<Author>/<Title (id)>/...`
+  next-fetch scheduling with optional fixed interval override, exclusion reasons
+- **Data source of truth** — OpenLibrary (works only, English, published 1930 or later)
+- **Local source** — a Calibre folder tree or flat-file layout under one or more
+  library roots
 - **Ingest formats** — EPUB, MOBI / AZW / AZW3 / AZW4 / KF8 / PRC / PDB,
   FB2 / FBZ / `.fb2.zip`, PDF, LIT (magic validated; title/author via filename
   fallback), CBZ (ComicInfo.xml), DOCX / ODT (Dublin Core)
@@ -48,13 +49,15 @@ author from the UI and add them — the sync then does the rest.
    `/search.json?author_key=...&language=eng`. OpenLibrary returns one row per
    *work*, so variants/editions are collapsed automatically. Each work's
    `subject` tags (genre) and `series` name are stored alongside the title so
-   they're available without extra API calls.
+   they're available without extra API calls. Starred authors (priority ≥ 1)
+   bypass the English-only filter so works in any language are retrieved.
 2. **Backfill genres** — on each subsequent sync, any existing book whose
    `Subjects` column is `NULL` (never checked) is updated from the OL response.
    An empty string `""` is written when OL has no subjects for that work, acting
    as a sentinel so the book is not re-checked on future syncs.
 3. **Exclude** authors that have no English works, or whose works were all
-   first published before 1970.
+   first published before 1930. Starred authors are always kept Active regardless
+   of date or language criteria.
 4. **Fetch author bio** — on the first refresh after an OL key is resolved, the
    author's bio is pulled from `/authors/{key}.json` and stored. Displayed on
    the author detail page.
@@ -163,6 +166,27 @@ from ever being promoted to a tracked author. Blacklisted entries are matched
 by normalized name at scan time. Blacklisted authors that are already tracked
 are silently skipped when processing their works.
 
+## Works refresh cadence
+
+After each refresh, an author's next scheduled fetch is placed in one of four
+buckets based on their most recent publication year:
+
+| Most recent work | Interval |
+|-----------------|----------|
+| Within last 2 years | 2 days |
+| 3–5 years ago | 14 days |
+| 6–10 years ago | 28 days |
+| Older / no works | 60 days |
+
+A **fixed refresh interval** can be set per author from the author detail page.
+When set, it overrides the calculated cadence — useful for very active authors
+you want checked daily or long-dormant ones you only want checked monthly.
+Set to blank to revert to the calculated interval.
+
+The `refresh-due-works` scheduled job only pulls authors early (before
+`NextFetchAt`) when the Hangfire queue has fewer than 5 pending jobs, ensuring
+the catch-up pass doesn't pile on during busy periods.
+
 ## Incoming pipeline
 
 A **drop folder** (configured on the Settings page) is where new files land
@@ -172,6 +196,11 @@ before they're slotted into the library.
   sidecar, format-specific headers for the rest, or a `Author - Title.ext` /
   `Title - Author.ext` filename fallback), maps it to a tracked author, and
   moves the file under `<primary library>/<Author>/<Title>/…`.
+- **Junk file deletion** — files with extensions that are definitively not books
+  or archives (`.xml`, `.inf`, `.nfo`, `.db`, `.ini`, `.url`, `.lnk`, `.tmp`,
+  `.exe`, `.bat`, `.html`, `.log`, etc.) are deleted immediately on encounter,
+  before any matching attempt. Cover images (`.jpg`, `.jpeg`) and OPF metadata
+  sidecars are also deleted.
 - **Author matching** runs two indexes in priority order: the watchlist
   (tracked `Author` rows) first, then the seeded OpenLibrary catalog
   (`OpenLibraryAuthor`). Either kind of match routes the file to
@@ -186,6 +215,56 @@ before they're slotted into the library.
 - **Folder-layout matching** — if a file's metadata is unreadable but any
   ancestor folder name matches a tracked author, the whole folder is treated
   as `<Author>/<Title>/<files>` so multi-format books stay together.
+
+## Series organizer
+
+The series organizer enforces a canonical flat-file layout across every tracked
+library location:
+
+```
+<Root>/<Author>/<Series Name>/book.epub   (book belongs to a series)
+<Root>/<Author>/book.epub                 (book has no series)
+```
+
+Title subfolders are eliminated — ebook files live directly in the series or
+author folder. On each pass:
+
+1. Every `LocalBookFile` record is evaluated (starred authors first, then
+   alphabetically by author folder).
+2. Files already at the correct location are skipped; their DB paths are
+   updated from the legacy directory format to the actual file path if needed.
+3. Files in title subfolders or grouping folders are moved to the target
+   directory. All files in a source container are moved together using
+   recursive enumeration, so nested structures collapse in one pass.
+4. Junk files (`.xml`, `.inf`, etc.) encountered during a move are deleted
+   rather than copied to the target.
+5. Source containers and their empty ancestors are pruned bottom-up after each
+   move, up to (but not including) the author root.
+6. `LocalBookFile.FullPath` is updated to the moved ebook file path immediately
+   after each operation so a subsequent sync sees the correct paths.
+
+Name conflicts at the destination are resolved by appending `_N` to the file
+stem. Stale directory-pointer records (where another record already tracks the
+target file path) are removed rather than producing a unique-index violation.
+
+The organizer also handles libraries recorded under Windows UNC paths
+(`\\server\share\…`) when the server runs in a Docker container with the share
+mounted at a different path — the `\\server\share` prefix is stripped to recover
+the container-local path for all file I/O.
+
+## Unzip job
+
+Scans all `LocalBookFile` records for `.zip` and `.rar` archives (starred
+authors first). For each archive found:
+
+1. Extracts all files flat into the configured incoming folder (archive-internal
+   subdirectories are stripped).
+2. Deletes the archive from disk.
+3. Removes the `LocalBookFile` record from the database.
+
+The extracted files are then picked up by the next incoming processing run.
+Archives recorded under Windows UNC paths are remapped to the container mount
+path the same way as the series organizer.
 
 ## Goodreads import
 
@@ -276,12 +355,16 @@ Managed on the **Schedules** page (backed by Hangfire). Each job has a cron
 expression and an enabled/disabled flag, persisted to the database and applied
 on every startup.
 
-- `sync` — full sync (scan + author resolve + file matching)
-- `seed` — seed the local author catalog from the OpenLibrary bulk dump
-- `author-updates` — apply OpenLibrary's daily author-change log (handles renames/merges)
-- `refresh-due-works` — re-fetch works for authors whose `NextFetchAt` is past due
-- `incoming` — process the drop folder
-- `reprocess-unknown` — re-run matching on the `__unknown` bucket
+| Job ID | Default cron | Purpose |
+|--------|-------------|---------|
+| `sync` | `0 2 * * *` | Full sync — scan, author resolve, file matching |
+| `seed` | `0 3 * * *` | Seed local author catalog from OpenLibrary bulk dump |
+| `author-updates` | `0 4 * * *` | Apply OpenLibrary daily author-change log |
+| `refresh-due-works` | every 10 min | Re-fetch works for authors with an overdue `NextFetchAt` |
+| `incoming` | `0 5 * * *` | Process the drop folder |
+| `reprocess-unknown` | `0 18 * * *` | Re-run matching on the `__unknown` bucket |
+| `organize-series` | `0 1,13 * * *` | Enforce flat-file layout, move files to series folders |
+| `unzip` | `0 0 * * *` | Extract `.zip`/`.rar` archives to incoming folder |
 
 Hangfire runs with `WorkerCount=1`, and all background work also passes through
 a single `BackgroundTaskCoordinator`, so a manual UI run and a cron tick can't
@@ -366,6 +449,16 @@ their subjects backfilled on the next sync pass; books for which OL has no
 subjects are marked with an empty string so they are not re-checked on future
 syncs.
 
+### Docker deployment notes
+
+The server runs correctly inside a Docker container with the library share
+mounted at a container-local path (e.g. `/Books/Collection`). If `LocalBookFile`
+records were previously written with Windows UNC paths
+(`\\server\share\Books\Collection\…`), the series organizer and unzip job
+automatically strip the `\\server\share` prefix to recover the container-local
+path for all file I/O and update the DB records to the container path format
+as they process each file.
+
 ## API surface
 
 ### Authors
@@ -376,6 +469,7 @@ syncs.
 | POST   | `/api/authors` | Add an author to the watchlist from an OL key |
 | GET    | `/api/authors/{id}` | Author detail + books (with genres, series, read status) + unmatched local files |
 | PUT    | `/api/authors/{id}/priority` | Set 0–5 star priority |
+| PUT    | `/api/authors/{id}/refresh-interval` | Set or clear a fixed works-refresh interval (days) |
 | POST   | `/api/authors/{id}/refresh` | On-demand single-author OpenLibrary refresh |
 | DELETE | `/api/authors/{id}` | Remove an author (moves files back to incoming) |
 | GET    | `/api/authors/starred` | Authors with priority ≥ 1 |
@@ -462,6 +556,7 @@ syncs.
 |--------|------|---------|
 | GET    | `/api/schedules` | List scheduled jobs and their cron/enabled state |
 | PUT    | `/api/schedules/{jobId}` | Update a job's cron expression or enabled flag |
+| POST   | `/api/schedules/{jobId}/run` | Trigger a job immediately (manualTrigger=true) |
 
 ### reMarkable
 
@@ -496,17 +591,18 @@ trusted LAN).
 - `Author` — OL key, name, Calibre folder name, status (Pending / Active /
   Excluded / NotFound), exclusion reason, priority (0–5), bio (from OL),
   last-synced timestamp, next-fetch-due-at, `CalibreScannedAt` (for fair scan
-  ordering).
+  ordering), `RefreshIntervalDays` (optional fixed cadence override in days).
 - `Book` — OL work key (unique per author), title, first-publish year, cover id,
   `ManuallyOwned` flag + timestamp, `Subjects` (semicolon-delimited OL subject
   tags; `NULL` = never checked, `""` = checked/none found), `Series`,
   `SeriesPosition`, `ReadStatus` (Unread/Reading/Read/Dnf), `ReadAt`, `Wanted`,
   FK to Author.
-- `LocalBookFile` — path on disk, Calibre folder names, optional FKs to Author
+- `LocalBookFile` — path on disk (file path after organizer runs, directory path
+  in classic Calibre layout), Calibre folder names, optional FKs to Author
   and Book (null FK = unmatched).
 - `LibraryLocation` — a root directory to scan. Multiple allowed; exactly one
   is `IsPrimary`. Each has a label, enabled flag, and `LastScanAt`.
-- `AppSetting` — key/value store (incoming folder path, etc).
+- `AppSetting` — key/value store (incoming folder path, schedule config, etc).
 - `IgnoredFolder` — author-level folder names to skip on every scan
   (case-insensitive). `__unknown` is always skipped automatically.
 - `AuthorBlacklist` — normalized author names that are never promoted to the

@@ -29,6 +29,7 @@ public static class CbzMetadataReader
 
             var title = Pick("Title");
             var series = Pick("Series");
+            var number = Pick("Number");
             var writer = Pick("Writer");
             var lang = Pick("LanguageISO");
 
@@ -47,7 +48,9 @@ public static class CbzMetadataReader
                 string.IsNullOrWhiteSpace(author) ? null : author,
                 null,
                 string.IsNullOrWhiteSpace(lang) ? null : lang,
-                null);
+                null,
+                string.IsNullOrWhiteSpace(series) ? null : series,
+                string.IsNullOrWhiteSpace(number) ? null : number);
         }
         catch { return null; }
     }

@@ -39,8 +39,13 @@ public class Author
 
     // When null the author is due immediately (treated as a new author).
     // After a successful fetch this is set to LastSyncedAt + an interval
-    // derived from the author's most recent publication year.
+    // derived from the author's most recent publication year, or the fixed
+    // override below if the user has set one.
     public DateTime? NextFetchAt { get; set; }
+
+    // Optional fixed refresh cadence in days set by the user. When null the
+    // cadence is calculated from the author's most recent publication year.
+    public int? RefreshIntervalDays { get; set; }
 
     // Stamped after each Calibre file-matching pass. Used to order authors so
     // the longest-waiting (null = never scanned) are processed first each run.
