@@ -430,6 +430,65 @@ public sealed class SyncService
             await db.LocalBookFiles.Where(f => staleOrphanIds.Contains(f.Id)).ExecuteDeleteAsync(ct);
             MutateState(s => s.LocalFilesSeen -= staleOrphanIds.Count);
         }
+
+        // Targeted cleanup: records whose FullPath is a directory (not a file) that
+        // still exists on disk AND has scanner-visible ebook/archive files directly
+        // inside it owned by other records. Typical origin: batch imports when the
+        // author or series folder was temporarily empty; a placeholder directory-path
+        // record was created, then books were added and got their own file-path records.
+        //
+        // The >1000 guard above is intentionally skipped here because these are
+        // definitively stale — not a drive-offline or path-change scenario. Only
+        // directory-path records are included; file-path records remain guarded.
+        //
+        // "Immediately inside" (direct child only): this prevents falsely marking a
+        // series folder as superseded merely because a file exists somewhere deeper in
+        // the tree. Walking up past the immediate parent would also risk deleting valid
+        // series-folder records when the tree is only partially migrated.
+        if (entries.Count > 0)
+        {
+            var ghostDirs = existingList
+                .Where(f => !deduped.ContainsKey(Canon(f.FullPath)) && Directory.Exists(f.FullPath))
+                .ToList();
+            if (ghostDirs.Count > 0)
+            {
+                var ghostDirLookup = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var g in ghostDirs)
+                    ghostDirLookup[g.FullPath.TrimEnd('/', '\\')] = g.Id;
+
+                var supersededDirIds = new HashSet<int>();
+                foreach (var other in existingList)
+                {
+                    // Only ebook/archive file-path records can supersede a ghost directory.
+                    // Directory-path records (classic Calibre title folders still visible
+                    // to the scanner) must not walk up and mark parent folders as ghosts,
+                    // as those parent series-folder records may still be legitimate.
+                    var ext = Path.GetExtension(other.FullPath);
+                    if (!CalibreScanner.EbookExtensions.Contains(ext) &&
+                        !CalibreScanner.ArchiveExtensions.Contains(ext)) continue;
+                    if (!deduped.ContainsKey(Canon(other.FullPath))) continue;
+
+                    // Only check the immediate parent — direct child supersedes the parent
+                    // directory record. A file one level deeper (/Author/Series/Book.epub)
+                    // does NOT supersede /Author/; only /Author/Book.epub does.
+                    var dir = Path.GetDirectoryName(other.FullPath);
+                    if (dir is null) continue;
+                    if (ghostDirLookup.TryGetValue(dir.TrimEnd('/', '\\'), out var ghostId))
+                        supersededDirIds.Add(ghostId);
+                }
+
+                if (supersededDirIds.Count > 0)
+                {
+                    _log.LogInformation(
+                        "Removing {Count} superseded directory-path LocalBookFile record(s)",
+                        supersededDirIds.Count);
+                    await db.LocalBookFiles
+                        .Where(f => supersededDirIds.Contains(f.Id))
+                        .ExecuteDeleteAsync(ct);
+                    MutateState(s => s.LocalFilesSeen -= supersededDirIds.Count);
+                }
+            }
+        }
     }
 
     // Returns the primary ebook file inside a folder (epub > pdf > other).
@@ -621,7 +680,7 @@ public sealed class SyncService
         dt.Columns.Add("BookId",          typeof(int));
         dt.Columns.Add("SizeBytes",       typeof(long));
         dt.Columns.Add("ModifiedAt",      typeof(DateTime));
-        foreach (var r in updates)
+        foreach (var r in updates.DistinctBy(f => f.Id))
             dt.Rows.Add(r.Id, r.FullPath, r.AuthorFolder, r.TitleFolder,
                 (object?)r.NormalizedTitle ?? DBNull.Value,
                 (object?)r.AuthorId        ?? DBNull.Value,

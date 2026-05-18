@@ -272,15 +272,25 @@ public sealed class SeriesOrganizerService
             if (string.Equals(sourceContainer, targetDir, StringComparison.OrdinalIgnoreCase))
             {
                 bool hasSubdirFiles = false;
-                try
+                // Only look for title-subfolder remnants when the DB record still
+                // points to a directory (old Calibre layout). If the record already
+                // points to a specific file, there is nothing for THIS record to
+                // flatten — scanning targetDir would falsely trigger on unrelated
+                // sibling series subfolders (e.g. a no-series file in authorDir
+                // seeing the series folders of other books).
+                bool recordIsDirectory = !File.Exists(effectivePath) && Directory.Exists(effectivePath);
+                if (recordIsDirectory)
                 {
-                    hasSubdirFiles = Directory.EnumerateDirectories(targetDir).Any() &&
-                        Directory.EnumerateFiles(targetDir, "*", SearchOption.AllDirectories)
-                            .Any(f => !string.Equals(
-                                Path.GetDirectoryName(f), targetDir,
-                                StringComparison.OrdinalIgnoreCase));
+                    try
+                    {
+                        hasSubdirFiles = Directory.EnumerateDirectories(targetDir).Any() &&
+                            Directory.EnumerateFiles(targetDir, "*", SearchOption.AllDirectories)
+                                .Any(f => !string.Equals(
+                                    Path.GetDirectoryName(f), targetDir,
+                                    StringComparison.OrdinalIgnoreCase));
+                    }
+                    catch { }
                 }
-                catch { }
 
                 if (!hasSubdirFiles)
                 {
@@ -292,18 +302,26 @@ public sealed class SeriesOrganizerService
                             _log.LogInformation("Remove stale pointer [{Lbf}]: {Path} (superseded by [{Other}])",
                                 file.Id, file.FullPath, conflictId);
                             pathIndex.Remove(file.FullPath);
-                            db.LocalBookFiles.Remove(file);
+                            await db.LocalBookFiles
+                                .Where(f => f.Id == file.Id)
+                                .ExecuteDeleteAsync(ct);
                         }
                         else
                         {
                             _log.LogInformation("FixPath [{Lbf}]: {Old} -> {New}", file.Id, file.FullPath, wantPath);
                             pathIndex.Remove(file.FullPath);
+                            var fpTitle = primaryEbook is not null
+                                ? Path.GetFileNameWithoutExtension(primaryEbook)
+                                : file.TitleFolder;
+                            await db.LocalBookFiles
+                                .Where(f => f.Id == file.Id)
+                                .ExecuteUpdateAsync(s => s
+                                    .SetProperty(f => f.FullPath, wantPath)
+                                    .SetProperty(f => f.TitleFolder, fpTitle), ct);
                             file.FullPath = wantPath;
-                            if (primaryEbook is not null)
-                                file.TitleFolder = Path.GetFileNameWithoutExtension(primaryEbook)!;
+                            file.TitleFolder = fpTitle;
                             pathIndex[wantPath] = file.Id;
                         }
-                        await db.SaveChangesAsync(ct);
                     }
                     cntAlreadyCorrect++;
                     skipped++;
@@ -345,6 +363,29 @@ public sealed class SeriesOrganizerService
                     _log.LogError(ex, "Series organizer: cannot read source {Path}", sourceContainer);
                     errors++;
                     continue;
+                }
+
+                // For directory records (old Calibre title-folder layout), exclude
+                // files that already have their own LocalBookFile records. Moving
+                // those would pull series-organised books out of their series
+                // subfolders. If every file is owned by another record this is a
+                // ghost directory entry — remove it and move on.
+                if (!isFlatFile)
+                {
+                    filesToMove = filesToMove
+                        .Where(f => !pathIndex.TryGetValue(f, out var fId) || fId == file.Id)
+                        .ToList();
+                    if (filesToMove.Count == 0)
+                    {
+                        _log.LogInformation(
+                            "Ghost directory record [{Lbf}]: {Path} — all files owned by other records, removing",
+                            file.Id, file.FullPath);
+                        await db.LocalBookFiles
+                            .Where(f => f.Id == file.Id)
+                            .ExecuteDeleteAsync(ct);
+                        pathIndex.Remove(file.FullPath);
+                        continue;
+                    }
                 }
 
                 string? newPrimary = null;
@@ -403,19 +444,42 @@ public sealed class SeriesOrganizerService
                         _log.LogWarning("Remove stale pointer [{Lbf}]: {Path} (superseded by [{Other}])",
                             file.Id, file.FullPath, conflictId);
                         pathIndex.Remove(file.FullPath);
-                        db.LocalBookFiles.Remove(file);
+                        // File.Move should have already removed the source, but on CIFS/NFS
+                        // mounts the source deletion can be deferred. Delete explicitly so
+                        // the sync scanner cannot re-import this file as a new record.
+                        if (isFlatFile && primaryEbook is not null)
+                        {
+                            try
+                            {
+                                if (File.Exists(primaryEbook))
+                                    File.Delete(primaryEbook);
+                            }
+                            catch (Exception ex)
+                            {
+                                _log.LogWarning(ex, "Could not delete stale duplicate: {Path}", primaryEbook);
+                            }
+                        }
+                        await db.LocalBookFiles
+                            .Where(f => f.Id == file.Id)
+                            .ExecuteDeleteAsync(ct);
                     }
                     else
                     {
                         pathIndex.Remove(file.FullPath);
+                        var mvTitle = newPrimary is not null
+                            ? Path.GetFileNameWithoutExtension(newPrimary)
+                            : file.TitleFolder;
+                        await db.LocalBookFiles
+                            .Where(f => f.Id == file.Id)
+                            .ExecuteUpdateAsync(s => s
+                                .SetProperty(f => f.FullPath, newPath)
+                                .SetProperty(f => f.TitleFolder, mvTitle), ct);
                         file.FullPath = newPath;
-                        if (newPrimary is not null)
-                            file.TitleFolder = Path.GetFileNameWithoutExtension(newPrimary)!;
+                        file.TitleFolder = mvTitle;
                         pathIndex[newPath] = file.Id;
                     }
                 }
 
-                await db.SaveChangesAsync(ct);
                 moved++;
             }
             catch (Exception ex)
