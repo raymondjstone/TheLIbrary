@@ -99,8 +99,6 @@ public sealed class SeriesOrganizerService
         });
 
         _log.LogInformation("Series organizer: {Count} LocalBookFile record(s) to evaluate", files.Count);
-        if (files.Count > 0)
-            _log.LogInformation("Series organizer: sample FullPath = {Sample}", files[0].FullPath);
 
         // Track current FullPath for every record so we can detect unique-index
         // conflicts before hitting the DB. Updated as records change.
@@ -299,7 +297,7 @@ public sealed class SeriesOrganizerService
                     {
                         if (pathIndex.TryGetValue(wantPath, out var conflictId) && conflictId != file.Id)
                         {
-                            _log.LogInformation("Remove stale pointer [{Lbf}]: {Path} (superseded by [{Other}])",
+                            _log.LogDebug("Remove stale pointer [{Lbf}]: {Path} (superseded by [{Other}])",
                                 file.Id, file.FullPath, conflictId);
                             pathIndex.Remove(file.FullPath);
                             await db.LocalBookFiles
@@ -308,7 +306,7 @@ public sealed class SeriesOrganizerService
                         }
                         else
                         {
-                            _log.LogInformation("FixPath [{Lbf}]: {Old} -> {New}", file.Id, file.FullPath, wantPath);
+                            _log.LogDebug("FixPath [{Lbf}]: {Old} -> {New}", file.Id, file.FullPath, wantPath);
                             pathIndex.Remove(file.FullPath);
                             var fpTitle = primaryEbook is not null
                                 ? Path.GetFileNameWithoutExtension(primaryEbook)
@@ -328,11 +326,11 @@ public sealed class SeriesOrganizerService
                     continue;
                 }
 
-                _log.LogInformation("Flatten: [{Lbf}] subdirs inside {Target}", file.Id, targetDir);
+                _log.LogDebug("Flatten: [{Lbf}] subdirs inside {Target}", file.Id, targetDir);
             }
             else
             {
-                _log.LogInformation("Move: [{Lbf}] {Src} -> {Target}", file.Id, sourceContainer, targetDir);
+                _log.LogDebug("Move: [{Lbf}] {Src} -> {Target}", file.Id, sourceContainer, targetDir);
             }
 
             try
@@ -377,7 +375,7 @@ public sealed class SeriesOrganizerService
                         .ToList();
                     if (filesToMove.Count == 0)
                     {
-                        _log.LogInformation(
+                        _log.LogDebug(
                             "Ghost directory record [{Lbf}]: {Path} — all files owned by other records, removing",
                             file.Id, file.FullPath);
                         await db.LocalBookFiles
@@ -433,7 +431,7 @@ public sealed class SeriesOrganizerService
                     DeleteEmptyAncestors(sourceContainer, authorDir, targetDir);
                 }
 
-                _log.LogInformation("Moved {Count} file(s): {Old} -> {New}",
+                _log.LogDebug("Moved {Count} file(s): {Old} -> {New}",
                     filesToMove.Count, sourceContainer, targetDir);
 
                 var newPath = newPrimary ?? (primaryEbook is null ? targetDir : null);
@@ -441,7 +439,7 @@ public sealed class SeriesOrganizerService
                 {
                     if (pathIndex.TryGetValue(newPath, out var conflictId) && conflictId != file.Id)
                     {
-                        _log.LogWarning("Remove stale pointer [{Lbf}]: {Path} (superseded by [{Other}])",
+                        _log.LogDebug("Remove stale pointer [{Lbf}]: {Path} (superseded by [{Other}])",
                             file.Id, file.FullPath, conflictId);
                         pathIndex.Remove(file.FullPath);
                         // File.Move should have already removed the source, but on CIFS/NFS

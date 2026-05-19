@@ -215,7 +215,7 @@ public sealed class SyncService
         {
             Directory.CreateDirectory(unknownRoot);
             Directory.Move(src, dest);
-            _log.LogInformation("Moved '{Folder}' → __unknown", folderName);
+            _log.LogDebug("Moved '{Folder}' → __unknown", folderName);
             return true;
         }
         catch (Exception ex)
@@ -431,62 +431,34 @@ public sealed class SyncService
             MutateState(s => s.LocalFilesSeen -= staleOrphanIds.Count);
         }
 
-        // Targeted cleanup: records whose FullPath is a directory (not a file) that
-        // still exists on disk AND has scanner-visible ebook/archive files directly
-        // inside it owned by other records. Typical origin: batch imports when the
-        // author or series folder was temporarily empty; a placeholder directory-path
-        // record was created, then books were added and got their own file-path records.
+        // Guard-bypassing cleanup for records that are definitively stale but were
+        // shielded by the >1000 guard above:
         //
-        // The >1000 guard above is intentionally skipped here because these are
-        // definitively stale — not a drive-offline or path-change scenario. Only
-        // directory-path records are included; file-path records remain guarded.
+        //   • Directory-path records not found by the scanner — the scanner emits a
+        //     directory entry only when the folder has no files; if it emitted nothing
+        //     for this path the folder is either gone or was reorganised. Safe to delete
+        //     unconditionally: no drive-offline scenario produces phantom directory entries.
         //
-        // "Immediately inside" (direct child only): this prevents falsely marking a
-        // series folder as superseded merely because a file exists somewhere deeper in
-        // the tree. Walking up past the immediate parent would also risk deleting valid
-        // series-folder records when the tree is only partially migrated.
+        //   • File-path records not found by the scanner where File.Exists returns false —
+        //     the file is definitively gone from disk, not merely on an offline drive.
         if (entries.Count > 0)
         {
-            var ghostDirs = existingList
-                .Where(f => !deduped.ContainsKey(Canon(f.FullPath)) && Directory.Exists(f.FullPath))
+            var definitelyStaleIds = existingList
+                .Where(f => !deduped.ContainsKey(Canon(f.FullPath)))
+                .Where(f => string.IsNullOrEmpty(Path.GetExtension(f.FullPath))
+                             ? true                     // directory-path: always stale if not in deduped
+                             : !File.Exists(f.FullPath)) // file-path: only if file is gone from disk
+                .Select(f => f.Id)
                 .ToList();
-            if (ghostDirs.Count > 0)
+            if (definitelyStaleIds.Count > 0)
             {
-                var ghostDirLookup = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                foreach (var g in ghostDirs)
-                    ghostDirLookup[g.FullPath.TrimEnd('/', '\\')] = g.Id;
-
-                var supersededDirIds = new HashSet<int>();
-                foreach (var other in existingList)
-                {
-                    // Only ebook/archive file-path records can supersede a ghost directory.
-                    // Directory-path records (classic Calibre title folders still visible
-                    // to the scanner) must not walk up and mark parent folders as ghosts,
-                    // as those parent series-folder records may still be legitimate.
-                    var ext = Path.GetExtension(other.FullPath);
-                    if (!CalibreScanner.EbookExtensions.Contains(ext) &&
-                        !CalibreScanner.ArchiveExtensions.Contains(ext)) continue;
-                    if (!deduped.ContainsKey(Canon(other.FullPath))) continue;
-
-                    // Only check the immediate parent — direct child supersedes the parent
-                    // directory record. A file one level deeper (/Author/Series/Book.epub)
-                    // does NOT supersede /Author/; only /Author/Book.epub does.
-                    var dir = Path.GetDirectoryName(other.FullPath);
-                    if (dir is null) continue;
-                    if (ghostDirLookup.TryGetValue(dir.TrimEnd('/', '\\'), out var ghostId))
-                        supersededDirIds.Add(ghostId);
-                }
-
-                if (supersededDirIds.Count > 0)
-                {
-                    _log.LogInformation(
-                        "Removing {Count} superseded directory-path LocalBookFile record(s)",
-                        supersededDirIds.Count);
-                    await db.LocalBookFiles
-                        .Where(f => supersededDirIds.Contains(f.Id))
-                        .ExecuteDeleteAsync(ct);
-                    MutateState(s => s.LocalFilesSeen -= supersededDirIds.Count);
-                }
+                _log.LogInformation(
+                    "Removing {Count} definitively-stale LocalBookFile record(s) (bypassing bulk-delete guard)",
+                    definitelyStaleIds.Count);
+                await db.LocalBookFiles
+                    .Where(f => definitelyStaleIds.Contains(f.Id))
+                    .ExecuteDeleteAsync(ct);
+                MutateState(s => s.LocalFilesSeen -= definitelyStaleIds.Count);
             }
         }
     }

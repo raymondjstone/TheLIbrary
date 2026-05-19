@@ -813,7 +813,7 @@ export default function AuthorDetail() {
                                     )}
                                     {b.hasLocalFiles
                                         ? <div className="subtle">
-                                            {b.files.map(f => (
+                                            {b.files.filter(f => (f.formats ?? []).length > 0).map(f => (
                                                 <FileRow key={f.id} file={f}
                                                     rmConnected={rmConnected}
                                                     sendBusyIds={sendBusyIds}
@@ -879,7 +879,7 @@ export default function AuthorDetail() {
                                         )}
                                         {ed.hasLocalFiles
                                             ? <div className="subtle">
-                                                {ed.files.map(f => (
+                                                {ed.files.filter(f => (f.formats ?? []).length > 0).map(f => (
                                                     <FileRow key={f.id} file={f}
                                                         rmConnected={rmConnected}
                                                         sendBusyIds={sendBusyIds}
@@ -961,7 +961,7 @@ export default function AuthorDetail() {
                                     {!b.owned && nzbSites.length > 0 && <div style={{ marginTop: '0.2rem' }}>{nzbLinks(b.title)}</div>}
                                     {b.hasLocalFiles
                                         ? <div className="subtle">
-                                            {b.files.map(f => (
+                                            {b.files.filter(f => (f.formats ?? []).length > 0).map(f => (
                                                 <FileRow key={f.id} file={f}
                                                     rmConnected={rmConnected}
                                                     sendBusyIds={sendBusyIds}
@@ -996,7 +996,7 @@ export default function AuthorDetail() {
                                         {!ed.owned && nzbSites.length > 0 && <div style={{ marginTop: '0.2rem' }}>{nzbLinks(ed.title)}</div>}
                                         {ed.hasLocalFiles
                                             ? <div className="subtle">
-                                                {ed.files.map(f => (
+                                                {ed.files.filter(f => (f.formats ?? []).length > 0).map(f => (
                                                     <FileRow key={f.id} file={f}
                                                         rmConnected={rmConnected}
                                                         sendBusyIds={sendBusyIds}
