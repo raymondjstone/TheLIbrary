@@ -19,6 +19,7 @@ export default function Layout() {
                     <NavLink to="/untracked">Untracked</NavLink>
                     <NavLink to="/sync">Sync</NavLink>
                     <NavLink to="/schedules">Schedules</NavLink>
+                    <NavLink to="/physical-unmatched">Unmatched Physical</NavLink>
                     <NavLink to="/settings">Settings</NavLink>
                 </nav>
             </header>

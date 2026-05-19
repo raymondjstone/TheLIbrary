@@ -532,7 +532,72 @@ export default function Settings() {
 
             <GoodreadsImport />
 
+            <PhysicalBooksImport />
+
         </section>
+    )
+}
+
+function PhysicalBooksImport() {
+    const [file, setFile] = useState(null)
+    const [busy, setBusy] = useState(false)
+    const [result, setResult] = useState(null)
+    const [error, setError] = useState(null)
+
+    const submit = async () => {
+        if (!file) return
+        setBusy(true)
+        setResult(null)
+        setError(null)
+        try {
+            const form = new FormData()
+            form.append('file', file)
+            const r = await fetch('/api/import/physical-books', { method: 'POST', body: form })
+            const body = await r.json()
+            if (!r.ok) throw new Error(body?.error ?? r.statusText)
+            setResult(body)
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    return (
+        <>
+            <h2 style={{ marginTop: '1.5rem' }}>Physical books import</h2>
+            <p className="subtle">
+                Upload a plain-text list of physically owned books to mark them in the database.
+                Expected format: fixed-width columns or tab-separated — <strong>Author</strong> (26 chars),{' '}
+                <strong>Title</strong> (44 chars), <strong>Series+position</strong> (rest, optional).
+                Rows with no title are skipped. Books already marked as manually owned are counted but not changed.
+            </p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                <input type="file" accept=".txt,.csv,text/plain" onChange={e => { setFile(e.target.files[0] ?? null); setResult(null) }} />
+                <button onClick={submit} disabled={!file || busy}>{busy ? 'Importing…' : 'Import'}</button>
+            </div>
+            {error && <p className="error" style={{ marginTop: '0.5rem' }}>{error}</p>}
+            {result && (
+                <div style={{ marginTop: '0.75rem' }}>
+                    <p>
+                        <strong>{result.matched}</strong> books newly marked as physically owned.{' '}
+                        <strong>{result.alreadyOwned}</strong> already owned (skipped).{' '}
+                        <strong>{result.skipped}</strong> rows skipped (no title).{' '}
+                        <strong>{result.unmatched?.length ?? 0}</strong> not found in library.
+                    </p>
+                    {result.unmatched?.length > 0 && (
+                        <details open>
+                            <summary className="subtle" style={{ cursor: 'pointer' }}>
+                                Not found in library ({result.unmatched.length})
+                            </summary>
+                            <ul style={{ fontSize: '0.85rem', color: 'var(--subtle)', marginTop: '0.4rem' }}>
+                                {result.unmatched.map((t, i) => <li key={i}>{t}</li>)}
+                            </ul>
+                        </details>
+                    )}
+                </div>
+            )}
+        </>
     )
 }
 

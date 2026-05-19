@@ -17,6 +17,7 @@ import Stats from './pages/Stats.jsx'
 import Duplicates from './pages/Duplicates.jsx'
 import Series from './pages/Series.jsx'
 import Wanted from './pages/Wanted.jsx'
+import PhysicalUnmatched from './pages/PhysicalUnmatched.jsx'
 
 createRoot(document.getElementById('root')).render(
     <StrictMode>
@@ -38,6 +39,7 @@ createRoot(document.getElementById('root')).render(
                     <Route path="settings" element={<Settings />} />
                     <Route path="untracked" element={<Untracked />} />
                     <Route path="wanted" element={<Wanted />} />
+                    <Route path="physical-unmatched" element={<PhysicalUnmatched />} />
                 </Route>
             </Routes>
         </BrowserRouter>

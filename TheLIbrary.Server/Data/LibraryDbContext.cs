@@ -19,6 +19,7 @@ public class LibraryDbContext : DbContext
     public DbSet<NzbSite> NzbSites => Set<NzbSite>();
     public DbSet<Series> Series => Set<Series>();
     public DbSet<SeriesAuthor> SeriesAuthors => Set<SeriesAuthor>();
+    public DbSet<PhysicalBookUnmatched> PhysicalBookUnmatched => Set<PhysicalBookUnmatched>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -112,6 +113,14 @@ public class LibraryDbContext : DbContext
             e.Property(x => x.UrlTemplate).HasMaxLength(500);
             e.Property(x => x.Order).HasDefaultValue(99);
             e.Property(x => x.Active).HasDefaultValue(true);
+        });
+
+        b.Entity<PhysicalBookUnmatched>(e =>
+        {
+            e.Property(x => x.Author).HasMaxLength(512);
+            e.Property(x => x.Title).HasMaxLength(1024);
+            e.Property(x => x.SeriesPos).HasMaxLength(100);
+            e.HasIndex(x => new { x.Author, x.Title });
         });
 
         b.Entity<OpenLibraryAuthor>(e =>

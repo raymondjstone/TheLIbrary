@@ -39,7 +39,11 @@
       "Bash(Select-Object -First 1 -ExpandProperty LineNumber)",
       "Bash(Get-ChildItem *)",
       "Bash(Remove-Item \"C:\\\\Code\\\\TheLibrary\\\\TheLIbrary.Server.Tests\\\\bin\\\\Debug\\\\net10.0\\\\.msCoverageSourceRootsMapping_TheLIbrary.Server.Tests\" -Force -ErrorAction SilentlyContinue)",
-      "Bash(Select-Object -ExpandProperty FullName)"
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "PowerShell($conn = New-Object System.Data.SqlClient.SqlConnection 'Server=10.0.3.253;Database=TheLibrary;User Id=TheLibrary;Password=TheLibrary;TrustServerCertificate=True;'; $conn.Open\\(\\); $cmd = $conn.CreateCommand\\(\\); $cmd.CommandText = \"SELECT TOP 200 RIGHT\\(FullPath, CHARINDEX\\('\\\\', REVERSE\\(FullPath\\)\\)-1\\) AS FileName FROM LocalBookFiles WHERE FullPath LIKE '%-%' ORDER BY NEWID\\(\\)\"; $reader = $cmd.ExecuteReader\\(\\); while \\($reader.Read\\(\\)\\) { $reader[0] }; $conn.Close\\(\\))",
+      "PowerShell($conn = New-Object System.Data.SqlClient.SqlConnection 'Server=10.0.3.253;Database=TheLibrary;User Id=TheLibrary;Password=TheLibrary;TrustServerCertificate=True;'; $conn.Open\\(\\); $cmd = $conn.CreateCommand\\(\\); $cmd.CommandText = \"WITH paths AS \\(SELECT FullPath, REPLACE\\(FullPath, '/', '\\\\'\\) AS p FROM LocalBookFiles\\) SELECT TOP 250 RIGHT\\(p, CHARINDEX\\('\\\\', REVERSE\\(p\\)\\) - 1\\) AS FileName FROM paths WHERE CHARINDEX\\('\\\\', REVERSE\\(p\\)\\) > 0 ORDER BY NEWID\\(\\)\"; $reader = $cmd.ExecuteReader\\(\\); while \\($reader.Read\\(\\)\\) { $reader[0] }; $conn.Close\\(\\))",
+      "Bash(ls *)",
+      "Bash(wc *)"
     ]
   }
 }
