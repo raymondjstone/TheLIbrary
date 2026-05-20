@@ -538,12 +538,105 @@ public sealed class SyncService
             if (processed.Contains(canon)) continue;
 
             Book? matchedBook = null;
-            foreach (var candidate in TitleNormalizer.FolderTitleCandidates(entry.TitleFolder))
-                if (bookByTitle.TryGetValue(candidate, out matchedBook)) break;
+
+            // Flat-file layout puts the filename stem in TitleFolder. When the
+            // stem is "<Author> - <Title>" or "<Title> - <Author>", the raw
+            // string normalises to a key that includes the author and won't
+            // match any book. Strip a leading/trailing segment that resolves
+            // to this author (in any of the watchlist's name variants) and
+            // try the remainder first. The raw stem is still tried as a
+            // fallback so genuine "by Author" titles aren't lost.
+            foreach (var raw in TitleStemCandidates(entry.TitleFolder, author))
+            {
+                foreach (var candidate in TitleNormalizer.FolderTitleCandidates(raw))
+                {
+                    if (bookByTitle.TryGetValue(candidate, out matchedBook)) break;
+                }
+                if (matchedBook is not null) break;
+            }
 
             UpsertLocalFile(entry, author.Id, matchedBook?.Id, existingByPath, canon, toInsert, toUpdate);
             processed.Add(canon);
         }
+    }
+
+    // Yields the candidate "title stems" to feed into FolderTitleCandidates
+    // for a file, ordered from most-likely-correct to least. When the raw stem
+    // looks like "<Author> - <Title>" (or vice versa), the title-only stripped
+    // form comes first so files whose actual title is "Magic Kingdom for Sale"
+    // don't get matched against "Terry Brooks Magic Kingdom for Sale". Files
+    // whose stem matches the series-filename grammar also yield the parsed
+    // title separately, so "Heechee 6 - The Boy Who Would Live Forever" tries
+    // both the full stem and the bare "The Boy Who Would Live Forever".
+    internal static IEnumerable<string> TitleStemCandidates(string stem, Author author)
+    {
+        if (string.IsNullOrWhiteSpace(stem)) yield break;
+        var emitted = new HashSet<string>(StringComparer.Ordinal);
+
+        // 1) Author-prefix/suffix stripped form — highest signal.
+        var stripped = StripAuthorPrefixOrSuffix(stem, author);
+        if (!string.IsNullOrWhiteSpace(stripped) &&
+            !string.Equals(stripped, stem, StringComparison.Ordinal) &&
+            emitted.Add(stripped))
+        {
+            yield return stripped;
+        }
+
+        // 2) Series-filename grammar — "Series N - Title [- Author]" exposes
+        //    a clean title we wouldn't otherwise extract.
+        var (_, _, parsedTitle, _) = TitleNormalizer.TryParseSeriesFilename(stem);
+        if (!string.IsNullOrWhiteSpace(parsedTitle) && emitted.Add(parsedTitle!))
+            yield return parsedTitle!;
+        // Also apply series parse to the already-stripped form, since
+        // "<Author> - Series N - Title" needs both passes.
+        if (!string.Equals(stripped, stem, StringComparison.Ordinal))
+        {
+            var (_, _, parsedFromStripped, _) = TitleNormalizer.TryParseSeriesFilename(stripped);
+            if (!string.IsNullOrWhiteSpace(parsedFromStripped) && emitted.Add(parsedFromStripped!))
+                yield return parsedFromStripped!;
+        }
+
+        // 3) Raw stem as the catch-all fallback.
+        if (emitted.Add(stem)) yield return stem;
+    }
+
+    // Returns `stem` with a leading "<Author> - " or trailing " - <Author>"
+    // segment removed when one of the segments normalises to the author name
+    // (or one of its expanded variants). Returns the original stem unchanged
+    // when no segment matches.
+    internal static string StripAuthorPrefixOrSuffix(string stem, Author author)
+    {
+        const string sep = " - ";
+        var firstDash = stem.IndexOf(sep, StringComparison.Ordinal);
+        if (firstDash < 0) return stem;
+
+        if (MatchesAuthor(stem[..firstDash], author))
+            return stem[(firstDash + sep.Length)..].Trim();
+
+        // Author may instead live at the END of the stem ("<Title> - <Author>").
+        // Use the LAST " - " so multi-dash titles still split cleanly.
+        var lastDash = stem.LastIndexOf(sep, StringComparison.Ordinal);
+        if (MatchesAuthor(stem[(lastDash + sep.Length)..], author))
+            return stem[..lastDash].Trim();
+
+        return stem;
+    }
+
+    // True when `segment` normalises (with name-variant rotations) to the
+    // author's name or Calibre folder name.
+    private static bool MatchesAuthor(string segment, Author author)
+    {
+        if (string.IsNullOrWhiteSpace(segment)) return false;
+        var key = TitleNormalizer.NormalizeAuthor(segment);
+        if (string.IsNullOrEmpty(key)) return false;
+
+        foreach (var name in AuthorKeys(author))
+        {
+            if (string.Equals(key, name, StringComparison.Ordinal)) return true;
+            foreach (var v in Services.Incoming.AuthorMatcher.ExpandNameVariants(name))
+                if (string.Equals(key, v, StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
 
     private static void UpsertLocalFile(

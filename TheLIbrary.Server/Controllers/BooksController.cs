@@ -210,23 +210,41 @@ public class BooksController : ControllerBase
         => double.TryParse(pos, System.Globalization.NumberStyles.Any,
                System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : double.MaxValue;
 
+    public sealed record DuplicateFile(int Id, string Path, string? Format);
+
     public sealed record DuplicateGroup(
         int BookId,
         string Title,
         int AuthorId,
         string AuthorName,
-        IReadOnlyList<string> Paths);
+        IReadOnlyList<DuplicateFile> Files,
+        // Format the user probably wants to keep (epub > pdf > mobi > others).
+        // The UI can highlight files that are NOT this format as upgrade candidates.
+        string? RecommendedFormat,
+        IReadOnlyList<string> Paths);  // kept for backwards compatibility with older clients
+
+    // Preference order — earlier = better. Matched against
+    // Path.GetExtension(...).TrimStart('.').ToLowerInvariant().
+    private static readonly string[] FormatPreference =
+        new[] { "epub", "pdf", "azw3", "mobi", "azw", "fb2", "lit", "cbz", "docx", "odt", "prc", "pdb" };
 
     // Books where more than one LocalBookFile row is linked to the same Book.Id.
+    // When `authorId` is provided, only that author's books are returned (used
+    // for the per-author drilldown on the author detail page).
     [HttpGet("duplicates")]
-    public async Task<IReadOnlyList<DuplicateGroup>> Duplicates(CancellationToken ct)
+    public async Task<IReadOnlyList<DuplicateGroup>> Duplicates(
+        CancellationToken ct, [FromQuery] int? authorId = null)
     {
-        var groups = await _db.LocalBookFiles
+        var query = _db.LocalBookFiles
             .AsNoTracking()
-            .Where(f => f.BookId != null)
+            .Where(f => f.BookId != null);
+        if (authorId is int aid)
+            query = query.Where(f => f.AuthorId == aid);
+
+        var groups = await query
             .GroupBy(f => f.BookId!.Value)
             .Where(g => g.Count() > 1)
-            .Select(g => new { BookId = g.Key, Paths = g.Select(f => f.FullPath).ToList() })
+            .Select(g => new { BookId = g.Key, Files = g.Select(f => new { f.Id, f.FullPath }).ToList() })
             .ToListAsync(ct);
 
         if (groups.Count == 0) return Array.Empty<DuplicateGroup>();
@@ -239,14 +257,36 @@ public class BooksController : ControllerBase
 
         return groups
             .Where(g => books.ContainsKey(g.BookId))
-            .Select(g => new DuplicateGroup(
-                g.BookId,
-                books[g.BookId].Title,
-                books[g.BookId].AuthorId,
-                books[g.BookId].Name,
-                g.Paths))
+            .Select(g =>
+            {
+                var formatted = g.Files
+                    .Select(f => new DuplicateFile(
+                        f.Id, f.FullPath,
+                        FormatOf(f.FullPath)))
+                    .ToList();
+                var recommended = formatted
+                    .Select(f => f.Format)
+                    .Where(f => f is not null)
+                    .OrderBy(f => Array.IndexOf(FormatPreference, f))
+                    .FirstOrDefault();
+                return new DuplicateGroup(
+                    g.BookId,
+                    books[g.BookId].Title,
+                    books[g.BookId].AuthorId,
+                    books[g.BookId].Name,
+                    formatted,
+                    recommended,
+                    formatted.Select(f => f.Path).ToList());
+            })
             .OrderBy(g => g.AuthorName).ThenBy(g => g.Title)
             .ToList();
+    }
+
+    private static string? FormatOf(string fullPath)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath)) return null;
+        var ext = Path.GetExtension(fullPath).TrimStart('.').ToLowerInvariant();
+        return string.IsNullOrEmpty(ext) ? null : ext;
     }
 
     // All distinct genre-like subjects across the library, sorted by frequency.

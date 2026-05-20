@@ -36,10 +36,11 @@ from a drop folder and re-running matching against previously-unmatched files.
 | Series | `/series` | Hierarchical series tree with owned/total progress bars; create new series; inline edit of name, primary author, additional authors, parent series, and reading order position; deep-linkable via `?q=SeriesName` |
 | Stats | `/stats` | KPI cards, books-read-by-year chart, top genres, per-author coverage |
 | Duplicates | `/duplicates` | Books matched to more than one local file folder |
-| Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket |
+| Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket (with one-click "Try matching all" against the current watchlist) |
+| Unmatched physical | `/physical-unmatched` | Editable list of physical-books-import rows that couldn't be matched; "Re-run matching" re-tries the whole list against the current library |
 | Sync | `/sync` | Live sync dashboard with phase tracking and progress |
 | Schedules | `/schedules` | Cron expressions and enabled/disabled flags for background jobs |
-| Settings | `/settings` | Library locations, incoming folder, ignored folders, blacklist, NZB sites, reMarkable pairing, Goodreads import |
+| Settings | `/settings` | Library locations, incoming folder, ignored folders, blacklist, NZB sites, reMarkable pairing, Goodreads + physical-books import |
 
 ## How it works
 
@@ -82,7 +83,9 @@ author from the UI and add them — the sync then does the rest.
 The author detail page also lists unmatched local files (files in the author's
 folder that didn't line up with any tracked work). You can force-match one to
 a work, unmatch an existing link, or return the file's folder to the incoming
-bucket for reprocessing.
+bucket for reprocessing. The force-match accepts books owned by any non-pen-name
+linked child author too, so a canonical's view can claim its duplicates' works
+without re-parenting them in the DB first.
 
 OpenLibrary asks for no more than ~1 request per second. A single shared
 `OpenLibraryRateLimiter` serializes all outbound calls with a 1.1s minimum gap,
@@ -118,6 +121,32 @@ Any unowned book can be starred as **Wanted** (☆ / ★ toggle on the Missing W
 page and the author detail page). Wanted books sort to the top of Missing Works.
 Goodreads "to-read" shelf items are also set as wanted during import.
 
+## Local file → book matching
+
+The author detail page shows every local file that's *in* an author's folder
+but hasn't been linked to a specific work yet. Resolving them happens in three
+layers that compound rather than override each other:
+
+1. **Author-prefix / suffix strip.** Files named `<Author> - <Title>.epub` or
+   `<Title> - <Author>.epub` are rewritten to just the title before matching,
+   using the author's known name variants (display name, Calibre folder name,
+   surname-first rotation, comma form). Without this, `Terry Brooks - Magic
+   Kingdom for Sale.epub` would never find the `Magic Kingdom for Sale` book.
+2. **Series-filename parse.** When the stem matches the series grammar
+   (`<Series> N - <Title> [- <Author>]`), the parsed title is added as a
+   separate match candidate alongside the raw stem.
+3. **Fuzzy scoring on the unmatched list.** The server returns the top three
+   `Book` candidates per unmatched file via
+   `GET /api/authors/{id}/unmatched/suggestions`, scored with Jaro-Winkler
+   over the normalised title. The Author Detail page renders them inline as
+   coloured chips (≥0.9 green, 0.75–0.9 neutral, &lt;0.75 dim), with a one-click
+   "Confirm N high-confidence matches" button that batches every ≥0.9
+   suggestion through `POST /api/authors/{id}/unmatched/bulk-match`.
+
+The same prefix/series/fuzzy pipeline is also used by the sync's automatic
+matcher so what you see in the UI mirrors how a sync pass would have evaluated
+each file.
+
 ## Title matching
 
 Calibre folder names are normalized to lowercase alphanumeric + spaces, then
@@ -135,6 +164,36 @@ normalization, so `The_Hobbit_by_Tolkien_JRR` feeds the same pipeline.
 Leading articles (`the`, `a`, `an`) are stripped, diacritics are decomposed,
 and Calibre's trailing `(id)` numeric suffix is removed before any of the
 above steps.
+
+## Series filename parsing
+
+`TryParseSeriesFilename` recognises a range of common naming conventions used
+by libgen, Calibre downloads, and various ebook tools so the series organiser
+can shelve a file under the right series folder even when the DB has no series
+metadata yet. Recognised shapes (case-insensitive, position-aware):
+
+| Filename | Series | Position | Title | Author |
+|----------|--------|----------|-------|--------|
+| `Heechee 6 - The Boy Who Would Live Forever` | Heechee | 6 | The Boy Who Would Live Forever | — |
+| `Wheel of Time 10 - Crossroads of Twilight - Robert Jordan` | Wheel of Time | 10 | Crossroads of Twilight | Robert Jordan |
+| `Pohl, Frederik - Heechee 6 - The Boy…` | Heechee | 6 | The Boy… | Pohl, Frederik |
+| `Star Trek_ TNG - 069 - Insurrection` | Star Trek_ TNG | 69 | Insurrection | — |
+| `Star Wars - 311 - Fate of the Jedi 03 - Abyss` | Fate of the Jedi | 3 | Abyss | — |
+| `[Lorien Legacies 06.0] The Fate - Pittacus Lore` | Lorien Legacies | 6 | The Fate | Pittacus Lore |
+| `Marta Perry - [Watcher in the Dark 05] - When Secrets Strike` | Watcher in the Dark | 5 | When Secrets Strike | Marta Perry |
+| `Hank_ Texas Kings MC, Book 11 - Cee Bowerman` | Hank_ Texas Kings MC | 11 | Cee Bowerman | — |
+| `Holmes of Kyoto_ Volume 6 - Mai Mochizuki` | Holmes of Kyoto_ | 6 | Mai Mochizuki | — |
+
+Positions are normalised — leading zeros are stripped (`069` → `69`), `.0`
+suffixes dropped (`3.0` → `3`), and fractionals preserved (`1.5`, `06.5`).
+Calibre `(123)` duplicate-ids and tool-added `_2` / `_3` suffixes are stripped
+from the recovered title. Nested series resolve to the deepest unambiguous
+match — `Star Wars - 311 - Fate of the Jedi 03 - Abyss` picks the inner
+subseries because it's more specific than the outer index. Bare parent indices
+that look like authors (`311`, `008`) are explicitly rejected as author names.
+
+Coverage of these shapes lives in `TitleNormalizerSeriesTests` — 86 cases
+spanning every pattern above plus negative examples that must return all-null.
 
 ## NZB search sites
 
@@ -166,6 +225,42 @@ The **author blacklist** (`AuthorBlacklist` table) prevents a Calibre folder
 from ever being promoted to a tracked author. Blacklisted entries are matched
 by normalized name at scan time. Blacklisted authors that are already tracked
 are silently skipped when processing their works.
+
+## Author linking (duplicates and pen names)
+
+OpenLibrary often has the same person split across multiple author rows. On
+each author's detail page, **Link to another author…** opens a search modal
+that targets the tracked watchlist and lets you choose one of two modes:
+
+- **Duplicate** — `IsPenName = false`. The child row is hidden from the main
+  Authors list, its books are folded into the canonical's detail view, and its
+  on-disk files are physically moved from the child's Calibre folder into the
+  canonical's. The merged book counts on the Authors list reflect both.
+- **Pen name** — `IsPenName = true`. Both authors stay independent and keep
+  their own pages and files. Each page just shows a "Pen name of *X*" banner
+  back to the canonical.
+
+Both modes are reversible from the same banner (**Unlink**); unlinking does
+not move files back to the child's folder — they stay wherever they currently
+are.
+
+The link relationship is one-deep (no chains): you can't link a canonical
+that's already linked, nor a row that already has its own linked children.
+This keeps the merged-view query simple and predictable.
+
+Every endpoint that handles "books for this author" honours the merge:
+
+- The full sync's file-to-book auto-matcher pulls non-pen-name children's books
+  into the candidate set for the canonical, so files dropped under the
+  canonical's folder match titles that still carry the child's `AuthorId`.
+- `AuthorRefresher` skips its OL-collision auto-merge for any row with a
+  user-set link, so a scheduled refresh can't silently delete a child you
+  intentionally linked.
+- The series picker on the canonical lists series belonging to any folded-in
+  child.
+- New OpenLibrary works added for a child author (via its own OL key) flow
+  into the canonical's view automatically — the book is inserted under the
+  child's `AuthorId` and the merge does the rest at display time.
 
 ## Works refresh cadence
 
@@ -216,6 +311,86 @@ before they're slotted into the library.
 - **Folder-layout matching** — if a file's metadata is unreadable but any
   ancestor folder name matches a tracked author, the whole folder is treated
   as `<Author>/<Title>/<files>` so multi-format books stay together.
+
+## Author matching
+
+`AuthorMatcher` indexes every tracked author and (where applicable) every
+OpenLibrary catalog row under multiple key variants so name spellings, sort-
+order forms, and alternate names all resolve to the same entry:
+
+- **Normalised display name** — `Arthur C. Clarke` → `arthur c clarke`
+- **`Last, First` form** — `Clarke, Arthur C.` → `arthur c clarke`
+- **Surname-first rotation** — `arthur c clarke` also indexes as `clarke arthur c`
+- **First-token-to-back rotation** (3+ tokens) — `c clarke arthur`
+- **Calibre folder name** — same set of variants applied independently
+- **OL `alternate_names` and `personal_name`** — when an `OpenLibraryAuthor`
+  row exists for the tracked author's OL key, every entry from
+  `AlternateNames` (semicolon-delimited) and the `PersonalName` is indexed
+  alongside the primary keys
+
+Tracked entries win over OL-only entries on key collisions. The blacklist
+(normalised author names) is applied at index build time — blacklisted authors
+silently never match. Linked non-pen-name children are not added to the
+index — folders matching their name resolve to the canonical instead.
+
+### Unknown-folder rematching
+
+`POST /api/unknown-folders/match` (also exposed as the **🔍 Try matching all**
+button on the Untracked page) walks every folder inside `__unknown` across all
+enabled library locations and runs each folder name through the matcher. Each
+match physically moves the folder out of `__unknown` and into the canonical
+author's folder (merging entry-by-entry if a folder already exists at the
+destination). Use it after adding authors to recover quarantined collections
+without a full sync.
+
+The decision logic is split out as a pure function
+(`UnknownFolderRecovery.Plan`) so the matching algorithm is unit-testable
+without any disk I/O. The endpoint itself only does I/O and DB updates.
+
+## Same-name author disambiguation
+
+When two (or more) tracked authors share the same normalised name and are
+**not** linked to each other (no parent/child link, no shared canonical),
+they're treated as a genuine collision and given separate on-disk folders
+suffixed with their OpenLibrary key:
+
+```
+<Root>/John Smith_OL12345A/…   ← author #1
+<Root>/John Smith_OL67890A/…   ← author #2
+```
+
+Both members of the collision get the suffix — never just one — so the layout
+is deterministic regardless of which row was added first. If any member of a
+group lacks an OL key, the rule waits until every key lands before suffixing
+(otherwise the layout would change shape on every refresh).
+
+The rule is applied:
+
+- **On add** (`POST /api/authors`) — when adding a new author surfaces a name
+  collision against existing rows.
+- **On refresh** (every per-author OL refresh) — picks up newly-resolved keys
+  and new collisions as the watchlist grows.
+- **Via the maintenance job** `disambiguate-folders` — runs daily at 11:00
+  by default (managed on the Schedules page) and is also callable on demand
+  from the Untracked page button "↔ Disambiguate same-name folders" or via
+  `POST /api/authors/disambiguate-folders`.
+
+The maintenance job does the heavy lifting on legacy data:
+
+1. Finds every group of 2+ unlinked authors sharing a normalised name where
+   every member has an OL key.
+2. For each LocalBookFile in the merged folder, looks up its `NormalizedTitle`
+   against each member's books — the file moves to the matching author's
+   suffixed folder.
+3. Files whose title doesn't match any member's bibliography stay with the
+   lowest-id author so they remain visible (and re-matchable from the
+   author detail page) instead of being lost to `__unknown`.
+4. The on-disk move and DB rewrite (`LocalBookFile.AuthorId / AuthorFolder /
+   FullPath`, `Author.CalibreFolderName`) are done in lockstep so a partial
+   failure leaves the system consistent.
+
+The job runs through `BackgroundTaskCoordinator` like every other organiser,
+so it can't overlap with sync, incoming, or series-organize runs.
 
 ## Series organizer
 
@@ -288,6 +463,51 @@ works, then:
 
 The response shows matched / already-read / unmatched counts, plus a
 collapsible list of the first 50 unmatched titles.
+
+## Physical books import
+
+Upload a plain-text inventory of physically-owned books on the **Settings**
+page and the importer flips `Book.ManuallyOwned = true` on every row it can
+match against your tracked library. Books already owned (in any sense — file
+or physical) are counted but not updated. Empty-title rows are skipped.
+
+The expected format is one book per line, either tab-separated (`Author<TAB>Title<TAB>Series+pos`)
+or fixed-width with the columns at character offsets 0 (Author, 26 chars),
+26 (Title, 44 chars), and 70+ (Series + position):
+
+```
+Abbey, Lynn              Sanctuary                            Thieves' World 4
+Adams, Douglas           The Hitchhiker's Guide to the Galaxy H2G2 1
+…
+```
+
+Matching runs two passes per row so format quirks across catalogues don't
+sabotage the match:
+
+1. **Standard normalised title** — same pipeline as the rest of the app
+   (`The Hobbit (1)` → `hobbit`).
+2. **Loose key** — replaces `&` with `and`, normalises, then collapses all
+   spaces. Catches `Rock & Roll` vs `Rock and Roll`, hyphen-vs-space
+   differences, possessive apostrophes, and general punctuation noise.
+
+Author is used as a tiebreaker when multiple books share the same normalised
+title. The two-pass strategy is shared with the rematch endpoint via the
+private `PhysicalMatchIndex` so both code paths apply the same rules.
+
+### Unmatched persistence and rematching
+
+Rows that fail both passes are persisted to the `PhysicalBookUnmatched` table
+(deduped by author+title, case-insensitive). The **Unmatched physical** page
+(`/physical-unmatched`) lets you:
+
+- Edit any row's Author / Title / Series-position inline
+- Delete rows you don't care about
+- Re-run the whole pipeline against your current library with one click —
+  matched rows mark their book owned and disappear from the unmatched table;
+  rows that still don't match stay put for further editing
+
+This makes the import workflow non-destructive: nothing is silently lost, and
+the unmatched list shrinks every time you fix a row or add the missing book.
 
 ## OPDS catalog
 
@@ -371,6 +591,7 @@ on every startup.
 | `reprocess-unknown` | `0 18 * * *` | Re-run matching on the `__unknown` bucket |
 | `organize-series` | `0 1,13 * * *` | Enforce flat-file layout, move files to series folders |
 | `unzip` | `0 0 * * *` | Extract `.zip`/`.rar` archives to incoming folder |
+| `disambiguate-folders` | `0 11 * * *` | Split shared-name author folders into per-OL-key folders; route files by title match |
 
 Hangfire runs with `WorkerCount=1`, and all background work also passes through
 a single `BackgroundTaskCoordinator`, so a manual UI run and a cron tick can't
@@ -479,9 +700,16 @@ as they process each file.
 | POST   | `/api/authors/{id}/refresh` | On-demand single-author OpenLibrary refresh |
 | DELETE | `/api/authors/{id}` | Remove an author (moves files back to incoming) |
 | GET    | `/api/authors/starred` | Authors with priority ≥ 1 |
-| POST   | `/api/authors/{id}/unmatched/{fileId}/match` | Force-match an unmatched local file to a work |
+| POST   | `/api/authors/{id}/unmatched/{fileId}/match` | Force-match an unmatched local file to a work (accepts books owned by linked non-pen-name children) |
 | DELETE | `/api/authors/{id}/unmatched/{fileId}/match` | Undo a match |
 | POST   | `/api/authors/{id}/unmatched/{fileId}/return-to-incoming` | Move the file's folder back to incoming |
+| GET    | `/api/authors/{id}/unmatched/suggestions` | Returns top-N fuzzy-scored book candidates per unmatched file (default top=3) |
+| POST   | `/api/authors/{id}/unmatched/bulk-match` | Apply a batch of `(fileId, bookId)` pairs in one call (used by the "Confirm" button) |
+| PUT    | `/api/authors/{id}/unmatched/{fileId}/additional-books` | Attach extra book ids to a file representing multiple works (omnibus / boxed set) |
+| PUT    | `/api/authors/{id}/link` | Link this author to a canonical (body: `{ canonicalAuthorId, isPenName }`). Duplicates physically move files; pen names don't. |
+| DELETE | `/api/authors/{id}/link` | Remove the link (does not move files back) |
+| POST   | `/api/authors/disambiguate-folders` | Run the same-name author folder disambiguator now (also scheduled at 11:00 daily) |
+| GET    | `/api/authors/disambiguate-folders/status` | Polling endpoint for the running state + last summary |
 
 ### Books
 
@@ -514,6 +742,11 @@ as they process each file.
 |--------|------|---------|
 | GET    | `/api/stats` | Library KPIs, read-by-year, top genres, author coverage |
 | POST   | `/api/import/goodreads` | Import a Goodreads export CSV (multipart/form-data `file`) |
+| POST   | `/api/import/physical-books` | Import a physical-books inventory (tab or fixed-width); marks matches as `ManuallyOwned` and persists unmatched rows for later editing |
+| GET    | `/api/import/physical-books/unmatched` | List rows from past imports that couldn't be matched |
+| PUT    | `/api/import/physical-books/unmatched/{id}` | Edit an unmatched row's Author / Title / SeriesPos |
+| DELETE | `/api/import/physical-books/unmatched/{id}` | Remove an unmatched row |
+| POST   | `/api/import/physical-books/unmatched/rematch` | Re-run matching against the current library; matched rows mark their book owned and are deleted |
 
 ### Unclaimed / unknown
 
@@ -523,6 +756,7 @@ as they process each file.
 | DELETE | `/api/unclaimed?folder=` | Move a folder back to incoming and blacklist the name |
 | DELETE | `/api/unclaimed/all` | Move all unclaimed folders back to incoming |
 | GET    | `/api/unknown-folders` | Author-level folders inside `__unknown` |
+| POST   | `/api/unknown-folders/match` | Try matching every `__unknown` folder against the current watchlist (incl. OL alternate names) and move matches into the canonical author folder |
 | DELETE | `/api/unknown-folders?folder=` | Move one `__unknown` folder back to incoming |
 | DELETE | `/api/unknown-folders/all` | Move all `__unknown` folders back to incoming |
 
@@ -589,6 +823,7 @@ as they process each file.
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET    | `/api/openlibrary/search-authors?q=` | Proxied OpenLibrary author search |
+| GET    | `/api/openlibrary/suggest-for-folder?folder=` | Top-N OL author candidates for a folder name, ranked by Jaro-Winkler over the normalised name (used by the "Suggest from OL" button on the Untracked page) |
 
 ### OPDS catalog
 
@@ -608,7 +843,12 @@ trusted LAN).
 - `Author` — OL key, name, Calibre folder name, status (Pending / Active /
   Excluded / NotFound), exclusion reason, priority (0–5), bio (from OL),
   last-synced timestamp, next-fetch-due-at, `CalibreScannedAt` (for fair scan
-  ordering), `RefreshIntervalDays` (optional fixed cadence override in days).
+  ordering), `RefreshIntervalDays` (optional fixed cadence override in days),
+  `LinkedToAuthorId` (self-referential FK to the canonical author when this
+  row is a user-marked duplicate or pen name; `ClientSetNull` on delete so
+  parent removal nulls children rather than cascading), `IsPenName` (when
+  `LinkedToAuthorId` is set, distinguishes "fold into canonical" from
+  "show separately, just back-reference").
 - `Series` — normalised series name, optional FK to primary `Author`, optional
   `ParentSeriesId` self-referential FK (up to 5 levels deep), `PositionInParent`
   string for reading-order sorting within the parent. A series can be shared
@@ -619,10 +859,12 @@ trusted LAN).
   `ManuallyOwned` flag + timestamp, `Subjects` (semicolon-delimited OL subject
   tags; `NULL` = never checked, `""` = checked/none found), `SeriesId` (FK to
   `Series`), `SeriesPosition`, `ReadStatus` (Unread/Reading/Read/Dnf), `ReadAt`,
-  `Wanted`, FK to Author.
+  `Wanted`, `Isbn` (ISBN-13 preferred, normalised on insert), FK to Author.
 - `LocalBookFile` — path on disk (file path after organizer runs, directory path
   in classic Calibre layout), Calibre folder names, optional FKs to Author
-  and Book (null FK = unmatched).
+  and Book (null FK = unmatched), `Isbn` (extracted from `dc:identifier` when
+  the EPUB has one), `AdditionalBookIds` (comma-separated list of secondary
+  Book ids for omnibus / boxed-set files; the primary Book stays on `BookId`).
 - `LibraryLocation` — a root directory to scan. Multiple allowed; exactly one
   is `IsPrimary`. Each has a label, enabled flag, and `LastScanAt`.
 - `AppSetting` — key/value store (incoming folder path, schedule config, etc).
@@ -636,6 +878,10 @@ trusted LAN).
 - `AuthorUpdateState` — watermark for the OpenLibrary author-updates feed.
 - `RemarkableAuth` — singleton row holding the paired reMarkable device
   token, cached user token + expiry, device GUID, and last-sent timestamp.
+- `PhysicalBookUnmatched` — rows from a physical-books import that couldn't be
+  matched against any tracked book. Fields: Author, Title, SeriesPos, AddedAt.
+  Indexed by `(Author, Title)` for the dedupe check on re-import. Editable and
+  re-runnable from `/physical-unmatched`.
 
 ## Running the tests
 
@@ -644,10 +890,42 @@ cd TheLibrary.Server.Tests
 dotnet test
 ```
 
-`AuthorMatcherTests` covers the author-matching algorithm end-to-end using
-in-memory index entries: forward and reverse filename patterns, `"Last, First"`
-metadata, diacritics, surname/forename rotations, folder-layout ancestor
-walks, and the tracked-wins-over-OpenLibrary precedence rule.
+The suite is xUnit-only with no DB dependency — every test runs against
+in-memory inputs.
+
+- `AuthorMatcherTests` covers the author-matching algorithm end-to-end:
+  forward and reverse filename patterns, `"Last, First"` metadata, diacritics,
+  surname/forename rotations, folder-layout ancestor walks, the
+  tracked-wins-over-OpenLibrary precedence rule, and the `AlternateNames`
+  index expansion.
+- `TitleNormalizerSeriesTests` pins every series-filename shape the parser
+  must handle (86 cases across 12 patterns) plus the helpers
+  (`Normalize`, `NormalizeAuthor`, `FolderTitleCandidates`,
+  `IsPlausibleAuthorName`).
+- `SeriesPositionParserTests` covers OL-title parenthetical extraction for
+  `(Series, #N)`, `(Series, Book N)`, `(Series, Part N)`, `(Series, Vol. N)`,
+  fractional positions, and the known-limitation edge cases.
+- `UnknownFolderRecoveryTests` covers the `__unknown` rematch planner:
+  comma-form, surname-first rotation, alternate-name lookup, diacritic
+  stripping, blacklist gate, OL-only entries being ignored,
+  tracked-wins-over-OL on collision, and duplicate-input handling.
+- `AuthorFolderNameResolverTests` covers the same-name disambiguation rule:
+  no collision → bare name; collision with full OL keys → suffix on all
+  members; collision with any missing key → no suffix yet; linked pairs
+  not counted as collisions; sibling pen names of the same canonical not
+  counted; diacritic-equivalent names still collide; three-way collisions
+  all suffixed.
+- `AuthorPrefixStripTests` covers the `<Author> - <Title>` /
+  `<Title> - <Author>` filename rewriting that runs before sync's auto-matcher
+  evaluates a stem, plus the series-filename signal that adds the parsed
+  title as an extra candidate.
+- `FuzzyScoreTests` checks Jaro-Winkler behaviour: identical→1.0,
+  typos≥0.85, distinct strings &lt;0.7, scores always in [0,1].
+- `IsbnNormaliseTests` checks the ISBN extractor's handling of
+  hyphenated / spaced / URN-prefixed forms plus the trailing 'X' check digit
+  and rejects too-short/too-long inputs.
+
+214 tests total at the time of writing.
 
 ## Adding a schema change
 

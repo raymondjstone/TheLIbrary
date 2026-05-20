@@ -67,18 +67,32 @@ function UnmatchedFilesSection({
     unmatchedLocal, books,
     matchError, matchBusyIds, returnBusyIds,
     matchSel, setMatchSel, matchFilter, setMatchFilter,
-    onMatch, onReturn, rmConnected, sendBusyIds, onSend
+    onMatch, onReturn, rmConnected, sendBusyIds, onSend,
+    suggestionsByFile, onBulkMatch, bulkBusy
 }) {
     if (!unmatchedLocal.length) return null
     const canSend = (formats) => !!formats?.length
     const needsConvert = (formats) => !!formats?.length && !formats.some(f => f === 'epub' || f === 'pdf')
+
+    // Count files that have a ≥0.9 suggestion ready to auto-confirm.
+    const highConfidenceCount = Object.values(suggestionsByFile ?? {})
+        .filter(s => s.candidates?.[0]?.score >= 0.9).length
+
     return (
         <>
-            <h3>Local files with no matching work</h3>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '1rem', flexWrap: 'wrap' }}>
+                <h3 style={{ margin: 0 }}>Local files with no matching work</h3>
+                {highConfidenceCount > 0 && (
+                    <button onClick={onBulkMatch} disabled={bulkBusy}
+                            title="Auto-match every file whose top suggestion scored ≥ 0.9">
+                        {bulkBusy ? 'Matching…' : `✓ Confirm ${highConfidenceCount} high-confidence match${highConfidenceCount === 1 ? '' : 'es'}`}
+                    </button>
+                )}
+            </div>
             <p className="subtle">
-                Pick the work each file should count toward. Use this when
-                a spelling or punctuation variant kept the scanner from
-                matching automatically.
+                Pick the work each file should count toward, or click a suggestion below
+                to pre-fill the dropdown. Suggestions score from 0.5–1.0 (1.0 = exact match);
+                anything ≥ 0.9 is included in the "Confirm" bulk button.
             </p>
             {matchError && <p className="error">Match failed: {matchError}</p>}
             <table className="grid">
@@ -99,9 +113,19 @@ function UnmatchedFilesSection({
                         const sendLabel = sendBusyIds.has(u.id)
                             ? (convert ? 'Converting…' : 'Sending…')
                             : (convert ? 'Convert & send' : 'Send to reMarkable')
+                        const sugg = suggestionsByFile?.[u.id]
+                        const inferredTitle = sugg?.inferredTitle
+                        const showInferred = inferredTitle && inferredTitle !== u.titleFolder
                         return (
                             <tr key={u.id}>
-                                <td><code>{u.titleFolder}</code></td>
+                                <td>
+                                    <code style={{ display: 'block' }}>{u.titleFolder}</code>
+                                    {showInferred && (
+                                        <div className="subtle" style={{ fontSize: '0.85em', marginTop: '0.2rem' }}>
+                                            → <em>{inferredTitle}</em>
+                                        </div>
+                                    )}
+                                </td>
                                 <td>
                                     {formats.length > 0
                                         ? formats.map(ext => (
@@ -131,6 +155,31 @@ function UnmatchedFilesSection({
                                                 </option>
                                             ))}
                                     </select>
+                                    {sugg?.candidates?.length > 0 && (
+                                        <div style={{ marginTop: '0.3rem', display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+                                            {sugg.candidates.map(c => {
+                                                const isActive = String(c.bookId) === selected
+                                                const cls = c.score >= 0.9 ? 'pill pill-active'
+                                                    : c.score >= 0.75 ? 'pill'
+                                                    : 'pill pill-excluded'
+                                                return (
+                                                    <button key={c.bookId}
+                                                            type="button"
+                                                            className={cls}
+                                                            onClick={() => setMatchSel(prev => ({ ...prev, [u.id]: String(c.bookId) }))}
+                                                            style={{
+                                                                cursor: 'pointer',
+                                                                fontSize: '0.75em',
+                                                                border: isActive ? '2px solid var(--accent)' : '1px solid transparent',
+                                                                padding: '0.15rem 0.4rem',
+                                                            }}
+                                                            title={`Score ${c.score.toFixed(2)}${c.series ? ` • ${c.series}${c.seriesPosition ? ` #${c.seriesPosition}` : ''}` : ''}`}>
+                                                        {c.title} <span style={{ opacity: 0.7 }}>{c.score.toFixed(2)}</span>
+                                                    </button>
+                                                )
+                                            })}
+                                        </div>
+                                    )}
                                 </td>
                                 <td>
                                     <button onClick={() => onMatch(u.id)} disabled={busy || returning || !selected}>
@@ -233,6 +282,8 @@ export default function AuthorDetail() {
     const [intervalSaving, setIntervalSaving] = useState(false)
     const [showLinkDialog, setShowLinkDialog] = useState(false)
     const [unlinking, setUnlinking] = useState(false)
+    const [suggestionsByFile, setSuggestionsByFile] = useState({})  // { fileId: { inferredTitle, candidates } }
+    const [bulkBusy, setBulkBusy] = useState(false)
 
     const unlinkAuthor = async () => {
         if (!confirm('Remove the link to the canonical author?')) return
@@ -257,11 +308,75 @@ export default function AuthorDetail() {
 
     useEffect(() => {
         setData(null)
+        setSuggestionsByFile({})
         fetch(`/api/authors/${id}`)
             .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
             .then(setData)
             .catch(err => setData({ error: String(err) }))
     }, [id])
+
+    // Whenever the author detail finishes loading (or refreshes), fetch the
+    // server-computed suggestions for each unmatched file. The endpoint runs
+    // the same prefix-strip + series-filename + fuzzy scoring pipeline as the
+    // sync matcher, so what's shown here is consistent with how auto-matching
+    // would have evaluated each file.
+    useEffect(() => {
+        if (!data?.unmatchedLocal?.length) { setSuggestionsByFile({}); return }
+        fetch(`/api/authors/${id}/unmatched/suggestions?top=3`)
+            .then(r => r.ok ? r.json() : [])
+            .then(list => {
+                const map = {}
+                for (const item of list ?? []) map[item.fileId] = item
+                setSuggestionsByFile(map)
+                // Pre-select the top suggestion in the existing dropdown so the
+                // user can confirm with one click instead of digging through
+                // the full list.
+                setMatchSel(prev => {
+                    const updates = {}
+                    for (const item of list ?? []) {
+                        const best = item.candidates?.[0]
+                        if (best && best.score >= 0.7 && !prev[item.fileId])
+                            updates[item.fileId] = String(best.bookId)
+                    }
+                    return Object.keys(updates).length ? { ...prev, ...updates } : prev
+                })
+            })
+            .catch(() => setSuggestionsByFile({}))
+    }, [data, id])
+
+    const bulkMatch = async () => {
+        // Only commit pairs where the server-side score was ≥0.9 — anything
+        // below that should be manually confirmed by the user.
+        const items = []
+        for (const item of Object.values(suggestionsByFile)) {
+            const best = item.candidates?.[0]
+            if (best && best.score >= 0.9) items.push({ fileId: item.fileId, bookId: best.bookId })
+        }
+        if (items.length === 0) {
+            alert('No high-confidence matches available (score ≥ 0.9).')
+            return
+        }
+        if (!confirm(`Confirm ${items.length} high-confidence match(es)?`)) return
+        setBulkBusy(true)
+        try {
+            const r = await fetch(`/api/authors/${id}/unmatched/bulk-match`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ items }),
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            const summary = await r.json()
+            if (summary.errors?.length) console.warn('bulk-match errors:', summary.errors)
+            // Reload the author detail to pick up the new matches.
+            const refreshed = await fetch(`/api/authors/${id}`)
+                .then(x => x.ok ? x.json() : null)
+            if (refreshed) setData(refreshed)
+        } catch (e) {
+            alert(`Bulk match failed: ${e.message}`)
+        } finally {
+            setBulkBusy(false)
+        }
+    }
 
 
     useEffect(() => {
@@ -700,6 +815,10 @@ export default function AuthorDetail() {
                     <button className="btn-ghost" onClick={() => setShowLinkDialog(true)}>
                         Link to another author…
                     </button>
+                    {' '}
+                    <Link className="btn-ghost" to={`/duplicates?author=${id}`}>
+                        See this author's duplicate files
+                    </Link>
                 </p>
             )}
 
@@ -1110,7 +1229,10 @@ export default function AuthorDetail() {
                 onReturn={returnToIncoming}
                 rmConnected={rmConnected}
                 sendBusyIds={sendBusyIds}
-                onSend={sendToRemarkable} />
+                onSend={sendToRemarkable}
+                suggestionsByFile={suggestionsByFile}
+                onBulkMatch={bulkMatch}
+                bulkBusy={bulkBusy} />
         </section>
     )
 }

@@ -40,4 +40,15 @@ public class LocalBookFile
     public string? MetadataAuthor { get; set; }
     [MaxLength(20)]
     public string? MetadataLanguage { get; set; }
+    // ISBN-13 (preferred) or ISBN-10 extracted from EPUB/OPF dc:identifier when
+    // present. Lets the matcher hit a book by identifier even if titles diverge.
+    [MaxLength(20)]
+    public string? Isbn { get; set; }
+
+    // Comma-separated list of additional Book.Id values this file ALSO
+    // represents (omnibus / boxed-set support). BookId remains the "primary"
+    // book in the file; AdditionalBookIds extends ownership without breaking
+    // the existing single-FK navigation property.
+    [MaxLength(500)]
+    public string? AdditionalBookIds { get; set; }
 }

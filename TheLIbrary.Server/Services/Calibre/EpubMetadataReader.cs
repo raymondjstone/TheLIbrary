@@ -10,7 +10,8 @@ public sealed record EpubMetadata(
     string? Language,
     string? Subject,
     string? Series = null,
-    string? SeriesPosition = null);
+    string? SeriesPosition = null,
+    string? Isbn = null);
 
 // Reads Dublin Core metadata out of an .epub file. EPUB is a zip whose
 // META-INF/container.xml points at an OPF file containing
@@ -79,6 +80,25 @@ public static class EpubMetadataReader
                 else if (name == "calibre:series_index") seriesPos = content?.TrimEnd('0').TrimEnd('.');
             }
 
+            // dc:identifier may appear multiple times with different opf:scheme
+            // values. Prefer scheme="ISBN" (any case); fall back to any value
+            // whose digits look like an ISBN-10 or ISBN-13.
+            string? isbn = null;
+            foreach (var ident in meta.Elements(Dc + "identifier"))
+            {
+                var scheme = ident.Attribute(Opf + "scheme")?.Value;
+                var value = Trim(ident.Value);
+                if (value is null) continue;
+                var normalised = NormaliseIsbn(value);
+                if (normalised is null) continue;
+                if (string.Equals(scheme, "ISBN", StringComparison.OrdinalIgnoreCase))
+                {
+                    isbn = normalised;
+                    break;
+                }
+                isbn ??= normalised;  // first plausible ISBN if no explicit ISBN scheme
+            }
+
             return new EpubMetadata(
                 Trim(meta.Elements(Dc + "title").FirstOrDefault()?.Value),
                 Trim(creator?.Value),
@@ -86,7 +106,8 @@ public static class EpubMetadataReader
                 Trim(meta.Elements(Dc + "language").FirstOrDefault()?.Value),
                 subject,
                 series,
-                seriesPos);
+                seriesPos,
+                isbn);
         }
         catch
         {
@@ -96,4 +117,25 @@ public static class EpubMetadataReader
 
     private static string? Trim(string? s)
         => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+
+    // Strips spaces / hyphens / "urn:isbn:" / "isbn:" prefixes from an ISBN
+    // identifier and validates that what's left is 10 or 13 digits (allowing
+    // a trailing 'X' on ISBN-10). Returns the canonical digit string, or null
+    // when the value isn't a plausible ISBN.
+    internal static string? NormaliseIsbn(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var s = raw.Trim();
+        // Strip common URI / prefix wrappers.
+        foreach (var prefix in new[] { "urn:isbn:", "isbn:", "ISBN-13:", "ISBN-10:", "ISBN:" })
+            if (s.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            { s = s[prefix.Length..].TrimStart(); break; }
+        // Keep only digits and a trailing X (ISBN-10 check digit).
+        var compact = new System.Text.StringBuilder(s.Length);
+        foreach (var c in s)
+            if (char.IsDigit(c) || c == 'X' || c == 'x') compact.Append(char.ToUpperInvariant(c));
+        var digits = compact.ToString();
+        if (digits.Length == 10 || digits.Length == 13) return digits;
+        return null;
+    }
 }

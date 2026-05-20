@@ -44,6 +44,7 @@ public class LibraryDbContext : DbContext
             e.HasIndex(x => new { x.AuthorId, x.OpenLibraryWorkKey }).IsUnique();
             e.HasIndex(x => x.OpenLibraryWorkKey);
             e.HasIndex(x => new { x.AuthorId, x.NormalizedTitle });
+            e.HasIndex(x => x.Isbn).HasFilter("[Isbn] IS NOT NULL");
             e.HasOne(x => x.Author)
                 .WithMany(a => a.Books)
                 .HasForeignKey(x => x.AuthorId)
@@ -84,6 +85,7 @@ public class LibraryDbContext : DbContext
         {
             e.HasIndex(x => x.FullPath).IsUnique();
             e.HasIndex(x => new { x.AuthorId, x.NormalizedTitle });
+            e.HasIndex(x => x.Isbn).HasFilter("[Isbn] IS NOT NULL");
             e.HasOne(x => x.Book)
                 .WithMany(x => x.LocalFiles)
                 .HasForeignKey(x => x.BookId)

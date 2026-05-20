@@ -1,32 +1,44 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 
 export default function Duplicates() {
+    const [params] = useSearchParams()
+    const authorIdFromQuery = params.get('author')
     const [data, setData] = useState(null)
     const [error, setError] = useState(null)
 
     const load = () => {
         setError(null)
-        fetch('/api/books/duplicates')
+        const url = authorIdFromQuery
+            ? `/api/books/duplicates?authorId=${encodeURIComponent(authorIdFromQuery)}`
+            : '/api/books/duplicates'
+        fetch(url)
             .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
             .then(setData)
             .catch(e => setError(String(e)))
     }
 
-    useEffect(load, [])
+    useEffect(load, [authorIdFromQuery])
 
     return (
         <section>
             <div className="toolbar">
-                <h2 style={{ margin: 0, fontWeight: 600 }}>Duplicate Files</h2>
+                <h2 style={{ margin: 0, fontWeight: 600 }}>
+                    Duplicate Files{authorIdFromQuery ? ` — author #${authorIdFromQuery}` : ''}
+                </h2>
                 <span className="count" style={{ color: 'var(--subtle)' }}>
                     {data ? `${data.length} book${data.length === 1 ? '' : 's'} with multiple files` : ''}
                 </span>
                 <button className="btn-ghost" onClick={load}>Refresh</button>
+                {authorIdFromQuery && (
+                    <Link to="/duplicates" className="btn-ghost">Clear filter</Link>
+                )}
             </div>
             <p className="subtle" style={{ marginBottom: '1rem' }}>
-                Books where more than one folder in the Calibre library is matched to the same work.
-                Use the Author detail page to unmatch the duplicates or return them to incoming.
+                Books where more than one local file is matched to the same work.
+                The <strong>recommended format</strong> is the highest-quality one in the group
+                (epub &gt; pdf &gt; mobi &gt; …); lower-quality copies in the same group are
+                upgrade candidates you can safely remove.
             </p>
 
             {error && <p className="error">{error}</p>}
@@ -41,20 +53,43 @@ export default function Duplicates() {
                         <tr>
                             <th>Author</th>
                             <th>Title</th>
-                            <th>Paths ({data.reduce((s, g) => s + g.paths.length, 0)} total)</th>
+                            <th>Files</th>
                         </tr>
                     </thead>
                     <tbody>
                         {data.map(g => (
                             <tr key={g.bookId}>
                                 <td><Link to={`/authors/${g.authorId}`}>{g.authorName}</Link></td>
-                                <td>{g.title}</td>
                                 <td>
-                                    {g.paths.map((p, i) => (
-                                        <div key={i} style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: 'var(--subtle)' }}>
-                                            {p}
+                                    {g.title}
+                                    {g.recommendedFormat && (
+                                        <div className="subtle" style={{ fontSize: '0.8em' }}>
+                                            Keep <code>.{g.recommendedFormat}</code>; demote others.
                                         </div>
-                                    ))}
+                                    )}
+                                </td>
+                                <td>
+                                    {(g.files ?? g.paths.map((p, i) => ({ path: p, format: null, id: i }))).map(f => {
+                                        const isRecommended = g.recommendedFormat && f.format === g.recommendedFormat
+                                        return (
+                                            <div key={f.id} style={{
+                                                fontFamily: 'monospace',
+                                                fontSize: '0.8rem',
+                                                color: isRecommended ? 'var(--text)' : 'var(--subtle)',
+                                                fontWeight: isRecommended ? 600 : 400,
+                                            }}>
+                                                {f.format && (
+                                                    <span className="filetype-tag" style={{ marginRight: '0.3rem' }}>
+                                                        {f.format}
+                                                    </span>
+                                                )}
+                                                {f.path}
+                                                {isRecommended && (
+                                                    <span style={{ marginLeft: '0.4rem', color: 'var(--accent)' }} title="Recommended format">★</span>
+                                                )}
+                                            </div>
+                                        )
+                                    })}
                                 </td>
                             </tr>
                         ))}

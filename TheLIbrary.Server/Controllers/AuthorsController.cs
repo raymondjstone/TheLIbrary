@@ -426,6 +426,149 @@ public class AuthorsController : ControllerBase
         return false;
     }
 
+    public sealed record BookSuggestion(int BookId, string Title, double Score, string? Series, string? SeriesPosition);
+    public sealed record FileSuggestionSet(int FileId, string InferredTitle, IReadOnlyList<BookSuggestion> Candidates);
+
+    // Returns top-N candidate books per unmatched file. The same author-prefix
+    // strip + series-filename parsing that the sync matcher uses runs here so
+    // suggestions match the title the user expects to see. Candidates are
+    // scored with Jaro-Winkler against the inferred title; the response is
+    // ordered by score descending.
+    [HttpGet("{id:int}/unmatched/suggestions")]
+    public async Task<ActionResult<IReadOnlyList<FileSuggestionSet>>> Suggestions(
+        int id, CancellationToken ct, [FromQuery] int top = 3)
+    {
+        if (top < 1 || top > 10) top = 3;
+
+        var author = await _db.Authors.AsNoTracking().FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (author is null) return NotFound(new { error = "Author not found" });
+
+        // Folded book set: own + non-pen-name children's books.
+        var foldedIds = new List<int> { id };
+        foldedIds.AddRange(await _db.Authors.AsNoTracking()
+            .Where(a => a.LinkedToAuthorId == id && !a.IsPenName)
+            .Select(a => a.Id)
+            .ToListAsync(ct));
+
+        var books = await _db.Books.AsNoTracking()
+            .Where(b => foldedIds.Contains(b.AuthorId))
+            .Select(b => new
+            {
+                b.Id, b.Title, b.NormalizedTitle,
+                SeriesName = b.Series != null ? b.Series.Name : null,
+                b.SeriesPosition,
+            })
+            .ToListAsync(ct);
+
+        var folderCandidates = FolderCandidatesFor(author);
+        var unmatched = await _db.LocalBookFiles.AsNoTracking()
+            .Where(f => f.BookId == null
+                && (foldedIds.Contains(f.AuthorId ?? -1)
+                    || (f.AuthorId == null && folderCandidates.Contains(f.AuthorFolder))))
+            .Select(f => new { f.Id, f.TitleFolder, f.NormalizedTitle })
+            .ToListAsync(ct);
+
+        var result = new List<FileSuggestionSet>(unmatched.Count);
+        foreach (var file in unmatched)
+        {
+            // Use the same stem-candidate pipeline the sync matcher does so
+            // the inferred title shown in the UI matches what auto-matching
+            // would have used. The first non-empty candidate is the
+            // "preferred" inferred title to display.
+            var stem = file.TitleFolder ?? "";
+            var stems = SyncService.TitleStemCandidates(stem, author).ToList();
+            var inferredRaw = stems.FirstOrDefault() ?? stem;
+            var inferredNormalised = TitleNormalizer.Normalize(inferredRaw);
+
+            var scored = books
+                .Select(b => new BookSuggestion(
+                    b.Id, b.Title,
+                    FuzzyScore.JaroWinkler(b.NormalizedTitle ?? "", inferredNormalised),
+                    b.SeriesName, b.SeriesPosition))
+                .OrderByDescending(s => s.Score)
+                .Take(top)
+                .Where(s => s.Score >= 0.5)
+                .ToList();
+
+            result.Add(new FileSuggestionSet(file.Id, inferredRaw, scored));
+        }
+        return Ok(result);
+    }
+
+    public sealed record BulkMatchRequest(IReadOnlyList<BulkMatchItem> Items);
+    public sealed record BulkMatchItem(int FileId, int BookId);
+    public sealed record BulkMatchSummary(int Matched, int Skipped, IReadOnlyList<string> Errors);
+
+    // Applies a batch of (FileId, BookId) pairs in one call so the UI can offer
+    // a "Confirm all high-confidence matches" button. Per-row validation is the
+    // same as POST /unmatched/{fileId}/match — book must belong to the author
+    // or one of its non-pen-name children; file must already be associated.
+    [HttpPost("{id:int}/unmatched/bulk-match")]
+    public async Task<ActionResult<BulkMatchSummary>> BulkMatch(
+        int id, [FromBody] BulkMatchRequest body, CancellationToken ct)
+    {
+        var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (author is null) return NotFound(new { error = "Author not found" });
+
+        int matched = 0, skipped = 0;
+        var errors = new List<string>();
+        foreach (var item in body.Items ?? Array.Empty<BulkMatchItem>())
+        {
+            var file = await _db.LocalBookFiles.FirstOrDefaultAsync(f => f.Id == item.FileId, ct);
+            if (file is null) { errors.Add($"file {item.FileId}: not found"); skipped++; continue; }
+            if (!FileBelongsToAuthor(file, author)) { errors.Add($"file {item.FileId}: not under this author"); skipped++; continue; }
+
+            var book = await _db.Books.FirstOrDefaultAsync(b => b.Id == item.BookId, ct);
+            if (book is null) { errors.Add($"book {item.BookId}: not found"); skipped++; continue; }
+            if (!await BookBelongsToAuthorViewAsync(book, id, ct))
+            { errors.Add($"book {item.BookId}: not under this author"); skipped++; continue; }
+
+            file.AuthorId = id;
+            file.BookId = book.Id;
+            file.ManuallyUnmatched = false;
+            matched++;
+        }
+        if (matched > 0) await _db.SaveChangesAsync(ct);
+        return Ok(new BulkMatchSummary(matched, skipped, errors));
+    }
+
+    public sealed record AdditionalBooksRequest(IReadOnlyList<int> BookIds);
+
+    // For omnibus / boxed-set files that represent multiple books, the user can
+    // attach extra BookIds beyond the primary one set via /match. Stored as a
+    // comma-separated string on LocalBookFile so reads stay cheap and we don't
+    // need a join table for the secondary use case.
+    [HttpPut("{id:int}/unmatched/{fileId:int}/additional-books")]
+    public async Task<IActionResult> SetAdditionalBooks(
+        int id, int fileId, [FromBody] AdditionalBooksRequest req, CancellationToken ct)
+    {
+        var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (author is null) return NotFound(new { error = "Author not found" });
+
+        var file = await _db.LocalBookFiles.FirstOrDefaultAsync(f => f.Id == fileId, ct);
+        if (file is null) return NotFound(new { error = "Local file not found" });
+        if (!FileBelongsToAuthor(file, author))
+            return BadRequest(new { error = "File does not belong to this author" });
+
+        var ids = (req.BookIds ?? Array.Empty<int>())
+            .Where(b => b > 0 && b != file.BookId)
+            .Distinct()
+            .ToList();
+
+        // Validate each book belongs to the author's view.
+        foreach (var bookId in ids)
+        {
+            var book = await _db.Books.FirstOrDefaultAsync(b => b.Id == bookId, ct);
+            if (book is null) return BadRequest(new { error = $"Book {bookId} not found" });
+            if (!await BookBelongsToAuthorViewAsync(book, id, ct))
+                return BadRequest(new { error = $"Book {bookId} does not belong to this author" });
+        }
+
+        file.AdditionalBookIds = ids.Count == 0 ? null : string.Join(",", ids);
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { file.Id, file.BookId, AdditionalBookIds = ids });
+    }
+
     public sealed record MatchLocalFileRequest(int BookId);
 
     // Manually link an unmatched local file to one of this author's tracked
@@ -686,10 +829,40 @@ public class AuthorsController : ControllerBase
                 .ExecuteUpdateAsync(s => s.SetProperty(f => f.AuthorId, _ => author.Id), ct);
         }
 
+        // Name collision check: if this add creates a duplicate-name situation
+        // with other unlinked authors AND every member of the group has an OL
+        // key, apply the disambiguating suffix to every member's
+        // CalibreFolderName so the on-disk layout stays unambiguous.
+        await ApplyCollisionSuffixesAsync(author, ct);
+
         return CreatedAtAction(nameof(Get), new { id = author.Id }, new AuthorListItem(
             author.Id, author.Name, author.CalibreFolderName, author.OpenLibraryKey,
             author.Status.ToString(), author.ExclusionReason,
             author.Priority, 0, 0, 0, 0, author.LastSyncedAt));
+    }
+
+    // Updates CalibreFolderName for every member of `author`'s collision group
+    // to the disambiguated form when AuthorFolderNameResolver says one is due.
+    // Folders on disk are NOT renamed here — use the disambiguate-folders
+    // endpoint for that. This call only keeps the DB metadata consistent so
+    // future scans and the migration endpoint can act on a coherent baseline.
+    private async Task ApplyCollisionSuffixesAsync(Author author, CancellationToken ct)
+    {
+        var all = await _db.Authors.ToListAsync(ct);
+        var group = AuthorFolderNameResolver.FindCollisionGroup(author, all);
+        if (group.Count < 2) return;
+
+        bool any = false;
+        foreach (var member in group)
+        {
+            var target = AuthorFolderNameResolver.Resolve(member, all);
+            if (!string.Equals(member.CalibreFolderName, target, StringComparison.Ordinal))
+            {
+                member.CalibreFolderName = target;
+                any = true;
+            }
+        }
+        if (any) await _db.SaveChangesAsync(ct);
     }
 
     public sealed record SetPriorityRequest(int Priority);
@@ -1365,6 +1538,67 @@ public class AuthorsController : ControllerBase
             return Ok(new { warnings });
 
         return NoContent();
+    }
+
+    // Kicks off the author-folder disambiguator (also runs daily via Hangfire
+    // at 11:00). Returns the previous run's summary if one is already in
+    // flight; otherwise schedules a new run and returns 202 Accepted.
+    [HttpPost("disambiguate-folders")]
+    public ActionResult<object> DisambiguateFolders(
+        [FromServices] AuthorFolderDisambiguatorService service,
+        CancellationToken ct)
+    {
+        if (service.IsRunning)
+            return Accepted(new { running = true, lastResult = service.LastResult });
+        if (!service.TryStart(ct, out var error))
+            return Conflict(new { error });
+        return Accepted(new { running = true });
+    }
+
+    [HttpGet("disambiguate-folders/status")]
+    public ActionResult<object> DisambiguateFoldersStatus(
+        [FromServices] AuthorFolderDisambiguatorService service)
+    {
+        return Ok(new { running = service.IsRunning, lastResult = service.LastResult });
+    }
+
+    public sealed record OlSuggestion(string OpenLibraryKey, string Name, int? WorkCount, double Score);
+
+    // Given a folder name, returns top OpenLibrary author candidates ranked by
+    // a fuzzy score against the folder name. Used on the Untracked page so a
+    // user can promote a quarantined folder to a tracked author in one click
+    // without typing into the search dialog. Rate-limited via the shared OL
+    // limiter so a barrage of folder names won't violate OL's 1/sec ceiling.
+    [HttpGet("~/api/openlibrary/suggest-for-folder")]
+    public async Task<ActionResult<IReadOnlyList<OlSuggestion>>> SuggestForFolder(
+        [FromQuery] string folder, CancellationToken ct,
+        [FromQuery] int top = 3)
+    {
+        if (string.IsNullOrWhiteSpace(folder))
+            return BadRequest(new { error = "folder is required" });
+
+        // Calibre's "Last, First" gets reordered for the OL query so the
+        // search picks up the canonical "First Last" form OL prefers.
+        var query = folder;
+        if (query.Contains(','))
+        {
+            var parts = query.Split(',', 2, StringSplitOptions.TrimEntries);
+            if (parts.Length == 2) query = $"{parts[1]} {parts[0]}";
+        }
+
+        var resp = await _ol.SearchAuthorsAsync(query, ct);
+        var folderKey = TitleNormalizer.NormalizeAuthor(folder);
+        var suggestions = resp?.Docs
+            ?.Where(d => !string.IsNullOrEmpty(d.Key) && !string.IsNullOrEmpty(d.Name))
+            .Select(d => new OlSuggestion(
+                d.Key!, d.Name!, d.WorkCount,
+                FuzzyScore.JaroWinkler(folderKey, TitleNormalizer.NormalizeAuthor(d.Name!))))
+            .OrderByDescending(s => s.Score)
+            .Take(Math.Clamp(top, 1, 10))
+            .ToList()
+            ?? new List<OlSuggestion>();
+
+        return Ok(suggestions);
     }
 
     public sealed record UnknownMatchResult(

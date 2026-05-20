@@ -46,6 +46,11 @@ public class Book
 
     public bool Wanted { get; set; }
 
+    // ISBN-13 (preferred) or ISBN-10, when known from imported metadata. Used
+    // as a high-confidence match key in addition to NormalizedTitle.
+    [MaxLength(20)]
+    public string? Isbn { get; set; }
+
     public int AuthorId { get; set; }
     public Author Author { get; set; } = null!;
 

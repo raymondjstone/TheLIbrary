@@ -266,6 +266,27 @@ public sealed class AuthorRefresher
                 author.Bio = ExtractBio(bio);
         }
 
+        // Name-collision check: this refresh might have just produced the
+        // second matching name in the system, or filled in the OL key that
+        // unlocks disambiguation for an existing collision. Update every
+        // group member's CalibreFolderName to its resolved value.
+        var all = await _db.Authors.ToListAsync(ct);
+        var group = AuthorFolderNameResolver.FindCollisionGroup(author, all);
+        if (group.Count >= 2)
+        {
+            foreach (var member in group)
+            {
+                var target = AuthorFolderNameResolver.Resolve(member, all);
+                if (!string.Equals(member.CalibreFolderName, target, StringComparison.Ordinal))
+                {
+                    var tracked = member.Id == author.Id
+                        ? author
+                        : await _db.Authors.FirstAsync(a => a.Id == member.Id, ct);
+                    tracked.CalibreFolderName = target;
+                }
+            }
+        }
+
         await _db.SaveChangesAsync(ct);
 
         return new AuthorRefreshOutcome(

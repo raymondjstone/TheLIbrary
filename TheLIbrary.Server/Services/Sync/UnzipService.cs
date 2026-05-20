@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using SharpCompress.Archives;
 using SharpCompress.Common;
+using SharpCompress.Readers;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
@@ -145,7 +146,10 @@ public sealed class UnzipService
 
     private static void ExtractArchive(string archivePath, string destinationDir)
     {
-        using var archive = ArchiveFactory.Open(archivePath);
+        // SharpCompress 0.48 renamed ArchiveFactory.Open → OpenArchive and made
+        // ReaderOptions a required parameter. The factory still auto-detects the
+        // archive type (zip / rar / 7z / tar) from the file content.
+        using var archive = ArchiveFactory.OpenArchive(archivePath, new ReaderOptions());
         foreach (var entry in archive.Entries)
         {
             if (entry.IsDirectory) continue;

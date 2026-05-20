@@ -1,6 +1,32 @@
 import { useEffect, useState } from 'react'
 import AddAuthorDialog from './AddAuthorDialog.jsx'
 
+// Inline OL author suggestions panel rendered under an Untracked row. Renders
+// nothing until the user has clicked the "Suggest" button (lazy-loaded so a
+// page with hundreds of folders doesn't hammer the OL rate limiter).
+function OlSuggestionPanel({ state, onQuickAdd, quickAddBusy }) {
+    if (!state) return null
+    if (state.loading) return <span className="subtle" style={{ marginLeft: '0.5rem' }}>Looking up…</span>
+    if (state.error) return <span className="error" style={{ marginLeft: '0.5rem' }}>{state.error}</span>
+    if (!state.items?.length) return <span className="subtle" style={{ marginLeft: '0.5rem' }}>No OL candidates.</span>
+    return (
+        <div style={{ marginLeft: '0.5rem', display: 'inline-flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+            {state.items.map(s => {
+                const busy = quickAddBusy === s.openLibraryKey
+                return (
+                    <button key={s.openLibraryKey}
+                            className="btn-ghost"
+                            disabled={busy}
+                            onClick={() => onQuickAdd(s)}
+                            title={`${s.openLibraryKey} • score ${s.score.toFixed(2)}${s.workCount ? ` • ~${s.workCount} works` : ''}`}>
+                        {busy ? 'Adding…' : '+'} {s.name} <span style={{ opacity: 0.6 }}>{s.score.toFixed(2)}</span>
+                    </button>
+                )
+            })}
+        </div>
+    )
+}
+
 export default function Untracked() {
     const [unclaimed, setUnclaimed] = useState([])
     const [unknownFolders, setUnknownFolders] = useState([])
@@ -93,6 +119,60 @@ export default function Untracked() {
         finally { setBusyMatching(false) }
     }
 
+    const [busyDisambig, setBusyDisambig] = useState(false)
+    const [disambigStatus, setDisambigStatus] = useState(null)
+    const [suggestionsByFolder, setSuggestionsByFolder] = useState({})  // folder -> { loading, items, error }
+    const [quickAddBusy, setQuickAddBusy] = useState(null)
+
+    const fetchSuggestions = async (folder) => {
+        setSuggestionsByFolder(prev => ({ ...prev, [folder]: { loading: true } }))
+        try {
+            const r = await fetch(`/api/openlibrary/suggest-for-folder?folder=${encodeURIComponent(folder)}`)
+            if (!r.ok) throw new Error(r.statusText)
+            const items = await r.json()
+            setSuggestionsByFolder(prev => ({ ...prev, [folder]: { items, loading: false } }))
+        } catch (e) {
+            setSuggestionsByFolder(prev => ({ ...prev, [folder]: { error: String(e.message || e), loading: false } }))
+        }
+    }
+
+    const quickAdd = async (sug) => {
+        setQuickAddBusy(sug.openLibraryKey)
+        try {
+            const r = await fetch('/api/authors', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ openLibraryKey: sug.openLibraryKey, name: sug.name }),
+            })
+            if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText)
+            load()
+        } catch (e) {
+            alert(`Quick add failed: ${e.message}`)
+        } finally {
+            setQuickAddBusy(null)
+        }
+    }
+
+    const disambiguateFolders = async () => {
+        setBusyDisambig(true)
+        setError(null)
+        try {
+            const r = await fetch('/api/authors/disambiguate-folders', { method: 'POST' })
+            if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText)
+            // Poll status until the run finishes, then surface the summary.
+            for (let i = 0; i < 60; i++) {
+                await new Promise(res => setTimeout(res, 1000))
+                const s = await fetch('/api/authors/disambiguate-folders/status')
+                    .then(x => x.ok ? x.json() : null)
+                    .catch(() => null)
+                if (s && !s.running) { setDisambigStatus(s.lastResult); break }
+                setDisambigStatus(s?.lastResult ?? null)
+            }
+            load()
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setBusyDisambig(false) }
+    }
+
     const returnAllUnknownFolders = async () => {
         setBusyAllUnknown(true)
         setError(null)
@@ -112,6 +192,30 @@ export default function Untracked() {
     return (
         <section>
             {error ? <p className="error">{error}</p> : null}
+
+            <div className="toolbar" style={{ marginBottom: '0.75rem' }}>
+                <span style={{ marginLeft: 'auto' }}>
+                    <button
+                        className="btn-ghost"
+                        onClick={disambiguateFolders}
+                        disabled={busyDisambig}
+                        title="Split shared-name author folders into per-OL-key folders and re-route files by title match"
+                    >
+                        {busyDisambig ? 'Disambiguating…' : '↔ Disambiguate same-name folders'}
+                    </button>
+                </span>
+            </div>
+
+            {disambigStatus && (
+                <p className="subtle">
+                    Last run: {disambigStatus.groupsProcessed} group(s),
+                    {' '}{disambigStatus.authorsRenamed} author folder(s) renamed,
+                    {' '}{disambigStatus.filesMoved} file(s) moved
+                    {disambigStatus.filesOrphaned > 0
+                        ? ` (${disambigStatus.filesOrphaned} couldn't be auto-attributed)`
+                        : ''}.
+                </p>
+            )}
 
             {total === 0 && (
                 <p className="subtle">No untracked folders.</p>
@@ -133,6 +237,14 @@ export default function Untracked() {
                         {unclaimed.map(u => (
                             <li key={u.authorFolder}>
                                 <code>{u.authorFolder}</code> <span className="subtle">({u.fileCount} item{u.fileCount === 1 ? '' : 's'})</span>
+                                <button className="btn-ghost"
+                                    onClick={() => fetchSuggestions(u.authorFolder)}
+                                    disabled={suggestionsByFolder[u.authorFolder]?.loading}>
+                                    Suggest from OL
+                                </button>
+                                <OlSuggestionPanel state={suggestionsByFolder[u.authorFolder]}
+                                                   onQuickAdd={quickAdd}
+                                                   quickAddBusy={quickAddBusy} />
                                 <button className="btn-ghost" onClick={() => setDialog({ initialQuery: u.authorFolder })}>
                                     Find on OpenLibrary &amp; add
                                 </button>
@@ -181,6 +293,14 @@ export default function Untracked() {
                         {unknownFolders.map(u => (
                             <li key={u.authorFolder}>
                                 <code>{u.authorFolder}</code> <span className="subtle">({u.fileCount} item{u.fileCount === 1 ? '' : 's'})</span>
+                                <button className="btn-ghost"
+                                    onClick={() => fetchSuggestions(u.authorFolder)}
+                                    disabled={suggestionsByFolder[u.authorFolder]?.loading}>
+                                    Suggest from OL
+                                </button>
+                                <OlSuggestionPanel state={suggestionsByFolder[u.authorFolder]}
+                                                   onQuickAdd={quickAdd}
+                                                   quickAddBusy={quickAddBusy} />
                                 <button className="btn-ghost" onClick={() => setDialog({ initialQuery: u.authorFolder, fromUnknown: true })}>
                                     Find on OpenLibrary &amp; add
                                 </button>
