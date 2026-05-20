@@ -600,91 +600,283 @@ failing fast on contention. The dashboard is exposed at `/hangfire`.
 
 ## Prerequisites
 
-- .NET SDK 10
-- Node.js (for the Vite dev server)
-- SQL Server reachable on your network
-- A Calibre library root accessible to the server
-- *(optional)* Calibre's `ebook-convert` CLI on the server host — only needed
-  if you want to send non-EPUB/PDF formats to reMarkable. See
-  [reMarkable sync](#remarkable-sync).
+- **.NET SDK 10.0 or later** — `winget install Microsoft.DotNet.SDK.10` on Windows,
+  `brew install --cask dotnet-sdk` on macOS, or grab the installer from
+  [dot.net/download](https://dotnet.microsoft.com/download). Check with `dotnet --version`.
+- **Node.js 20.x or later** — for the Vite dev server.
+  [nodejs.org](https://nodejs.org). Check with `node --version`.
+- **A SQL Server instance** — any edition reachable over TCP/IP works. The next
+  section walks through the easy free options.
+- **A folder of ebooks** — either an existing Calibre library or any folder
+  tree the server can read. You can also start empty and populate via the
+  incoming pipeline.
+- *(optional)* **Calibre's `ebook-convert` CLI** — only needed if you want to
+  push non-EPUB/PDF formats to reMarkable. See [reMarkable sync](#remarkable-sync).
+- *(optional)* **Docker** — useful for the one-shot SQL Server container
+  recipe below.
+
+## Getting SQL Server running (free options)
+
+The Library needs **SQL Server 2019 or newer** (any edition). All three
+options below are free for personal use; pick whichever fits your platform.
+
+### Option A — SQL Server in Docker (easiest, cross-platform)
+
+A single container, runs the same on Windows / macOS / Linux. The image is
+licensed as Developer Edition, which is free for non-production use.
+
+```bash
+docker run -d --name thelibrary-sql \
+  -e "ACCEPT_EULA=Y" \
+  -e "MSSQL_SA_PASSWORD=YourStrong!Passw0rd" \
+  -p 1433:1433 \
+  --restart unless-stopped \
+  -v thelibrary-sql-data:/var/opt/mssql \
+  mcr.microsoft.com/mssql/server:2022-latest
+```
+
+- The named volume `thelibrary-sql-data` keeps your data across `docker rm`.
+- The SA password must include upper/lower/digit/symbol or the container exits
+  on boot. Check with `docker logs thelibrary-sql` if it dies.
+- **Apple Silicon (M1/M2/M3) Macs**: replace `mssql/server:2022-latest` with
+  `azure-sql-edge` — it's an arm64-native cut-down build that supports the
+  same features The Library uses:
+
+  ```bash
+  docker run -d --name thelibrary-sql \
+    -e "ACCEPT_EULA=Y" -e "MSSQL_SA_PASSWORD=YourStrong!Passw0rd" \
+    -p 1433:1433 mcr.microsoft.com/azure-sql-edge
+  ```
+
+The connection string for this setup:
+
+```
+Server=localhost;Database=TheLibrary;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Max Pool Size=100;
+```
+
+### Option B — SQL Server Express (Windows-native)
+
+A free local install, persists outside Docker, no daemon to remember.
+
+1. Download **SQL Server 2022 Express** from
+   [microsoft.com/sql-server/sql-server-downloads](https://www.microsoft.com/sql-server/sql-server-downloads).
+2. Run the installer, pick the **Basic** install type. It creates an instance
+   called `SQLEXPRESS` on `localhost`.
+3. Express tops out at 10 GB per database and 1 GB RAM — fine for a personal
+   library (a watchlist with 10 000 books uses ~50 MB).
+4. Optional but recommended: install **SQL Server Management Studio (SSMS)**
+   for a GUI to inspect the DB.
+
+You can connect via Windows Authentication (no password needed):
+
+```
+Server=localhost\SQLEXPRESS;Database=TheLibrary;Trusted_Connection=True;TrustServerCertificate=True;
+```
+
+### Option C — SQL Server Developer Edition (full-featured, free for dev)
+
+Same install as Express but full-featured (no DB-size cap, no RAM limit) and
+free for non-production use. Same downloads page; pick "Developer" instead of
+"Express". Use the same connection-string form as Option B.
+
+### Create a dedicated login (recommended over SA)
+
+If you used the SA account for first-time setup, create a non-admin login
+once the container/instance is up. Pick whichever client you have:
+
+```sql
+-- Inside SSMS, Azure Data Studio, or `sqlcmd -S localhost -U sa -P YourStrong!Passw0rd`
+CREATE LOGIN TheLibrary WITH PASSWORD = 'AnotherStrong!Passw0rd';
+CREATE DATABASE TheLibrary;
+GO
+USE TheLibrary;
+CREATE USER TheLibrary FOR LOGIN TheLibrary;
+ALTER ROLE db_owner ADD MEMBER TheLibrary;
+GO
+```
+
+Connection string for the new login:
+
+```
+Server=localhost;Database=TheLibrary;User Id=TheLibrary;Password=AnotherStrong!Passw0rd;TrustServerCertificate=True;Max Pool Size=100;
+```
+
+> The Library auto-creates and migrates its schema on first start — you don't
+> need to run any `.sql` scripts manually. The `CREATE DATABASE` statement above
+> is optional too; if you skip it, the app's user just needs `dbcreator` server
+> role and EF Core will create the DB on first boot.
 
 ## First-time setup
 
-### 1. Restore packages
+### 1. Clone and restore
 
 ```bash
-cd TheLibrary.Server
+git clone <your-fork-or-origin-url> TheLibrary
+cd TheLibrary
+
+# Server packages
+cd TheLIbrary.Server
 dotnet restore
 
+# Client packages
 cd ../thelibrary.client
 npm install
 ```
 
-### 2. Configure the DB connection (never commit this)
+### 2. Configure the database connection (never commit this)
 
 Use [.NET user secrets](https://learn.microsoft.com/aspnet/core/security/app-secrets)
-so the password stays out of git:
+so the password stays out of git. Run from `TheLIbrary.Server/`:
 
 ```bash
-cd TheLibrary.Server
 dotnet user-secrets set "ConnectionStrings:Library" \
-  "Server=YOUR_HOST;Database=TheLibrary;User Id=TheLibrary;Password=YOUR_PASSWORD;TrustServerCertificate=True;Max Pool Size=100;"
+  "Server=localhost;Database=TheLibrary;User Id=TheLibrary;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Max Pool Size=100;"
 ```
 
 User secrets are stored under `%APPDATA%\Microsoft\UserSecrets\<id>\secrets.json`
-(Windows) or `~/.microsoft/usersecrets/<id>/secrets.json` (Linux/macOS), outside the
-repo.
+(Windows) or `~/.microsoft/usersecrets/<id>/secrets.json` (Linux/macOS), outside
+the repo.
 
-### 3. Configure library locations and incoming folder
+Alternative for production deployments — set the environment variable
+`ConnectionStrings__Library` (double-underscore, escapes the `:`) and skip the
+user-secret command.
+
+### 3. Configure library locations
 
 Library locations and the incoming drop folder are stored in the database and
-managed from the **Settings** page. You can register multiple library roots
-and enable/disable each independently; all enabled roots are scanned on every
-sync. Exactly one location is flagged **primary** — that's where the incoming
-pipeline deposits matched files and where the `__unknown` bucket lives.
-
-For first-run convenience, if the database has *no* locations yet the server
-seeds one from `Calibre:Root` on startup. Override in `appsettings.json`:
+managed from the **Settings** page after first launch. For first-run
+convenience, the server seeds one location from `Calibre:Root` in
+`appsettings.json` if the locations table is empty:
 
 ```json
 "Calibre": { "Root": "D:\\Books\\Calibre" }
 ```
 
-After the first sync you manage everything from **Settings** — the config
-value is only consulted to seed an empty database.
+This is only consulted once — after the first sync, all location management
+happens through the UI. You can leave the value as the default and add
+locations via Settings after the app starts.
 
-### 4. Run
+### 4. Run the server
 
 ```bash
-cd TheLibrary.Server
+cd TheLIbrary.Server
 dotnet run
 ```
 
-EF Core applies pending migrations automatically on startup. The Vite dev
-server proxies `/api` and `/hangfire` to the backend, so hitting the Vite URL
-works for everything including the Hangfire dashboard.
+Expected first-boot output:
+- EF Core applies all pending migrations against the empty database.
+- Hangfire registers its recurring jobs (all disabled by default except
+  `organize-series`, `unzip`, and `disambiguate-folders`).
+- Kestrel reports the listening URL (typically `https://localhost:5043`).
 
-Open the app and click **Sync** to start the first crawl. Expect ~1 second per
-author resolution plus ~1 second per 100-work page. For a large initial
-catalog, run **Seed authors from OpenLibrary dump** first — it downloads the
-~2 GB author dump and populates the local author catalog so the Add-Author
-search is instant and offline.
+The Vite dev server starts automatically and proxies `/api` and `/hangfire`
+to the backend, so opening the Vite URL gives you both the app and the
+Hangfire dashboard at `/hangfire`.
 
-Genre tags and author bios are populated automatically on the first sync after
-upgrading. Books that already existed before the genre feature was added have
-their subjects backfilled on the next sync pass; books for which OL has no
-subjects are marked with an empty string so they are not re-checked on future
-syncs.
+> **Both servers in one command** is the default — the `Microsoft.AspNetCore.SpaProxy`
+> reference in the .csproj wires it up. If you'd rather run them separately
+> (e.g. to debug only the server), build with `dotnet build /p:SkipSpa=true`
+> then `cd ../thelibrary.client && npm run dev` in a second terminal.
+
+### 5. First sync — populate the catalog
+
+1. Open the app — you'll land on the empty **Authors** page.
+2. Go to **Settings** and:
+   - Add at least one **library location** pointing at your ebook folder tree.
+   - Set the **incoming folder** path (where new files arrive for processing).
+3. Add your first author:
+   - Click **+ Add author** from the Authors page.
+   - Search by name; pick the OpenLibrary candidate.
+4. *(Optional but recommended for large catalogs)* go to **Sync** and run
+   **Seed authors from OpenLibrary dump**. It downloads the ~2 GB author dump
+   so subsequent **Add author** searches are instant and offline.
+5. From **Sync**, click **Start sync**. The first run resolves OL keys, fetches
+   works for each tracked author, and walks your library folders. Expect
+   ~1 second per author plus ~1 second per 100-work page.
+
+After the first sync, all background work happens on the schedule you set in
+the **Schedules** page (most jobs are disabled by default so nothing runs
+unexpectedly until you turn it on).
+
+## Troubleshooting first start
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `Missing ConnectionStrings:Library` on startup | User secret never set, or set in the wrong working directory | Run `dotnet user-secrets list` from `TheLIbrary.Server/`. If empty, repeat step 2. |
+| `A network-related or instance-specific error … (provider: TCP Provider)` | SQL Server unreachable on the host/port in your connection string | Verify the container/service is running: `docker ps` or `services.msc`. Confirm the port with `netstat -ano | findstr 1433` on Windows or `lsof -i :1433` on macOS/Linux. |
+| `Login failed for user 'TheLibrary'` | Login exists at the server but lacks DB access, OR password mismatch | Re-run the `CREATE USER … ALTER ROLE db_owner` block from the "create a dedicated login" section. |
+| `The certificate chain was issued by an authority that is not trusted` | Connection string is missing `TrustServerCertificate=True` | Add it; the default SQL Server cert is self-signed and the client refuses by default. |
+| `Cannot open database "TheLibrary"` | DB doesn't exist and the login lacks `dbcreator` | Either run `CREATE DATABASE TheLibrary;` first, or grant `dbcreator` to the login. |
+| Migrations error: *"The model has pending changes…"* | Local source tree has model changes ahead of the latest migration | Pull the latest tree, or `cd TheLIbrary.Server && dotnet ef migrations add MyChange --output-dir Data/Migrations`. See [Adding a schema change](#adding-a-schema-change). |
+| Vite proxy errors like `ECONNREFUSED` in the browser | Server hasn't finished migration yet, or crashed | Watch the `dotnet run` terminal for the actual error; the SPA proxy waits for the server. |
+| **Apple Silicon** Mac, container exits on boot | `mssql/server:2022-latest` is amd64-only | Use `mcr.microsoft.com/azure-sql-edge` instead. |
 
 ### Docker deployment notes
 
+## Day-2 operation
+
+- **Genres & bios** populate automatically on the first sync after the author
+  is added. Books predating the genre feature are backfilled on the next sync;
+  books for which OL has no subjects are marked with an empty string so they
+  aren't re-checked on future syncs.
+- **Refresh cadence** is per-author and self-balancing — see
+  [Works refresh cadence](#works-refresh-cadence). Recently-active authors are
+  checked every 2 days; long-dormant ones only every 60 days.
+- **Drop-folder ingestion**: drop EPUB / MOBI / PDF / etc files into the
+  configured incoming folder, then click **Process incoming** on the Sync
+  page (or wait for the `incoming` schedule). Files matched to a tracked
+  author land under `<primary library>/<Author>/`. Unmatched files sit in
+  `__unknown` until you either add the author or use the
+  [Untracked page](#pages)'s "Try matching all" / "Suggest from OL".
+- **Backups**: the SQL Server database is the only mutable state; the file
+  tree is read-only-ish (organiser moves files but never deletes book content).
+  Back up the database with `BACKUP DATABASE TheLibrary TO DISK = …` or by
+  copying the docker volume `thelibrary-sql-data`.
+
+## Running in production / Docker deployment
+
 The server runs correctly inside a Docker container with the library share
-mounted at a container-local path (e.g. `/Books/Collection`). If `LocalBookFile`
-records were previously written with Windows UNC paths
+mounted at a container-local path (e.g. `/Books/Collection`). The smallest
+working setup is two containers: the SQL Server image from
+[Option A above](#option-a--sql-server-in-docker-easiest-cross-platform)
+plus an image of the app, both sharing a Docker network so the connection
+string can use the SQL container's name as the host.
+
+A minimal app Dockerfile (publish first, then copy):
+
+```bash
+dotnet publish TheLIbrary.Server -c Release -o ./publish
+docker build -t thelibrary:latest -f - . <<EOF
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
+WORKDIR /app
+COPY publish/. .
+ENV ConnectionStrings__Library="Server=thelibrary-sql;Database=TheLibrary;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Max Pool Size=100;"
+ENV ASPNETCORE_HTTP_PORTS=5043
+EXPOSE 5043
+ENTRYPOINT ["dotnet", "TheLIbrary.Server.dll"]
+EOF
+```
+
+Or use `dotnet publish /t:PublishContainer` which builds the image directly
+(the .csproj already has `<ContainerRepository>` and `<ContainerPort>` set).
+Then:
+
+```bash
+docker network create thelibrary
+docker network connect thelibrary thelibrary-sql
+docker run -d --name thelibrary \
+  --network thelibrary \
+  -p 5043:5043 \
+  -v /path/on/host/books:/Books/Collection \
+  thelibrary:latest
+```
+
+If `LocalBookFile` records were previously written with Windows UNC paths
 (`\\server\share\Books\Collection\…`), the series organizer and unzip job
 automatically strip the `\\server\share` prefix to recover the container-local
 path for all file I/O and update the DB records to the container path format
-as they process each file.
+as they process each file. So a Windows-host install can move to a Docker
+deployment without re-syncing.
 
 ## API surface
 
