@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import StarRating from '../components/StarRating.jsx'
+import LinkAuthorDialog from './LinkAuthorDialog.jsx'
 
 // Custom series name input — shows all associated series on focus regardless of
 // current value, filters as the user types, and allows free-text for new series.
@@ -230,6 +231,22 @@ export default function AuthorDetail() {
     const [editingInterval, setEditingInterval] = useState(false)
     const [intervalDraft, setIntervalDraft] = useState('')
     const [intervalSaving, setIntervalSaving] = useState(false)
+    const [showLinkDialog, setShowLinkDialog] = useState(false)
+    const [unlinking, setUnlinking] = useState(false)
+
+    const unlinkAuthor = async () => {
+        if (!confirm('Remove the link to the canonical author?')) return
+        setUnlinking(true)
+        try {
+            const r = await fetch(`/api/authors/${id}/link`, { method: 'DELETE' })
+            if (!r.ok) throw new Error(r.statusText)
+            setData(await r.json())
+        } catch (e) {
+            alert(`Unlink failed: ${e.message}`)
+        } finally {
+            setUnlinking(false)
+        }
+    }
 
     useEffect(() => {
         fetch('/api/nzb-sites')
@@ -637,6 +654,62 @@ export default function AuthorDetail() {
                 <span className={`pill pill-${data.status.toLowerCase()}`}>{data.status}</span>
                 {data.exclusionReason ? <> — {data.exclusionReason}</> : null}
             </p>
+
+            {data.linkedTo && (
+                <div className="notice" style={{
+                    border: '1px solid var(--border)', borderRadius: 4,
+                    padding: '0.5rem 0.75rem', marginBottom: '0.75rem',
+                    background: 'var(--card)'
+                }}>
+                    {data.linkedTo.isPenName ? (
+                        <>Pen name of <Link to={`/authors/${data.linkedTo.id}`}>{data.linkedTo.name}</Link>.</>
+                    ) : (
+                        <>This entry is a duplicate of <Link to={`/authors/${data.linkedTo.id}`}>{data.linkedTo.name}</Link>.
+                           Its books and files are folded into that author's view.</>
+                    )}
+                    {' '}
+                    <button className="btn-ghost" onClick={unlinkAuthor} disabled={unlinking}>
+                        {unlinking ? 'Unlinking…' : 'Unlink'}
+                    </button>
+                </div>
+            )}
+
+            {(data.alternates?.length > 0 || data.penNames?.length > 0) && (
+                <div className="subtle" style={{ marginBottom: '0.75rem' }}>
+                    {data.alternates?.length > 0 && (
+                        <>Alternate entries (folded in): {data.alternates.map((a, i) => (
+                            <span key={a.id}>
+                                {i > 0 ? ', ' : ''}
+                                <Link to={`/authors/${a.id}`}>{a.name}</Link>
+                            </span>
+                        ))}{' '}</>
+                    )}
+                    {data.penNames?.length > 0 && (
+                        <>Pen names: {data.penNames.map((a, i) => (
+                            <span key={a.id}>
+                                {i > 0 ? ', ' : ''}
+                                <Link to={`/authors/${a.id}`}>{a.name}</Link>
+                            </span>
+                        ))}</>
+                    )}
+                </div>
+            )}
+
+            {!data.linkedTo && !(data.alternates?.length > 0) && !(data.penNames?.length > 0) && (
+                <p style={{ marginBottom: '0.75rem' }}>
+                    <button className="btn-ghost" onClick={() => setShowLinkDialog(true)}>
+                        Link to another author…
+                    </button>
+                </p>
+            )}
+
+            {showLinkDialog && (
+                <LinkAuthorDialog
+                    currentAuthorId={Number(id)}
+                    onClose={() => setShowLinkDialog(false)}
+                    onLinked={(updated) => { setData(updated); setShowLinkDialog(false) }} />
+            )}
+
             {data.bio && (
                 <p style={{ maxWidth: '70ch', color: 'var(--text)', lineHeight: 1.6, marginBottom: '0.75rem' }}>
                     {data.bio}

@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
+using TheLibrary.Server.Services.Incoming;
 using TheLibrary.Server.Services.OpenLibrary;
 using TheLibrary.Server.Services.Scheduling;
 using TheLibrary.Server.Services.Sync;
@@ -52,7 +53,11 @@ public class AuthorsController : ControllerBase
     [HttpGet]
     public async Task<IReadOnlyList<AuthorListItem>> List(CancellationToken ct)
     {
+        // Non-pen-name duplicates are folded into their canonical's view and
+        // hidden from the main list. Pen-name children stay visible — they keep
+        // their own listing and just back-reference the canonical on detail.
         var baseRows = await _db.Authors.AsNoTracking()
+            .Where(a => a.LinkedToAuthorId == null || a.IsPenName)
             .Select(a => new
             {
                 a.Id,
@@ -86,6 +91,23 @@ public class AuthorsController : ControllerBase
                 GROUP BY b.AuthorId
                 """)
             .ToDictionaryAsync(x => x.AuthorId, ct);
+
+        // Fold stats from non-pen-name children into their canonical's totals so
+        // book counts reflect the merged view that the detail page renders.
+        var hiddenChildren = await _db.Authors.AsNoTracking()
+            .Where(a => a.LinkedToAuthorId != null && !a.IsPenName)
+            .Select(a => new { a.Id, CanonicalId = a.LinkedToAuthorId!.Value })
+            .ToListAsync(ct);
+        foreach (var child in hiddenChildren)
+        {
+            if (!stats.TryGetValue(child.Id, out var childStats)) continue;
+            stats[child.CanonicalId] = stats.TryGetValue(child.CanonicalId, out var parent)
+                ? new BookStatRow(child.CanonicalId,
+                    parent.Total + childStats.Total,
+                    parent.Ebook + childStats.Ebook,
+                    parent.Physical + childStats.Physical)
+                : new BookStatRow(child.CanonicalId, childStats.Total, childStats.Ebook, childStats.Physical);
+        }
 
         return baseRows.Select(r =>
         {
@@ -147,6 +169,10 @@ public class AuthorsController : ControllerBase
 
     public sealed record SeriesSuggestion(int Id, string Name, string? PrimaryAuthorName);
 
+    // Lightweight reference shown next to the canonical / linked authors on the
+    // detail page.
+    public sealed record LinkedAuthorRef(int Id, string Name, bool IsPenName);
+
     public sealed record AuthorDetail(
         int Id,
         string Name,
@@ -162,7 +188,18 @@ public class AuthorsController : ControllerBase
         string? Notes,
         IReadOnlyList<BookRow> Books,
         IReadOnlyList<UnmatchedRow> UnmatchedLocal,
-        IReadOnlyList<SeriesSuggestion> AssociatedSeries);
+        IReadOnlyList<SeriesSuggestion> AssociatedSeries,
+        // null when this author isn't linked to anyone. Non-null when this is a
+        // child entry — IsPenName tells the UI whether to show a "pen name of"
+        // banner (true) or a "duplicate of" / "see canonical" banner (false).
+        LinkedAuthorRef? LinkedTo,
+        // Children that fold INTO this author when this is the canonical. The
+        // books / unmatched files of these authors are merged into the lists
+        // above; the UI uses Alternates only to render a navigation list.
+        IReadOnlyList<LinkedAuthorRef> Alternates,
+        // Pen-name children — listed for UI navigation but NOT folded in. The
+        // user's books pages keep them separate.
+        IReadOnlyList<LinkedAuthorRef> PenNames);
 
     public sealed record BookRow(
         int Id,
@@ -229,26 +266,76 @@ public class AuthorsController : ControllerBase
         var a = await _db.Authors.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
         if (a is null) return NotFound();
 
+        // Resolve link state. The canonical author (if any) is whoever this row
+        // ultimately points at via LinkedToAuthorId.
+        LinkedAuthorRef? linkedTo = null;
+        if (a.LinkedToAuthorId is int linkId)
+        {
+            var canon = await _db.Authors.AsNoTracking()
+                .Where(x => x.Id == linkId)
+                .Select(x => new { x.Id, x.Name })
+                .FirstOrDefaultAsync(ct);
+            if (canon is not null)
+                linkedTo = new LinkedAuthorRef(canon.Id, canon.Name, a.IsPenName);
+        }
+
+        // Children that point AT this author. Split into:
+        //   Alternates — fold into this author's view (books + unmatched files)
+        //   PenNames   — listed but kept separate
+        var children = await _db.Authors.AsNoTracking()
+            .Where(x => x.LinkedToAuthorId == id)
+            .OrderBy(x => x.Name)
+            .Select(x => new { x.Id, x.Name, x.IsPenName, x.CalibreFolderName })
+            .ToListAsync(ct);
+        var alternateIds = children.Where(c => !c.IsPenName).Select(c => c.Id).ToList();
+
+        // Author ids whose books / unmatched files should appear under this view.
+        // For canonical: this author + non-pen-name children. For a non-pen-name
+        // child: nothing (the child's books surface under its canonical, so the
+        // detail page is just a redirect surface). For a pen name: just itself.
+        var foldedIds = new List<int> { id };
+        var foldedFolderCandidates = FolderCandidatesFor(a);
+        if (linkedTo is null || linkedTo.IsPenName)
+        {
+            foldedIds.AddRange(alternateIds);
+            foreach (var child in children.Where(c => !c.IsPenName))
+            {
+                var stub = new Author { Name = child.Name, CalibreFolderName = child.CalibreFolderName };
+                foreach (var f in FolderCandidatesFor(stub))
+                    if (!foldedFolderCandidates.Contains(f, StringComparer.OrdinalIgnoreCase))
+                        foldedFolderCandidates.Add(f);
+            }
+        }
+        else
+        {
+            // Non-pen-name child — its own books / files all live under the canonical
+            // now. Show an empty page so the user navigates to the canonical instead.
+            foldedIds.Clear();
+            foldedFolderCandidates = new List<string>();
+        }
+
         // Projected into an intermediate shape so we can enumerate the
         // per-file folder on disk for formats outside the EF query.
-        var rawBooks = await _db.Books.AsNoTracking()
-            .Where(b => b.AuthorId == id)
-            .OrderBy(b => b.SeriesId == null ? 1 : 0)
-            .ThenBy(b => b.Series!.Name)
-            .ThenBy(b => b.SeriesPosition)
-            .ThenBy(b => b.FirstPublishYear ?? int.MaxValue)
-            .ThenBy(b => b.Title)
-            .Select(b => new
-            {
-                b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
-                b.ManuallyOwned, b.ReadStatus, b.ReadAt, b.Wanted, b.Subjects,
-                SeriesName = b.Series != null ? b.Series.Name : null,
-                b.SeriesId,
-                SeriesPrimaryAuthorName = b.Series != null && b.Series.PrimaryAuthor != null ? b.Series.PrimaryAuthor.Name : null,
-                b.SeriesPosition,
-                Files = b.LocalFiles.Select(f => new { f.Id, f.FullPath }).ToList()
-            })
-            .ToListAsync(ct);
+        var rawBooks = foldedIds.Count == 0
+            ? new()
+            : await _db.Books.AsNoTracking()
+                .Where(b => foldedIds.Contains(b.AuthorId))
+                .OrderBy(b => b.SeriesId == null ? 1 : 0)
+                .ThenBy(b => b.Series!.Name)
+                .ThenBy(b => b.SeriesPosition)
+                .ThenBy(b => b.FirstPublishYear ?? int.MaxValue)
+                .ThenBy(b => b.Title)
+                .Select(b => new
+                {
+                    b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
+                    b.ManuallyOwned, b.ReadStatus, b.ReadAt, b.Wanted, b.Subjects,
+                    SeriesName = b.Series != null ? b.Series.Name : null,
+                    b.SeriesId,
+                    SeriesPrimaryAuthorName = b.Series != null && b.Series.PrimaryAuthor != null ? b.Series.PrimaryAuthor.Name : null,
+                    b.SeriesPosition,
+                    Files = b.LocalFiles.Select(f => new { f.Id, f.FullPath }).ToList()
+                })
+                .ToListAsync(ct);
 
         var books = rawBooks.Select(b => new BookRow(
             b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
@@ -267,34 +354,50 @@ public class AuthorsController : ControllerBase
         )).ToList();
 
         // Include orphan rows (AuthorId == null) whose Calibre folder matches
-        // this author by name or recorded folder. Happens when the user adds
-        // the author to the watchlist after sync had already recorded files
-        // into the orphan pool — otherwise the folder would stay invisible
-        // until the next full sync relinked it.
-        var folderCandidates = FolderCandidatesFor(a);
-        var rawUnmatched = await _db.LocalBookFiles.AsNoTracking()
-            .Where(f => f.BookId == null
-                && (f.AuthorId == id
-                    || (f.AuthorId == null && folderCandidates.Contains(f.AuthorFolder))))
-            .OrderBy(f => f.TitleFolder)
-            .Select(f => new { f.Id, f.TitleFolder, f.FullPath })
-            .ToListAsync(ct);
+        // any of the folded authors by name or recorded folder. Happens when the
+        // user adds the author to the watchlist after sync had already recorded
+        // files into the orphan pool.
+        var rawUnmatched = foldedIds.Count == 0
+            ? new()
+            : await _db.LocalBookFiles.AsNoTracking()
+                .Where(f => f.BookId == null
+                    && (foldedIds.Contains(f.AuthorId ?? -1)
+                        || (f.AuthorId == null && foldedFolderCandidates.Contains(f.AuthorFolder))))
+                .OrderBy(f => f.TitleFolder)
+                .Select(f => new { f.Id, f.TitleFolder, f.FullPath })
+                .ToListAsync(ct);
 
         var unmatched = rawUnmatched
             .Select(f => new UnmatchedRow(f.Id, f.TitleFolder, f.FullPath, FormatsInFolder(f.FullPath)))
             .ToList();
 
+        // Include the canonical's own series AND any series whose primary or
+        // co-author is one of the non-pen-name children folded into this view.
+        // The series picker on the merged page would otherwise miss series the
+        // child author was primary on.
+        var seriesAuthorIds = new List<int>(foldedIds);
         var associatedSeries = await _db.Series
-            .Where(s => s.PrimaryAuthorId == id || s.SeriesAuthors.Any(sa => sa.AuthorId == id))
+            .Where(s => seriesAuthorIds.Contains(s.PrimaryAuthorId ?? -1)
+                     || s.SeriesAuthors.Any(sa => seriesAuthorIds.Contains(sa.AuthorId)))
             .OrderBy(s => s.Name)
             .Select(s => new SeriesSuggestion(s.Id, s.Name, s.PrimaryAuthor != null ? s.PrimaryAuthor.Name : null))
             .ToListAsync(ct);
+
+        var alternates = children
+            .Where(c => !c.IsPenName)
+            .Select(c => new LinkedAuthorRef(c.Id, c.Name, false))
+            .ToList();
+        var penNames = children
+            .Where(c => c.IsPenName)
+            .Select(c => new LinkedAuthorRef(c.Id, c.Name, true))
+            .ToList();
 
         return new AuthorDetail(
             a.Id, a.Name, a.OpenLibraryKey, a.CalibreFolderName,
             a.Status.ToString(), a.ExclusionReason, a.Priority, a.LastSyncedAt, a.NextFetchAt, a.RefreshIntervalDays,
             a.Bio, a.Notes,
-            books, unmatched, associatedSeries);
+            books, unmatched, associatedSeries,
+            linkedTo, alternates, penNames);
     }
 
     private static List<string> FolderCandidatesFor(Author a)
@@ -343,7 +446,7 @@ public class AuthorsController : ControllerBase
 
         var book = await _db.Books.FirstOrDefaultAsync(b => b.Id == body.BookId, ct);
         if (book is null) return NotFound(new { error = "Book not found" });
-        if (book.AuthorId != id)
+        if (!await BookBelongsToAuthorViewAsync(book, id, ct))
             return BadRequest(new { error = "Book does not belong to this author" });
 
         file.AuthorId = id;
@@ -351,6 +454,19 @@ public class AuthorsController : ControllerBase
         file.ManuallyUnmatched = false;
         await _db.SaveChangesAsync(ct);
         return await Get(id, ct);
+    }
+
+    // A book "belongs to" the author's view when its AuthorId is the author
+    // itself OR a non-pen-name child folded into that view. Pen-name children
+    // are kept separate so their books are intentionally NOT part of the
+    // canonical's view and don't pass this gate.
+    private async Task<bool> BookBelongsToAuthorViewAsync(Book book, int authorId, CancellationToken ct)
+    {
+        if (book.AuthorId == authorId) return true;
+        return await _db.Authors
+            .AnyAsync(a => a.Id == book.AuthorId
+                        && a.LinkedToAuthorId == authorId
+                        && !a.IsPenName, ct);
     }
 
     // Undo a match (manual or automatic). The file stays associated with the
@@ -619,6 +735,194 @@ public class AuthorsController : ControllerBase
         author.Notes = string.IsNullOrWhiteSpace(body.Notes) ? null : body.Notes.Trim();
         await _db.SaveChangesAsync(ct);
         return Ok(new { author.Id, author.Notes });
+    }
+
+    public sealed record LinkAuthorRequest(int CanonicalAuthorId, bool IsPenName);
+
+    // Marks `id` as a duplicate (or pen name) of `CanonicalAuthorId`. When
+    // IsPenName == false, every LocalBookFile of the child author is relocated
+    // on disk to live under the canonical's author folder; when IsPenName ==
+    // true the books and files stay where they are and we only record the link.
+    [HttpPut("{id:int}/link")]
+    public async Task<ActionResult<AuthorDetail>> Link(int id, [FromBody] LinkAuthorRequest body, CancellationToken ct)
+    {
+        if (body.CanonicalAuthorId == id)
+            return BadRequest(new { error = "An author cannot be linked to itself" });
+
+        var child = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (child is null) return NotFound();
+
+        var canonical = await _db.Authors.FirstOrDefaultAsync(a => a.Id == body.CanonicalAuthorId, ct);
+        if (canonical is null) return BadRequest(new { error = "Canonical author not found" });
+
+        // Disallow chains: the canonical must itself be a top-level entry, and
+        // the child must not already be a canonical for other rows.
+        if (canonical.LinkedToAuthorId is not null)
+            return BadRequest(new { error = "Target author is already linked to another — link to that canonical instead" });
+        if (await _db.Authors.AnyAsync(a => a.LinkedToAuthorId == id, ct))
+            return BadRequest(new { error = "This author has its own linked children — unlink them first" });
+
+        child.LinkedToAuthorId = canonical.Id;
+        child.IsPenName = body.IsPenName;
+
+        // Relocate files only on the duplicate (non-pen-name) path. Pen names
+        // keep their own folder on disk.
+        if (!body.IsPenName)
+            await RelocateChildFilesAsync(child, canonical, ct);
+
+        await _db.SaveChangesAsync(ct);
+        return await Get(id, ct);
+    }
+
+    [HttpDelete("{id:int}/link")]
+    public async Task<ActionResult<AuthorDetail>> Unlink(int id, CancellationToken ct)
+    {
+        var child = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (child is null) return NotFound();
+
+        // Files stay wherever they currently are — undoing a link does not
+        // automatically move them back to the old child folder. The user can
+        // re-link or move files manually if they need a different layout.
+        child.LinkedToAuthorId = null;
+        child.IsPenName = false;
+        await _db.SaveChangesAsync(ct);
+        return await Get(id, ct);
+    }
+
+    // Moves every LocalBookFile owned by `child` from its on-disk folder under
+    // the child author's name into the equivalent path under the canonical's
+    // author folder, keeping any series subfolder structure intact. Updates the
+    // DB record (AuthorId, AuthorFolder, FullPath) row-by-row so a crashed move
+    // partway through leaves a consistent half-state. Files outside any known
+    // library location are left untouched.
+    private async Task RelocateChildFilesAsync(
+        Author child, Author canonical, CancellationToken ct)
+    {
+        var locations = await _db.LibraryLocations
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+        if (locations.Count == 0) return;
+
+        var canonicalFolder = SanitizeSegment(
+            canonical.CalibreFolderName ?? canonical.Name);
+        var childFolderNames = FolderCandidatesFor(child);
+
+        var files = await _db.LocalBookFiles
+            .Where(f => f.AuthorId == child.Id)
+            .ToListAsync(ct);
+
+        foreach (var file in files)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(file.FullPath))
+            {
+                file.AuthorId = canonical.Id;
+                file.AuthorFolder = canonicalFolder;
+                continue;
+            }
+
+            // Find the library location this file lives under so we can map
+            // {root}/{childFolder}/rest → {root}/{canonicalFolder}/rest.
+            var location = locations.FirstOrDefault(l =>
+                file.FullPath.StartsWith(l.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase));
+            if (location is null)
+            {
+                // Path is outside any enabled location — just update metadata
+                // and skip the disk move.
+                file.AuthorId = canonical.Id;
+                file.AuthorFolder = canonicalFolder;
+                continue;
+            }
+
+            var libRoot = location.TrimEnd('\\', '/');
+            var relative = file.FullPath[libRoot.Length..].TrimStart('\\', '/');
+            var firstSep = relative.IndexOfAny(new[] { '\\', '/' });
+            string remainder;
+            if (firstSep < 0)
+            {
+                // Bare filename at the library root — nothing useful to do.
+                file.AuthorId = canonical.Id;
+                file.AuthorFolder = canonicalFolder;
+                continue;
+            }
+            var existingAuthorFolder = relative[..firstSep];
+            // Only relocate if the file is actually inside one of the child's
+            // expected folders. Skip otherwise so we don't move random files.
+            if (!childFolderNames.Contains(existingAuthorFolder, StringComparer.OrdinalIgnoreCase))
+            {
+                file.AuthorId = canonical.Id;
+                file.AuthorFolder = canonicalFolder;
+                continue;
+            }
+
+            remainder = relative[(firstSep + 1)..];
+            var destPath = Path.Combine(libRoot, canonicalFolder, remainder);
+            var destDir = Path.GetDirectoryName(destPath);
+
+            try
+            {
+                if (destDir is not null) Directory.CreateDirectory(destDir);
+
+                if (System.IO.File.Exists(file.FullPath))
+                {
+                    var finalDest = UniqueFile(destPath);
+                    System.IO.File.Move(file.FullPath, finalDest);
+                    file.FullPath = finalDest;
+                }
+                else if (Directory.Exists(file.FullPath))
+                {
+                    var finalDest = UniqueDirectory(Path.GetDirectoryName(destPath)!, Path.GetFileName(destPath));
+                    Directory.Move(file.FullPath, finalDest);
+                    file.FullPath = finalDest;
+                }
+                // If the source has already disappeared, just update the DB
+                // pointer and move on.
+                else
+                {
+                    file.FullPath = destPath;
+                }
+            }
+            catch (IOException)
+            {
+                // Best-effort move — leave the DB row in sync with whatever we
+                // managed to do above and let the next SyncService run re-detect
+                // the actual on-disk location.
+            }
+
+            file.AuthorId = canonical.Id;
+            file.AuthorFolder = canonicalFolder;
+        }
+
+        // Prune the now-empty child author folder(s) so they don't linger as
+        // ghost directories.
+        foreach (var libRoot in locations.Select(l => l.TrimEnd('\\', '/')))
+            foreach (var name in childFolderNames)
+            {
+                var dir = Path.Combine(libRoot, name);
+                try
+                {
+                    if (Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any())
+                        Directory.Delete(dir);
+                }
+                catch { /* best effort */ }
+            }
+    }
+
+    // Picks the first non-existing variant of a file path by suffixing "_N"
+    // before the extension. Mirrors UniqueDirectory but for files.
+    private static string UniqueFile(string desired)
+    {
+        if (!System.IO.File.Exists(desired) && !Directory.Exists(desired)) return desired;
+        var dir = Path.GetDirectoryName(desired) ?? "";
+        var stem = Path.GetFileNameWithoutExtension(desired);
+        var ext  = Path.GetExtension(desired);
+        for (var i = 2; i < 1000; i++)
+        {
+            var next = Path.Combine(dir, $"{stem}_{i}{ext}");
+            if (!System.IO.File.Exists(next) && !Directory.Exists(next)) return next;
+        }
+        return Path.Combine(dir, $"{stem}_{DateTime.UtcNow:yyyyMMddHHmmss}{ext}");
     }
 
     // On-demand refresh of a single author: resolves the OL key if missing,
@@ -1061,5 +1365,132 @@ public class AuthorsController : ControllerBase
             return Ok(new { warnings });
 
         return NoContent();
+    }
+
+    public sealed record UnknownMatchResult(
+        string FolderName,
+        int AuthorId,
+        string AuthorName);
+
+    public sealed record UnknownMatchSummary(
+        int Matched,
+        int Unmatched,
+        IReadOnlyList<UnknownMatchResult> Details,
+        IReadOnlyList<string> Warnings);
+
+    // Tries to re-match every __unknown folder against the current watchlist
+    // (including OL alternate names). Matched folders are moved out of __unknown
+    // and into the canonical author's folder; unmatched folders stay put. Run
+    // this after adding authors so previously-quarantined collections fold back
+    // in without a full sync.
+    [HttpPost("~/api/unknown-folders/match")]
+    public async Task<ActionResult<UnknownMatchSummary>> MatchUnknownFolders(CancellationToken ct)
+    {
+        // Build the matcher with tracked authors plus OL alternates joined by
+        // OpenLibraryKey. Non-pen-name linked children are skipped so a folder
+        // resolves directly to its canonical entry.
+        var authors = await _db.Authors
+            .Where(a => a.LinkedToAuthorId == null || a.IsPenName)
+            .Select(a => new { a.Id, a.Name, a.CalibreFolderName, a.OpenLibraryKey })
+            .ToListAsync(ct);
+
+        var olKeys = authors
+            .Where(a => !string.IsNullOrEmpty(a.OpenLibraryKey))
+            .Select(a => a.OpenLibraryKey!)
+            .Distinct()
+            .ToList();
+        var olAlternates = await _db.OpenLibraryAuthors
+            .Where(o => olKeys.Contains(o.OlKey))
+            .Select(o => new { o.OlKey, o.AlternateNames, o.PersonalName })
+            .ToDictionaryAsync(o => o.OlKey, ct);
+
+        var blacklisted = (await _db.AuthorBlacklist
+            .Select(b => b.NormalizedName)
+            .ToListAsync(ct))
+            .ToHashSet(StringComparer.Ordinal);
+
+        var entries = authors.Select(a =>
+        {
+            var aliases = new List<string>();
+            if (!string.IsNullOrEmpty(a.OpenLibraryKey)
+                && olAlternates.TryGetValue(a.OpenLibraryKey, out var ol))
+            {
+                if (!string.IsNullOrWhiteSpace(ol.PersonalName)) aliases.Add(ol.PersonalName);
+                if (!string.IsNullOrWhiteSpace(ol.AlternateNames))
+                    aliases.AddRange(ol.AlternateNames.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+            }
+            return new AuthorIndexEntry(
+                DisplayName: a.Name,
+                FolderName: string.IsNullOrWhiteSpace(a.CalibreFolderName) ? a.Name : a.CalibreFolderName!,
+                IsTracked: true,
+                TrackedAuthorId: a.Id,
+                OpenLibraryKey: a.OpenLibraryKey,
+                AlternateNames: aliases.Count == 0 ? null : aliases);
+        });
+        var matcher = new AuthorMatcher(entries, blacklisted);
+
+        var locations = await _db.LibraryLocations
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+
+        var warnings = new List<string>();
+        var details = new List<UnknownMatchResult>();
+        int unmatched = 0;
+
+        foreach (var root in locations)
+        {
+            var unknownRoot = Path.Combine(root, CalibreScanner.UnknownAuthorFolder);
+            if (!Directory.Exists(unknownRoot)) continue;
+
+            var folderNames = Directory.EnumerateDirectories(unknownRoot)
+                .Select(Path.GetFileName)
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Cast<string>()
+                .ToList();
+
+            var plan = UnknownFolderRecovery.Plan(folderNames, matcher);
+            unmatched += plan.Unmatched.Count;
+
+            foreach (var decision in plan.Matched)
+            {
+                var src = Path.Combine(unknownRoot, decision.FolderName);
+                if (!Directory.Exists(src)) continue;
+                var entry = decision.Match!;
+                var destLeaf = string.IsNullOrWhiteSpace(entry.FolderName) ? entry.DisplayName : entry.FolderName;
+                var dest = Path.Combine(root, SanitizeSegment(destLeaf));
+
+                try
+                {
+                    if (Directory.Exists(dest))
+                    {
+                        // Canonical folder already exists — merge by moving each
+                        // child entry across rather than failing the rename.
+                        foreach (var child in Directory.GetFileSystemEntries(src))
+                        {
+                            var childName = Path.GetFileName(child);
+                            var target = UniqueDirectory(dest, childName);
+                            if (Directory.Exists(child)) Directory.Move(child, target);
+                            else System.IO.File.Move(child, target, overwrite: false);
+                        }
+                        if (!Directory.EnumerateFileSystemEntries(src).Any())
+                            Directory.Delete(src);
+                    }
+                    else
+                    {
+                        Directory.Move(src, dest);
+                    }
+
+                    if (entry.TrackedAuthorId is int authorId)
+                        details.Add(new UnknownMatchResult(decision.FolderName, authorId, entry.DisplayName));
+                }
+                catch (IOException ex)
+                {
+                    warnings.Add($"{decision.FolderName}: {ex.Message}");
+                }
+            }
+        }
+
+        return Ok(new UnknownMatchSummary(details.Count, unmatched, details, warnings));
     }
 }

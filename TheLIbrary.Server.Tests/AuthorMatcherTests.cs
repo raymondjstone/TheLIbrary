@@ -217,6 +217,58 @@ public class AuthorMatcherTests
         Assert.Null(r);
     }
 
+    // ---------- AlternateNames index expansion -------------------------------
+
+    [Fact]
+    public void Matches_via_alternate_name_entry()
+    {
+        var matcher = new AuthorMatcher(new[]
+        {
+            new AuthorIndexEntry(
+                DisplayName: "Terry Brooks",
+                FolderName: "Terry Brooks",
+                IsTracked: true,
+                TrackedAuthorId: 7,
+                AlternateNames: new[] { "T. Brooks", "Terence Brooks" }),
+        });
+
+        // An alternate name probed through the index resolves to the same entry.
+        Assert.NotNull(matcher.TryGet("T. Brooks"));
+        Assert.Equal(7, matcher.TryGet("T. Brooks")!.TrackedAuthorId);
+
+        // And via the comma-flipped variant.
+        Assert.NotNull(matcher.TryGet("Brooks, Terence"));
+    }
+
+    [Fact]
+    public void Alternate_name_does_not_promote_OL_over_tracked()
+    {
+        // OL entry whose alias collides with a tracked author's primary name —
+        // the tracked entry must still win on probe.
+        var matcher = new AuthorMatcher(new[]
+        {
+            new AuthorIndexEntry("Someone Else", "Someone Else", IsTracked: false,
+                AlternateNames: new[] { "Terry Brooks" }),
+            new AuthorIndexEntry("Terry Brooks", "Brooks-Terry", IsTracked: true, TrackedAuthorId: 9),
+        });
+
+        var hit = matcher.TryGet("Terry Brooks");
+        Assert.NotNull(hit);
+        Assert.True(hit!.IsTracked);
+        Assert.Equal(9, hit.TrackedAuthorId);
+    }
+
+    [Fact]
+    public void Empty_alternate_names_list_is_ignored_safely()
+    {
+        var matcher = new AuthorMatcher(new[]
+        {
+            new AuthorIndexEntry("Terry Brooks", "Terry Brooks", IsTracked: true,
+                AlternateNames: Array.Empty<string>()),
+        });
+        Assert.NotNull(matcher.TryGet("Terry Brooks"));
+    }
+
     // ---------- folder-layout ancestor walk ----------------------------------
 
     [Fact]

@@ -19,7 +19,12 @@ public sealed record AuthorIndexEntry(
     string FolderName,
     bool IsTracked,
     int? TrackedAuthorId = null,
-    string? OpenLibraryKey = null);
+    string? OpenLibraryKey = null,
+    // Additional names that should resolve to this entry — typically the OL
+    // author's PersonalName + AlternateNames list. Indexed alongside
+    // DisplayName and FolderName so e.g. "T. Brooks" matches "Terry Brooks"
+    // when the alias is known.
+    IReadOnlyList<string>? AlternateNames = null);
 
 public sealed record AuthorMatchResult(AuthorIndexEntry Entry, string? RewrittenTitle);
 
@@ -52,6 +57,10 @@ public sealed class AuthorMatcher
             if (blacklist.Count > 0 && IsBlacklisted(e, blacklist)) continue;
             foreach (var v in AuthorKeyVariants(e.DisplayName)) _index.TryAdd(v, e);
             foreach (var v in AuthorKeyVariants(e.FolderName)) _index.TryAdd(v, e);
+            if (e.AlternateNames is not null)
+                foreach (var alias in e.AlternateNames)
+                    foreach (var v in AuthorKeyVariants(alias))
+                        _index.TryAdd(v, e);
         }
     }
 

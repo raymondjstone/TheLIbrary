@@ -28,6 +28,13 @@ public class LibraryDbContext : DbContext
             e.HasIndex(x => x.OpenLibraryKey).IsUnique().HasFilter("[OpenLibraryKey] IS NOT NULL");
             e.HasIndex(x => x.CalibreFolderName);
             e.HasIndex(x => x.Name);
+            e.HasIndex(x => x.LinkedToAuthorId);
+            // Self-referencing FK uses ClientSetNull (NO ACTION in SQL) to avoid
+            // SQL Server's "may cause cycles or multiple cascade paths" rejection.
+            e.HasOne(x => x.LinkedTo)
+                .WithMany(x => x.LinkedFrom)
+                .HasForeignKey(x => x.LinkedToAuthorId)
+                .OnDelete(DeleteBehavior.ClientSetNull);
         });
 
         b.Entity<Book>(e =>

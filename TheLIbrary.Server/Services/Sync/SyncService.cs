@@ -310,6 +310,14 @@ public sealed class SyncService
             .GroupBy(b => b.AuthorId)
             .ToDictionary(g => g.Key, g => g.ToList());
 
+        // Map canonical → list of non-pen-name child author ids. Used by
+        // MatchAuthorFiles so a file at the canonical's folder can match a book
+        // owned by one of the merged-in child authors.
+        var nonPenNameChildrenByCanonical = authors
+            .Where(a => a.LinkedToAuthorId is not null && !a.IsPenName)
+            .GroupBy(a => a.LinkedToAuthorId!.Value)
+            .ToDictionary(g => g.Key, g => g.Select(a => a.Id).ToList());
+
         var processed = new HashSet<string>(StringComparer.Ordinal);
         var processedAuthorIds = new List<int>();
         int skipped = 0;
@@ -335,7 +343,7 @@ public sealed class SyncService
                 continue;
             }
 
-            MatchAuthorFiles(author, entriesByFolderKey, booksByAuthorId, existingByPath, processed, toInsert, toUpdate);
+            MatchAuthorFiles(author, entriesByFolderKey, booksByAuthorId, nonPenNameChildrenByCanonical, existingByPath, processed, toInsert, toUpdate);
             processedAuthorIds.Add(author.Id);
             MutateState(s => s.AuthorsProcessed++);
         }
@@ -484,6 +492,7 @@ public sealed class SyncService
         Author author,
         Dictionary<string, List<CalibreBookEntry>> entriesByFolderKey,
         Dictionary<int, List<Book>> booksByAuthorId,
+        Dictionary<int, List<int>> nonPenNameChildrenByCanonical,
         Dictionary<string, LocalBookFile> existingByPath,
         HashSet<string> processed,
         List<LocalBookFile> toInsert,
@@ -502,15 +511,26 @@ public sealed class SyncService
 
         if (relevantEntries.Count == 0) return;
 
+        // Build the match dict from the author's own books PLUS the books of any
+        // non-pen-name child authors folded into this view. When the user links
+        // "T. Brooks" → "Terry Brooks" as a duplicate, files now live under
+        // Terry's folder but the child's books still carry AuthorId = T's id —
+        // we need to include them or every linked book would auto-orphan.
         var bookByTitle = new Dictionary<string, Book>(StringComparer.Ordinal);
-        if (booksByAuthorId.TryGetValue(author.Id, out var authorBooks))
+        void Add(IEnumerable<Book> bs)
         {
-            foreach (var b in authorBooks)
+            foreach (var b in bs)
             {
                 var t = b.NormalizedTitle ?? "";
                 if (!bookByTitle.ContainsKey(t)) bookByTitle[t] = b;
             }
         }
+        if (booksByAuthorId.TryGetValue(author.Id, out var authorBooks))
+            Add(authorBooks);
+        if (nonPenNameChildrenByCanonical.TryGetValue(author.Id, out var childIds))
+            foreach (var childId in childIds)
+                if (booksByAuthorId.TryGetValue(childId, out var childBooks))
+                    Add(childBooks);
 
         foreach (var entry in relevantEntries)
         {

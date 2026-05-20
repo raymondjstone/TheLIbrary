@@ -89,6 +89,26 @@ public sealed class AuthorRefresher
                 a => a.Id != author.Id && a.OpenLibraryKey == best.Key, ct);
             if (canonical is not null)
             {
+                // If the user has explicitly linked this row to another author,
+                // honour that intent — do NOT auto-delete on OL collision. We
+                // also stop trying to assign an OL key (the unique index would
+                // reject it anyway). Defer the next refresh; canonical's own
+                // refresh already covers any shared OL data, and the link makes
+                // child books appear under the canonical via the merged view.
+                if (author.LinkedToAuthorId is not null)
+                {
+                    author.LastSyncedAt = DateTime.UtcNow;
+                    author.NextFetchAt = author.LastSyncedAt.Value.AddDays(
+                        author.RefreshIntervalDays ?? 28);
+                    await _db.SaveChangesAsync(ct);
+                    _log.LogInformation(
+                        "Refresh skipped for '{Name}' (id {Id}) — user-linked to author {LinkedId}; OL key {Key} owned by canonical row {CanonId}",
+                        author.Name, author.Id, author.LinkedToAuthorId, best.Key, canonical.Id);
+                    return new AuthorRefreshOutcome(
+                        author.Id, false, null, author.Status.ToString(),
+                        "Linked to another author — refresh deferred", 0, 0, author.NextFetchAt);
+                }
+
                 if (string.IsNullOrEmpty(canonical.CalibreFolderName) && !string.IsNullOrEmpty(author.CalibreFolderName))
                     canonical.CalibreFolderName = author.CalibreFolderName;
 

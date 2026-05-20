@@ -56,6 +56,20 @@ public class Author
     // Free-text memo written by the user — not synced from OL, never overwritten.
     public string? Notes { get; set; }
 
+    // When set, this row is a duplicate (or pen name) of the referenced
+    // author. OpenLibrary often splits one real author into several entries —
+    // linking lets us treat them as one. The "canonical" author is the one
+    // this points at; their LinkedToAuthorId is null.
+    //   IsPenName == false → child's books fold into canonical's view AND files
+    //                        get physically moved into canonical's folder.
+    //   IsPenName == true  → child stays a separate author with its own books
+    //                        and files; UI just shows a "pen name of" link
+    //                        back to the canonical.
+    public int? LinkedToAuthorId { get; set; }
+    public Author? LinkedTo { get; set; }
+    public bool IsPenName { get; set; }
+
     public List<Book> Books { get; set; } = new();
     public List<SeriesAuthor> SeriesAuthors { get; set; } = new();
+    public List<Author> LinkedFrom { get; set; } = new();
 }

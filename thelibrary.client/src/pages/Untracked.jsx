@@ -9,6 +9,8 @@ export default function Untracked() {
     const [busyAllUnclaimed, setBusyAllUnclaimed] = useState(false)
     const [busyUnknownFolder, setBusyUnknownFolder] = useState(null)
     const [busyAllUnknown, setBusyAllUnknown] = useState(false)
+    const [busyMatching, setBusyMatching] = useState(false)
+    const [matchResult, setMatchResult] = useState(null)
     const [error, setError] = useState(null)
 
     const load = async () => {
@@ -75,6 +77,22 @@ export default function Untracked() {
         finally { setBusyUnknownFolder(null) }
     }
 
+    const matchUnknownFolders = async () => {
+        setBusyMatching(true)
+        setError(null)
+        setMatchResult(null)
+        try {
+            const r = await fetch('/api/unknown-folders/match', { method: 'POST' })
+            if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText)
+            const body = await r.json()
+            setMatchResult(body)
+            if (body?.warnings?.length)
+                setError(`Some folders couldn't be moved:\n${body.warnings.join('\n')}`)
+            load()
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setBusyMatching(false) }
+    }
+
     const returnAllUnknownFolders = async () => {
         setBusyAllUnknown(true)
         setError(null)
@@ -133,8 +151,15 @@ export default function Untracked() {
 
             {unknownFolders.length > 0 && (
                 <div className="callout">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
                         <strong>{unknownFolders.length} folder(s) in __unknown (not yet tracked).</strong>
+                        <button
+                            className="btn-ghost"
+                            disabled={busyMatching}
+                            onClick={matchUnknownFolders}
+                        >
+                            {busyMatching ? 'Matching…' : '🔍 Try matching all'}
+                        </button>
                         <button
                             className="btn-ghost btn-danger"
                             disabled={busyAllUnknown}
@@ -143,8 +168,14 @@ export default function Untracked() {
                             {busyAllUnknown ? 'Moving…' : '↩ Return all to Incoming'}
                         </button>
                     </div>
+                    {matchResult && (
+                        <p className="subtle" style={{ margin: '0.25rem 0' }}>
+                            Last run: {matchResult.matched} matched, {matchResult.unmatched} left untouched.
+                        </p>
+                    )}
                     <p className="subtle" style={{ margin: '0.25rem 0 0.5rem' }}>
-                        To recover files: add the author below, star them (★ &gt; 0), then click <strong>Reprocess __unknown</strong> on the Sync page.
+                        Try matching scans your current watchlist (including OpenLibrary alternate names) and
+                        moves any quarantined folder it can identify back to the right author folder.
                     </p>
                     <ul className="unclaimed-list">
                         {unknownFolders.map(u => (
