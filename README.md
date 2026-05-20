@@ -21,7 +21,10 @@ from a drop folder and re-running matching against previously-unmatched files.
   library roots
 - **Ingest formats** — EPUB, MOBI / AZW / AZW3 / AZW4 / KF8 / PRC / PDB,
   FB2 / FBZ / `.fb2.zip`, PDF, LIT (magic validated; title/author via filename
-  fallback), CBZ (ComicInfo.xml), DOCX / ODT (Dublin Core)
+  fallback), CBZ (ComicInfo.xml), DOCX / ODT (Dublin Core), TXT (filename
+  fallback only)
+- **In-browser preview** — EPUB / PDF / TXT render natively via epub.js,
+  the browser's PDF viewer, and a plain `<pre>` block respectively
 
 ## Pages
 
@@ -194,6 +197,36 @@ that look like authors (`311`, `008`) are explicitly rejected as author names.
 
 Coverage of these shapes lives in `TitleNormalizerSeriesTests` — 86 cases
 spanning every pattern above plus negative examples that must return all-null.
+
+## In-browser preview
+
+Click any format chip (`epub`, `pdf`, `txt`) on an author detail page to open
+an in-browser preview modal. The modal handles each format natively:
+
+- **EPUB** — rendered with [epub.js](https://github.com/futurepress/epub.js).
+  Has prev/next paging controls and uses byte-range requests so large books
+  don't pull into memory.
+- **PDF** — `<iframe>` pointing at the streaming endpoint; the browser's
+  built-in viewer provides paging, zoom, and search.
+- **TXT** — fetched and rendered in a serif `<pre>` block with line-wrapping.
+  Project Gutenberg-style plain-text books work without any conversion.
+
+Chips for other formats (MOBI, AZW3, LIT, FB2, CBZ, DOCX, ODT, …) are still
+shown but aren't clickable. Those need server-side conversion via
+`ebook-convert` to be previewable in-browser — that's wired up for reMarkable
+send but not for in-app preview yet.
+
+**Security**: the streaming endpoint validates that the resolved disk path
+lives inside one of the enabled `LibraryLocation` roots before reading any
+bytes. A tampered `LocalBookFile.FullPath` (e.g. one rewritten to point at
+`/etc/passwd`) gets a `403` instead of leaking the file. The resolver is in
+`FilePreviewResolver.cs` and is fully unit-tested.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET    | `/api/files/{id}/preview?format=epub` | Stream an EPUB for in-browser rendering |
+| GET    | `/api/files/{id}/preview?format=pdf`  | Stream a PDF for the native viewer |
+| GET    | `/api/files/{id}/preview?format=txt`  | Stream a plain-text file |
 
 ## NZB search sites
 
@@ -1116,8 +1149,13 @@ in-memory inputs.
 - `IsbnNormaliseTests` checks the ISBN extractor's handling of
   hyphenated / spaced / URN-prefixed forms plus the trailing 'X' check digit
   and rejects too-short/too-long inputs.
+- `FilePreviewResolverTests` covers the streaming-preview path resolver:
+  format whitelist (epub/pdf/txt only), single-file vs directory layout,
+  multi-format directories picking the requested extension, double-dot path
+  canonicalisation that stays inside the root, escape attempts that exit
+  the root, and root-prefix collisions (`/books/Coll` vs `/books/Collection`).
 
-214 tests total at the time of writing.
+231 tests total at the time of writing.
 
 ## Adding a schema change
 

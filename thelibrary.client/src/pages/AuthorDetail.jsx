@@ -2,6 +2,28 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import StarRating from '../components/StarRating.jsx'
 import LinkAuthorDialog from './LinkAuthorDialog.jsx'
+import BookPreview from '../components/BookPreview.jsx'
+
+// Clickable format chip (epub / pdf / txt / mobi / …). EPUB / PDF / TXT open
+// the in-browser preview modal; other formats render the same as before with
+// no click handler since the preview endpoint would just 415.
+const PREVIEWABLE_EXTS = new Set(['epub', 'pdf', 'txt'])
+
+function FormatChip({ ext, onPreview, fileId, title }) {
+    const canPreview = PREVIEWABLE_EXTS.has(ext.toLowerCase()) && onPreview && fileId
+    const common = { className: 'filetype-tag', style: { marginRight: '0.25rem' } }
+    if (!canPreview) return <span {...common}>{ext}</span>
+    return (
+        <button
+            {...common}
+            type="button"
+            onClick={() => onPreview(fileId, ext, title)}
+            title={`Preview this .${ext} file`}
+            style={{ ...common.style, cursor: 'pointer', border: 0, padding: '0 0.4rem', font: 'inherit' }}>
+            {ext}
+        </button>
+    )
+}
 
 // Custom series name input — shows all associated series on focus regardless of
 // current value, filters as the user types, and allows free-text for new series.
@@ -68,7 +90,7 @@ function UnmatchedFilesSection({
     matchError, matchBusyIds, returnBusyIds,
     matchSel, setMatchSel, matchFilter, setMatchFilter,
     onMatch, onReturn, rmConnected, sendBusyIds, onSend,
-    suggestionsByFile, onBulkMatch, bulkBusy
+    suggestionsByFile, onBulkMatch, bulkBusy, onPreview
 }) {
     if (!unmatchedLocal.length) return null
     const canSend = (formats) => !!formats?.length
@@ -129,7 +151,10 @@ function UnmatchedFilesSection({
                                 <td>
                                     {formats.length > 0
                                         ? formats.map(ext => (
-                                            <span key={ext} className="filetype-tag" style={{ marginRight: '0.25rem' }}>{ext}</span>
+                                            <FormatChip key={ext} ext={ext}
+                                                onPreview={onPreview}
+                                                fileId={u.id}
+                                                title={u.titleFolder} />
                                         ))
                                         : <span className="subtle">—</span>}
                                 </td>
@@ -215,7 +240,7 @@ function UnmatchedFilesSection({
     )
 }
 
-function FileRow({ file, rmConnected, sendBusyIds, onSend, onUnmatch }) {
+function FileRow({ file, rmConnected, sendBusyIds, onSend, onUnmatch, onPreview }) {
     const formats = file.formats ?? []
     const sendable = formats.length > 0
     const convert = sendable && !formats.some(f => f === 'epub' || f === 'pdf')
@@ -227,7 +252,9 @@ function FileRow({ file, rmConnected, sendBusyIds, onSend, onUnmatch }) {
         <div>
             {formats.length > 0
                 ? formats.map(ext => (
-                    <span key={ext} className="filetype-tag" style={{ marginRight: '0.25rem' }}>{ext}</span>
+                    <FormatChip key={ext} ext={ext}
+                        onPreview={onPreview}
+                        fileId={file.id} />
                 ))
                 : <span className="filetype-tag" title="No ebook files found in this folder">empty</span>}
             {' '}<span style={{ wordBreak: 'break-all' }}>{file.fullPath}</span>{' '}
@@ -284,6 +311,8 @@ export default function AuthorDetail() {
     const [unlinking, setUnlinking] = useState(false)
     const [suggestionsByFile, setSuggestionsByFile] = useState({})  // { fileId: { inferredTitle, candidates } }
     const [bulkBusy, setBulkBusy] = useState(false)
+    const [preview, setPreview] = useState(null)  // { fileId, format, title } | null
+    const openPreview = (fileId, format, title) => setPreview({ fileId, format, title })
 
     const unlinkAuthor = async () => {
         if (!confirm('Remove the link to the canonical author?')) return
@@ -1010,7 +1039,8 @@ export default function AuthorDetail() {
                                                     rmConnected={rmConnected}
                                                     sendBusyIds={sendBusyIds}
                                                     onSend={sendToRemarkable}
-                                                    onUnmatch={unmatchFile} />
+                                                    onUnmatch={unmatchFile}
+                                                    onPreview={openPreview} />
                                             ))}
                                         </div>
                                         : null}
@@ -1076,7 +1106,8 @@ export default function AuthorDetail() {
                                                         rmConnected={rmConnected}
                                                         sendBusyIds={sendBusyIds}
                                                         onSend={sendToRemarkable}
-                                                        onUnmatch={unmatchFile} />
+                                                        onUnmatch={unmatchFile}
+                                                    onPreview={openPreview} />
                                                 ))}
                                             </div>
                                             : null}
@@ -1158,7 +1189,8 @@ export default function AuthorDetail() {
                                                     rmConnected={rmConnected}
                                                     sendBusyIds={sendBusyIds}
                                                     onSend={sendToRemarkable}
-                                                    onUnmatch={unmatchFile} />
+                                                    onUnmatch={unmatchFile}
+                                                    onPreview={openPreview} />
                                             ))}
                                         </div>
                                         : null}
@@ -1193,7 +1225,8 @@ export default function AuthorDetail() {
                                                         rmConnected={rmConnected}
                                                         sendBusyIds={sendBusyIds}
                                                         onSend={sendToRemarkable}
-                                                        onUnmatch={unmatchFile} />
+                                                        onUnmatch={unmatchFile}
+                                                    onPreview={openPreview} />
                                                 ))}
                                             </div>
                                             : null}
@@ -1232,7 +1265,16 @@ export default function AuthorDetail() {
                 onSend={sendToRemarkable}
                 suggestionsByFile={suggestionsByFile}
                 onBulkMatch={bulkMatch}
-                bulkBusy={bulkBusy} />
+                bulkBusy={bulkBusy}
+                onPreview={openPreview} />
+
+            {preview && (
+                <BookPreview
+                    fileId={preview.fileId}
+                    format={preview.format}
+                    title={preview.title}
+                    onClose={() => setPreview(null)} />
+            )}
         </section>
     )
 }

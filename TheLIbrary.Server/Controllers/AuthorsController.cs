@@ -231,7 +231,7 @@ public class AuthorsController : ControllerBase
     private static readonly HashSet<string> EbookExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".epub", ".mobi", ".azw", ".azw3", ".azw4", ".kf8", ".prc", ".pdb",
-        ".fb2", ".fbz", ".pdf", ".lit", ".cbz", ".docx", ".odt"
+        ".fb2", ".fbz", ".pdf", ".lit", ".cbz", ".docx", ".odt", ".txt"
     };
 
     // FullPath may be a file path (flat-file layout after organizer runs) or a

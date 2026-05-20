@@ -15,10 +15,13 @@ public sealed class CalibreScanner
     public const string UnknownAuthorFolder = "__unknown";
 
     // Ebook file extensions recognised as book content (not covers or metadata).
+    // .txt is included for Project Gutenberg-style plain-text books — they
+    // have no metadata so the filename fallback ("Author - Title.txt") is the
+    // only signal, but they preview natively in the browser like EPUB/PDF.
     internal static readonly HashSet<string> EbookExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".epub", ".mobi", ".azw", ".azw3", ".azw4", ".kf8", ".prc", ".pdb",
-        ".fb2", ".fbz", ".pdf", ".lit", ".cbz", ".docx", ".odt"
+        ".fb2", ".fbz", ".pdf", ".lit", ".cbz", ".docx", ".odt", ".txt"
     };
 
     // Archive extensions handled by the unzip job (kept, not deleted as junk).
