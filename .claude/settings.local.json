@@ -50,7 +50,9 @@
       "PowerShell($dll = Get-ChildItem 'C:\\\\Code\\\\TheLibrary\\\\TheLIbrary.Server\\\\bin' -Recurse -Filter 'SharpCompress.dll' -ErrorAction SilentlyContinue | Select-Object -First 1; if \\($dll\\) { Write-Output $dll.FullName; \\(& dotnet ildasm $dll.FullName 2>&1 | Select-String -Pattern 'ArchiveFactory|::Open' | Select-Object -First 30\\) } else { 'no dll' })",
       "PowerShell($null = Add-Type -AssemblyName System.Reflection.Metadata; $stream = [IO.File]::OpenRead\\('C:\\\\Code\\\\TheLibrary\\\\TheLIbrary.Server\\\\bin\\\\Debug\\\\net10.0\\\\SharpCompress.dll'\\); $reader = New-Object System.Reflection.Metadata.PEReader\\($stream\\); $md = $reader.GetMetadataReader\\(\\); $md.TypeDefinitions | ForEach-Object { $t = $md.GetTypeDefinition\\($_\\); $name = $md.GetString\\($t.Name\\); $ns = $md.GetString\\($t.Namespace\\); if \\($name -eq 'ArchiveFactory'\\) { Write-Output \"TYPE: $ns.$name\"; $t.GetMethods\\(\\) | ForEach-Object { $m = $md.GetMethodDefinition\\($_\\); Write-Output \\('  METHOD: ' + $md.GetString\\($m.Name\\)\\) } } }; $reader.Dispose\\(\\); $stream.Dispose\\(\\))",
       "Bash(grep -iE \"archivefactory|^Open$\")",
-      "Bash(grep -iE \"Factory$\")"
+      "Bash(grep -iE \"Factory$\")",
+      "Bash(git *)",
+      "Bash(node *)"
     ]
   }
 }

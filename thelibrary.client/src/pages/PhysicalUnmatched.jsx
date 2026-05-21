@@ -1,6 +1,228 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 
 let cachedUnmatched = null
+
+// Splits a free-text "Series/Pos" string into a series name and a position.
+// "Xanth #5" → { series: 'Xanth', position: '5' }; "5" → { '', '5' }.
+function parseSeriesPos(raw) {
+    if (!raw || !raw.trim()) return { series: '', position: '' }
+    const m = raw.trim().match(/^(.*?)[\s#]*([0-9]+(?:\.[0-9]+)?)\s*$/)
+    if (m) return { series: m[1].trim(), position: m[2] }
+    return { series: raw.trim(), position: '' }
+}
+
+const inputStyle = {
+    padding: '0.25rem 0.4rem', border: '1px solid var(--border)',
+    borderRadius: '4px', fontSize: '0.85rem',
+}
+
+// Inline panel for resolving one unmatched physical row: pick the author
+// (a likely one is pre-selected), then either match an existing book or
+// catalogue a new one.
+function ResolvePanel({ row, authors, suggestedAuthors, onResolved, onCancel }) {
+    const topAuthor = suggestedAuthors?.[0]
+    const [authorId, setAuthorId] = useState(
+        topAuthor && topAuthor.score >= 0.85 ? String(topAuthor.authorId) : '')
+    const [authorFilter, setAuthorFilter] = useState('')
+    const [bookCandidates, setBookCandidates] = useState(null)
+    const [bookFilter, setBookFilter] = useState('')
+    const [selectedBookId, setSelectedBookId] = useState('')
+    const seed = parseSeriesPos(row.seriesPos)
+    const [nbTitle, setNbTitle] = useState(row.title || '')
+    const [nbSeries, setNbSeries] = useState(seed.series)
+    const [nbPos, setNbPos] = useState(seed.position)
+    const [busy, setBusy] = useState(false)
+    const [error, setError] = useState(null)
+
+    // Reload book suggestions whenever the chosen author changes.
+    useEffect(() => {
+        if (!authorId) { setBookCandidates(null); setSelectedBookId(''); return }
+        let cancelled = false
+        setBookCandidates(null)
+        setSelectedBookId('')
+        fetch(`/api/import/physical-books/unmatched/${row.id}/book-suggestions?authorId=${authorId}`)
+            .then(r => r.ok ? r.json() : [])
+            .then(list => {
+                if (cancelled) return
+                setBookCandidates(list)
+                const best = list[0]
+                if (best && best.score >= 0.7) setSelectedBookId(String(best.bookId))
+            })
+            .catch(() => { if (!cancelled) setBookCandidates([]) })
+        return () => { cancelled = true }
+    }, [authorId, row.id])
+
+    const authorOptions = authors
+        .filter(a => !authorFilter || a.name.toLowerCase().includes(authorFilter.toLowerCase()))
+        .slice(0, 200)
+
+    const bookOptions = (bookCandidates ?? [])
+        .filter(b => !bookFilter || b.title.toLowerCase().includes(bookFilter.toLowerCase()))
+
+    const topBooks = (bookCandidates ?? []).filter(b => b.score >= 0.5).slice(0, 3)
+
+    const matchBook = async () => {
+        if (!selectedBookId) return
+        setBusy(true); setError(null)
+        try {
+            const r = await fetch(`/api/import/physical-books/unmatched/${row.id}/match`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ bookId: Number(selectedBookId) }),
+            })
+            if (!r.ok) {
+                const body = await r.json().catch(() => ({}))
+                throw new Error(body.error || r.statusText)
+            }
+            onResolved(row.id)
+        } catch (e) {
+            setError(String(e.message || e))
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    const addNewBook = async () => {
+        if (!authorId) { setError('Pick an author first.'); return }
+        if (!nbTitle.trim()) { setError('Title is required for a new book.'); return }
+        setBusy(true); setError(null)
+        try {
+            const r = await fetch(`/api/import/physical-books/unmatched/${row.id}/add-book`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    authorId: Number(authorId),
+                    title: nbTitle.trim(),
+                    seriesName: nbSeries.trim() || null,
+                    seriesPosition: nbPos.trim() || null,
+                }),
+            })
+            if (!r.ok) {
+                const body = await r.json().catch(() => ({}))
+                throw new Error(body.error || r.statusText)
+            }
+            onResolved(row.id)
+        } catch (e) {
+            setError(String(e.message || e))
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    return (
+        <td colSpan={5} style={{ background: 'var(--card)', padding: '0.75rem 1rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                <strong>Resolve “{row.title}” by {row.author}</strong>
+
+                {/* ── Author ───────────────────────────────────────────── */}
+                <div>
+                    <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.25rem' }}>
+                        1 · Author
+                    </div>
+                    {suggestedAuthors?.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginBottom: '0.35rem' }}>
+                            <span className="subtle" style={{ fontSize: '0.8rem' }}>Suggested:</span>
+                            {suggestedAuthors.map(s => (
+                                <button key={s.authorId} type="button"
+                                        className={String(s.authorId) === authorId ? 'pill pill-active' : 'pill'}
+                                        style={{ cursor: 'pointer', fontSize: '0.78rem' }}
+                                        onClick={() => setAuthorId(String(s.authorId))}>
+                                    {s.name} <span style={{ opacity: 0.7 }}>{s.score.toFixed(2)}</span>
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                    <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                        <input placeholder="Filter authors…" value={authorFilter}
+                               onChange={e => setAuthorFilter(e.target.value)} style={inputStyle} />
+                        <select value={authorId} onChange={e => setAuthorId(e.target.value)} style={inputStyle}>
+                            <option value="">— pick an author —</option>
+                            {authorOptions.map(a => (
+                                <option key={a.id} value={a.id}>{a.name}</option>
+                            ))}
+                        </select>
+                    </div>
+                </div>
+
+                {/* ── Match an existing book ───────────────────────────── */}
+                <div style={{ opacity: authorId ? 1 : 0.5 }}>
+                    <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.25rem' }}>
+                        2a · Match an existing book
+                    </div>
+                    {!authorId && <p className="subtle" style={{ margin: 0 }}>Pick an author above first.</p>}
+                    {authorId && bookCandidates === null && <p className="subtle" style={{ margin: 0 }}>Loading books…</p>}
+                    {authorId && bookCandidates?.length === 0 && (
+                        <p className="subtle" style={{ margin: 0 }}>This author has no books yet — add one below.</p>
+                    )}
+                    {authorId && bookCandidates?.length > 0 && (
+                        <>
+                            {topBooks.length > 0 && (
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginBottom: '0.35rem' }}>
+                                    {topBooks.map(b => (
+                                        <button key={b.bookId} type="button"
+                                                className={String(b.bookId) === selectedBookId ? 'pill pill-active' : 'pill'}
+                                                style={{ cursor: 'pointer', fontSize: '0.78rem' }}
+                                                onClick={() => setSelectedBookId(String(b.bookId))}
+                                                title={`Score ${b.score.toFixed(2)}`}>
+                                            {b.title} <span style={{ opacity: 0.7 }}>{b.score.toFixed(2)}</span>
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                            <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                                <input placeholder="Filter books…" value={bookFilter}
+                                       onChange={e => setBookFilter(e.target.value)} style={inputStyle} />
+                                <select value={selectedBookId} onChange={e => setSelectedBookId(e.target.value)}
+                                        style={inputStyle}>
+                                    <option value="">— pick a book —</option>
+                                    {bookOptions.map(b => (
+                                        <option key={b.bookId} value={b.bookId}>
+                                            {b.title}{b.alreadyOwned ? ' (owned)' : ''}
+                                        </option>
+                                    ))}
+                                </select>
+                                <button type="button" disabled={busy || !selectedBookId} onClick={matchBook}>
+                                    Match to this book
+                                </button>
+                            </div>
+                        </>
+                    )}
+                </div>
+
+                {/* ── Add as a new book ────────────────────────────────── */}
+                <div style={{ opacity: authorId ? 1 : 0.5 }}>
+                    <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.25rem' }}>
+                        2b · Add as a new book
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                        <input placeholder="Title" value={nbTitle}
+                               onChange={e => setNbTitle(e.target.value)}
+                               style={{ ...inputStyle, minWidth: '14rem' }} />
+                        <input placeholder="Series (optional)" value={nbSeries}
+                               onChange={e => setNbSeries(e.target.value)} style={inputStyle} />
+                        <input placeholder="#" value={nbPos}
+                               onChange={e => setNbPos(e.target.value)}
+                               style={{ ...inputStyle, width: '4rem' }} />
+                        <button type="button" disabled={busy || !authorId} onClick={addNewBook}>
+                            Add new book
+                        </button>
+                    </div>
+                    <p className="subtle" style={{ margin: '0.3rem 0 0', fontSize: '0.8rem' }}>
+                        Created as owned, with a placeholder key — it links to OpenLibrary
+                        automatically if the title turns up on a later refresh.
+                    </p>
+                </div>
+
+                {error && <p className="error" style={{ margin: 0 }}>{error}</p>}
+                <div>
+                    <button type="button" className="btn-ghost" onClick={onCancel} disabled={busy}>
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </td>
+    )
+}
 
 export default function PhysicalUnmatched() {
     const [rows, setRows] = useState(cachedUnmatched)
@@ -9,6 +231,9 @@ export default function PhysicalUnmatched() {
     const [savingIds, setSavingIds] = useState(() => new Set())
     const [rematching, setRematching] = useState(false)
     const [rematchResult, setRematchResult] = useState(null)
+    const [authors, setAuthors] = useState([])
+    const [authorSuggestions, setAuthorSuggestions] = useState({})  // rowId -> [candidates]
+    const [resolveId, setResolveId] = useState(null)
 
     const load = async () => {
         setError(null)
@@ -28,6 +253,32 @@ export default function PhysicalUnmatched() {
     }
 
     useEffect(() => { load() }, [])
+
+    // Eligible authors for the resolve picker — /api/authors already excludes
+    // non-pen-name linked children, exactly the set new books may belong to.
+    useEffect(() => {
+        fetch('/api/authors')
+            .then(r => r.ok ? r.json() : [])
+            .then(list => setAuthors(
+                (list ?? [])
+                    .map(a => ({ id: a.id, name: a.name }))
+                    .sort((a, b) => a.name.localeCompare(b.name))))
+            .catch(() => setAuthors([]))
+    }, [])
+
+    // Server-scored author suggestions, keyed by unmatched-row id. Stale keys
+    // for already-resolved rows are harmless — lookups are by current row id.
+    useEffect(() => {
+        if (!rows?.length) return
+        fetch('/api/import/physical-books/unmatched/author-suggestions')
+            .then(r => r.ok ? r.json() : [])
+            .then(list => {
+                const map = {}
+                for (const item of list ?? []) map[item.id] = item.candidates
+                setAuthorSuggestions(map)
+            })
+            .catch(() => setAuthorSuggestions({}))
+    }, [rows])
 
     const startEdit = (row) => {
         setEditing(prev => ({
@@ -65,12 +316,21 @@ export default function PhysicalUnmatched() {
         }
     }
 
+    const removeRowFromState = (id) => {
+        setRows(prev => {
+            const next = (prev ?? []).filter(row => row.id !== id)
+            cachedUnmatched = next
+            return next
+        })
+        setResolveId(curr => curr === id ? null : curr)
+    }
+
     const deleteRow = async (id) => {
         if (!confirm('Remove this unmatched entry?')) return
         try {
             const r = await fetch(`/api/import/physical-books/unmatched/${id}`, { method: 'DELETE' })
             if (!r.ok) throw new Error(r.statusText)
-            setRows(prev => prev.filter(row => row.id !== id))
+            removeRowFromState(id)
         } catch (e) {
             alert(`Delete failed: ${e.message}`)
         }
@@ -136,45 +396,62 @@ export default function PhysicalUnmatched() {
                         {rows.map(row => {
                             const draft = editing[row.id]
                             const isSaving = savingIds.has(row.id)
+                            const isResolving = resolveId === row.id
                             return (
-                                <tr key={row.id}>
-                                    <td>{draft
-                                        ? <input value={draft.author}
-                                                 onChange={e => editField(row.id, 'author', e.target.value)} />
-                                        : row.author}</td>
-                                    <td>{draft
-                                        ? <input value={draft.title}
-                                                 onChange={e => editField(row.id, 'title', e.target.value)} />
-                                        : row.title}</td>
-                                    <td>{draft
-                                        ? <input value={draft.seriesPos}
-                                                 onChange={e => editField(row.id, 'seriesPos', e.target.value)} />
-                                        : row.seriesPos}</td>
-                                    <td style={{ color: 'var(--subtle)', whiteSpace: 'nowrap' }}>
-                                        {new Date(row.addedAt).toLocaleDateString()}
-                                    </td>
-                                    <td style={{ whiteSpace: 'nowrap' }}>
-                                        {draft ? (
-                                            <>
-                                                <button className="btn-ghost"
-                                                        onClick={() => saveEdit(row.id)}
-                                                        disabled={isSaving}>
-                                                    {isSaving ? 'Saving…' : 'Save'}
-                                                </button>{' '}
-                                                <button className="btn-ghost"
-                                                        onClick={() => cancelEdit(row.id)}
-                                                        disabled={isSaving}>Cancel</button>
-                                            </>
-                                        ) : (
-                                            <>
-                                                <button className="btn-ghost"
-                                                        onClick={() => startEdit(row)}>Edit</button>{' '}
-                                                <button className="btn-ghost"
-                                                        onClick={() => deleteRow(row.id)}>Delete</button>
-                                            </>
-                                        )}
-                                    </td>
-                                </tr>
+                                <Fragment key={row.id}>
+                                    <tr>
+                                        <td>{draft
+                                            ? <input value={draft.author}
+                                                     onChange={e => editField(row.id, 'author', e.target.value)} />
+                                            : row.author}</td>
+                                        <td>{draft
+                                            ? <input value={draft.title}
+                                                     onChange={e => editField(row.id, 'title', e.target.value)} />
+                                            : row.title}</td>
+                                        <td>{draft
+                                            ? <input value={draft.seriesPos}
+                                                     onChange={e => editField(row.id, 'seriesPos', e.target.value)} />
+                                            : row.seriesPos}</td>
+                                        <td style={{ color: 'var(--subtle)', whiteSpace: 'nowrap' }}>
+                                            {new Date(row.addedAt).toLocaleDateString()}
+                                        </td>
+                                        <td style={{ whiteSpace: 'nowrap' }}>
+                                            {draft ? (
+                                                <>
+                                                    <button className="btn-ghost"
+                                                            onClick={() => saveEdit(row.id)}
+                                                            disabled={isSaving}>
+                                                        {isSaving ? 'Saving…' : 'Save'}
+                                                    </button>{' '}
+                                                    <button className="btn-ghost"
+                                                            onClick={() => cancelEdit(row.id)}
+                                                            disabled={isSaving}>Cancel</button>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <button className="btn-ghost"
+                                                            onClick={() => setResolveId(isResolving ? null : row.id)}>
+                                                        {isResolving ? 'Close' : 'Resolve'}
+                                                    </button>{' '}
+                                                    <button className="btn-ghost"
+                                                            onClick={() => startEdit(row)}>Edit</button>{' '}
+                                                    <button className="btn-ghost"
+                                                            onClick={() => deleteRow(row.id)}>Delete</button>
+                                                </>
+                                            )}
+                                        </td>
+                                    </tr>
+                                    {isResolving && (
+                                        <tr>
+                                            <ResolvePanel
+                                                row={row}
+                                                authors={authors}
+                                                suggestedAuthors={authorSuggestions[row.id] ?? []}
+                                                onResolved={removeRowFromState}
+                                                onCancel={() => setResolveId(null)} />
+                                        </tr>
+                                    )}
+                                </Fragment>
                             )
                         })}
                     </tbody>

@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.Import;
+using TheLibrary.Server.Services.Incoming;
 using TheLibrary.Server.Services.Sync;
 
 namespace TheLibrary.Server.Controllers;
@@ -13,13 +15,13 @@ namespace TheLibrary.Server.Controllers;
 public class ImportController : ControllerBase
 {
     private readonly LibraryDbContext _db;
-    public ImportController(LibraryDbContext db) { _db = db; }
+    private readonly ManualBookService _manualBooks;
 
-    // Pre-replace "&" with "and" so "Rock & Roll" and "Rock and Roll" produce
-    // the same loose key. Collapsing & on either side handles "A&B", "A &B",
-    // and "A & B" uniformly.
-    private static readonly Regex AmpersandRx =
-        new(@"\s*&\s*", RegexOptions.Compiled);
+    public ImportController(LibraryDbContext db, ManualBookService manualBooks)
+    {
+        _db = db;
+        _manualBooks = manualBooks;
+    }
 
     public sealed record GoodreadsImportResult(
         int Matched,
@@ -278,6 +280,172 @@ public class ImportController : ControllerBase
         return Ok(new RematchResult(nowMatched.Count, pending.Count - nowMatched.Count));
     }
 
+    // ── Resolving unmatched physical rows ────────────────────────────────────
+
+    public sealed record AuthorCandidate(int AuthorId, string Name, double Score);
+    public sealed record RowAuthorSuggestions(int Id, IReadOnlyList<AuthorCandidate> Candidates);
+
+    // Top author candidates for every unmatched physical row, scored by name
+    // similarity so the UI can pre-select a likely author. Only top-level
+    // authors and pen names are offered — a non-pen-name child's books fold
+    // into its canonical, so cataloguing a physical book against one would
+    // hide it from the library view.
+    [HttpGet("physical-books/unmatched/author-suggestions")]
+    public async Task<ActionResult<IReadOnlyList<RowAuthorSuggestions>>> AuthorSuggestions(
+        CancellationToken ct)
+    {
+        var rows = await _db.PhysicalBookUnmatched
+            .Select(u => new { u.Id, u.Author })
+            .ToListAsync(ct);
+        if (rows.Count == 0) return Ok(Array.Empty<RowAuthorSuggestions>());
+
+        var authors = await _db.Authors
+            .Where(a => a.LinkedToAuthorId == null || a.IsPenName)
+            .Select(a => new { a.Id, a.Name })
+            .ToListAsync(ct);
+
+        // Pre-expand each author's name into its order variants once.
+        var authorVariants = authors
+            .Select(a => new
+            {
+                a.Id,
+                a.Name,
+                Variants = AuthorMatcher
+                    .ExpandNameVariants(TitleNormalizer.NormalizeAuthor(a.Name))
+                    .ToList(),
+            })
+            .ToList();
+
+        var result = new List<RowAuthorSuggestions>(rows.Count);
+        foreach (var row in rows)
+        {
+            var rowVariants = AuthorMatcher
+                .ExpandNameVariants(TitleNormalizer.NormalizeAuthor(row.Author))
+                .ToList();
+
+            var candidates = authorVariants
+                .Select(a => new AuthorCandidate(a.Id, a.Name, BestNameScore(rowVariants, a.Variants)))
+                .Where(c => c.Score >= 0.4)
+                .OrderByDescending(c => c.Score)
+                .Take(3)
+                .ToList();
+            result.Add(new RowAuthorSuggestions(row.Id, candidates));
+        }
+        return Ok(result);
+
+        // Best Jaro-Winkler score across the cross-product of name-order
+        // variants — handles "First Last" vs "Last, First" vs "Last First".
+        static double BestNameScore(IReadOnlyList<string> a, IReadOnlyList<string> b)
+        {
+            double best = 0;
+            foreach (var x in a)
+                foreach (var y in b)
+                {
+                    var s = FuzzyScore.JaroWinkler(x, y);
+                    if (s > best) best = s;
+                }
+            return best;
+        }
+    }
+
+    public sealed record BookCandidate(
+        int BookId, string Title, double Score,
+        string? Series, string? SeriesPosition, bool AlreadyOwned);
+
+    // Every book belonging to `authorId` (and its folded-in non-pen-name
+    // children) scored against the unmatched row's title, best match first —
+    // the same Jaro-Winkler ranking the author page uses for local files.
+    [HttpGet("physical-books/unmatched/{id:int}/book-suggestions")]
+    public async Task<ActionResult<IReadOnlyList<BookCandidate>>> BookSuggestions(
+        int id, [FromQuery] int authorId, CancellationToken ct)
+    {
+        var row = await _db.PhysicalBookUnmatched.FindAsync([id], ct);
+        if (row is null) return NotFound(new { error = "Unmatched row not found" });
+
+        var foldedIds = new List<int> { authorId };
+        foldedIds.AddRange(await _db.Authors
+            .Where(a => a.LinkedToAuthorId == authorId && !a.IsPenName)
+            .Select(a => a.Id)
+            .ToListAsync(ct));
+
+        var books = await _db.Books
+            .Where(b => foldedIds.Contains(b.AuthorId))
+            .Select(b => new
+            {
+                b.Id,
+                b.Title,
+                b.NormalizedTitle,
+                SeriesName = b.Series != null ? b.Series.Name : null,
+                b.SeriesPosition,
+                Owned = b.ManuallyOwned || b.LocalFiles.Any(),
+            })
+            .ToListAsync(ct);
+
+        var normTitle = TitleNormalizer.Normalize(row.Title);
+        var ranked = books
+            .Select(b => new BookCandidate(
+                b.Id, b.Title,
+                FuzzyScore.JaroWinkler(b.NormalizedTitle ?? "", normTitle),
+                b.SeriesName, b.SeriesPosition, b.Owned))
+            .OrderByDescending(c => c.Score)
+            .ThenBy(c => c.Title, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return Ok(ranked);
+    }
+
+    public sealed record MatchUnmatchedRequest(int BookId);
+
+    // Resolve an unmatched physical row by tying it to an existing book: the
+    // book is flagged ManuallyOwned (a physical copy is on the shelf) and the
+    // unmatched row is cleared.
+    [HttpPost("physical-books/unmatched/{id:int}/match")]
+    public async Task<IActionResult> MatchUnmatched(
+        int id, [FromBody] MatchUnmatchedRequest body, CancellationToken ct)
+    {
+        var row = await _db.PhysicalBookUnmatched.FindAsync([id], ct);
+        if (row is null) return NotFound(new { error = "Unmatched row not found" });
+
+        var book = await _db.Books.FirstOrDefaultAsync(b => b.Id == body.BookId, ct);
+        if (book is null) return NotFound(new { error = "Book not found" });
+
+        if (!book.ManuallyOwned)
+        {
+            book.ManuallyOwned = true;
+            book.ManuallyOwnedAt = DateTime.UtcNow;
+        }
+        _db.PhysicalBookUnmatched.Remove(row);
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { matchedBookId = book.Id, book.Title });
+    }
+
+    public sealed record AddUnmatchedBookRequest(
+        int AuthorId, string? Title, string? SeriesName, string? SeriesPosition);
+
+    // Resolve an unmatched physical row by creating a brand-new book for the
+    // chosen author. The book is owned (a physical copy is on the shelf) and
+    // gets a synthetic "XX" work key so a later OL refresh can promote it.
+    [HttpPost("physical-books/unmatched/{id:int}/add-book")]
+    public async Task<IActionResult> AddUnmatchedBook(
+        int id, [FromBody] AddUnmatchedBookRequest body, CancellationToken ct)
+    {
+        var row = await _db.PhysicalBookUnmatched.FindAsync([id], ct);
+        if (row is null) return NotFound(new { error = "Unmatched row not found" });
+
+        var title = string.IsNullOrWhiteSpace(body.Title) ? row.Title : body.Title;
+        var result = await _manualBooks.CreateAsync(
+            body.AuthorId, title, firstPublishYear: null,
+            body.SeriesName, body.SeriesPosition, owned: true, ct);
+
+        if (result.Error is not null)
+            return result.Conflict
+                ? Conflict(new { error = result.Error })
+                : BadRequest(new { error = result.Error });
+
+        _db.PhysicalBookUnmatched.Remove(row);
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { createdBookId = result.Book!.Id, result.Book.Title });
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     // Marks a set of books as ManuallyOwned = true with the current timestamp.
@@ -324,85 +492,10 @@ public class ImportController : ControllerBase
     private static string FormatUnmatched(PhysicalBookRow row) =>
         string.IsNullOrWhiteSpace(row.Author) ? row.Title : $"{row.Author} — {row.Title}";
 
-    // Loose key for physical-books matching: pre-replace & → and, then standard
-    // normalize, then collapse all spaces. Handles hyphens vs spaces, apostrophe
-    // possessives, ampersand vs "and", and general punctuation differences.
-    private static string PhysicalLooseKey(string? title)
-    {
-        if (string.IsNullOrWhiteSpace(title)) return "";
-        var s = AmpersandRx.Replace(title, " and ");
-        return TitleNormalizer.Normalize(s).Replace(" ", "");
-    }
-
     private sealed record PhysicalBookRow(string Author, string Title, string SeriesPos);
 
-    // In-memory index of every book in the library, keyed by both normalized
-    // title and a looser "no-spaces, & = and" key, with one TryMatch entry
-    // point shared by the initial import and the unmatched-table rematch.
-    private sealed class PhysicalMatchIndex
-    {
-        public readonly record struct BookEntry(int Id, bool ManuallyOwned, string NormAuthor);
-
-        private readonly Dictionary<string, List<BookEntry>> _byTitle;
-        private readonly Dictionary<string, List<BookEntry>> _byLoose;
-
-        private PhysicalMatchIndex(
-            Dictionary<string, List<BookEntry>> byTitle,
-            Dictionary<string, List<BookEntry>> byLoose)
-        {
-            _byTitle = byTitle;
-            _byLoose = byLoose;
-        }
-
-        public static async Task<PhysicalMatchIndex> LoadAsync(LibraryDbContext db, CancellationToken ct)
-        {
-            var raw = await db.Books.AsNoTracking()
-                .Select(b => new { b.Id, b.Title, b.NormalizedTitle, b.ManuallyOwned, AuthorName = b.Author.Name })
-                .ToListAsync(ct);
-
-            var byTitle = new Dictionary<string, List<BookEntry>>();
-            var byLoose = new Dictionary<string, List<BookEntry>>();
-
-            foreach (var b in raw)
-            {
-                if (string.IsNullOrEmpty(b.NormalizedTitle)) continue;
-                var entry = new BookEntry(b.Id, b.ManuallyOwned,
-                    TitleNormalizer.NormalizeAuthor(b.AuthorName));
-
-                Add(byTitle, b.NormalizedTitle!, entry);
-                var loose = PhysicalLooseKey(b.Title);
-                if (loose.Length > 0) Add(byLoose, loose, entry);
-            }
-            return new PhysicalMatchIndex(byTitle, byLoose);
-
-            static void Add(Dictionary<string, List<BookEntry>> map, string key, BookEntry entry)
-            {
-                if (!map.TryGetValue(key, out var list))
-                    map[key] = list = new List<BookEntry>();
-                list.Add(entry);
-            }
-        }
-
-        // Returns the best matching book for a (title, author) pair, or null when
-        // neither the standard nor the loose-key lookup finds anything.
-        public BookEntry? TryMatch(string? rawTitle, string? rawAuthor)
-        {
-            var normTitle = TitleNormalizer.Normalize(rawTitle);
-            if (normTitle.Length == 0) return null;
-
-            if (!_byTitle.TryGetValue(normTitle, out var candidates))
-            {
-                var loose = PhysicalLooseKey(rawTitle);
-                if (loose.Length == 0 || !_byLoose.TryGetValue(loose, out candidates))
-                    return null;
-            }
-
-            var normAuthor = TitleNormalizer.NormalizeAuthor(rawAuthor);
-            return candidates.FirstOrDefault(c => c.NormAuthor == normAuthor) is { Id: > 0 } match
-                ? match
-                : candidates[0];
-        }
-    }
+    // PhysicalMatchIndex now lives in Services/Import/PhysicalMatchIndex.cs so
+    // it can be unit-tested directly without spinning up a DbContext.
 
     // Parses the fixed-width layout: author (26 chars), title (44 chars), series (rest).
     // Falls back to tab-separated columns when the line contains a tab character.

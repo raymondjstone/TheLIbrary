@@ -182,6 +182,38 @@ public class AuthorMatcherTests
         Assert.Equal(2, variants.Count);
     }
 
+    // Physical-books import / rematch uses ExpandNameVariants on both the input
+    // author and the candidate Book's author so any rotation matches. These
+    // pairings cover the three real shapes inventories arrive in.
+    [Theory]
+    [InlineData("Terry Brooks", "Brooks, Terry")]    // comma flip
+    [InlineData("Terry Brooks", "Brooks Terry")]     // comma-less surname-first
+    [InlineData("Brooks, Terry", "Brooks Terry")]    // mixed
+    [InlineData("Arthur C. Clarke", "Clarke, Arthur C.")]
+    [InlineData("Arthur C. Clarke", "Clarke Arthur C")]
+    public void Variant_sets_overlap_for_real_inventory_pairs(string a, string b)
+    {
+        var ax = AuthorMatcher.ExpandNameVariants(
+            TheLibrary.Server.Services.Sync.TitleNormalizer.NormalizeAuthor(a)).ToHashSet();
+        var bx = AuthorMatcher.ExpandNameVariants(
+            TheLibrary.Server.Services.Sync.TitleNormalizer.NormalizeAuthor(b)).ToHashSet();
+        Assert.True(ax.Overlaps(bx),
+            $"Expected variants of '{a}' ({string.Join("/", ax)}) and '{b}' ({string.Join("/", bx)}) to overlap");
+    }
+
+    [Theory]
+    [InlineData("Terry Brooks", "Isaac Asimov")]      // genuinely different people
+    [InlineData("Brooks, Terry", "Brooks, Sandra")]   // same surname, different forename
+    public void Variant_sets_do_NOT_overlap_for_different_authors(string a, string b)
+    {
+        var ax = AuthorMatcher.ExpandNameVariants(
+            TheLibrary.Server.Services.Sync.TitleNormalizer.NormalizeAuthor(a)).ToHashSet();
+        var bx = AuthorMatcher.ExpandNameVariants(
+            TheLibrary.Server.Services.Sync.TitleNormalizer.NormalizeAuthor(b)).ToHashSet();
+        Assert.False(ax.Overlaps(bx),
+            $"Expected NO overlap between '{a}' ({string.Join("/", ax)}) and '{b}' ({string.Join("/", bx)})");
+    }
+
     // ---------- tracked wins over OL on index collision ----------------------
 
     [Fact]

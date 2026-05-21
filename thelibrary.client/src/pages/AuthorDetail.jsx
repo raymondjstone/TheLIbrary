@@ -3,6 +3,25 @@ import { Link, useParams } from 'react-router-dom'
 import StarRating from '../components/StarRating.jsx'
 import LinkAuthorDialog from './LinkAuthorDialog.jsx'
 import BookPreview from '../components/BookPreview.jsx'
+import AddBookDialog from './AddBookDialog.jsx'
+
+// Book title link. Real OpenLibrary works link out to their OL page;
+// manually-added books (synthetic "XX" work keys) have no OL page, so they
+// render as plain text with a small "manual" tag instead.
+function WorkTitle({ workKey, title }) {
+    if (workKey && workKey.startsWith('XX')) {
+        return (
+            <>
+                <span>{title}</span>
+                <span className="filetype-tag" style={{ marginLeft: '0.4rem' }}
+                      title="Added manually — not yet on OpenLibrary">manual</span>
+            </>
+        )
+    }
+    return (
+        <a href={`https://openlibrary.org/works/${workKey}`} target="_blank" rel="noreferrer">{title}</a>
+    )
+}
 
 // Clickable format chip (epub / pdf / txt / mobi / …). EPUB / PDF / TXT open
 // the in-browser preview modal; other formats render the same as before with
@@ -308,6 +327,7 @@ export default function AuthorDetail() {
     const [intervalDraft, setIntervalDraft] = useState('')
     const [intervalSaving, setIntervalSaving] = useState(false)
     const [showLinkDialog, setShowLinkDialog] = useState(false)
+    const [showAddBook, setShowAddBook] = useState(false)
     const [unlinking, setUnlinking] = useState(false)
     const [suggestionsByFile, setSuggestionsByFile] = useState({})  // { fileId: { inferredTitle, candidates } }
     const [bulkBusy, setBulkBusy] = useState(false)
@@ -940,6 +960,10 @@ export default function AuthorDetail() {
                 <button onClick={refresh} disabled={refreshing}>
                     {refreshing ? 'Refreshing…' : 'Refresh from OpenLibrary'}
                 </button>
+                <button onClick={() => setShowAddBook(true)}
+                        title="Catalogue a book OpenLibrary doesn't list yet">
+                    + Add book
+                </button>
                 {rmConnected && (
                     <button
                         onClick={sendAllUnread}
@@ -990,7 +1014,7 @@ export default function AuthorDetail() {
                                     {clusterIdx === 0 ? `#${position}` : <span style={{ opacity: 0.35 }}>#{position}</span>}
                                 </td>}
                                 <td>
-                                    <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{b.title}</a>
+                                    <WorkTitle workKey={b.openLibraryWorkKey} title={b.title} />
                                     {editingSeriesId === b.id ? (
                                         <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
                                             <SeriesNamePicker
@@ -1093,7 +1117,7 @@ export default function AuthorDetail() {
                                     {series && <td></td>}
                                     <td style={{ paddingLeft: '2rem' }}>
                                         <span className="subtle" style={{ marginRight: '0.3rem' }}>↳</span>
-                                        <a href={`https://openlibrary.org/works/${ed.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{ed.title}</a>
+                                        <WorkTitle workKey={ed.openLibraryWorkKey} title={ed.title} />
                                         {!ed.owned && nzbSites.length > 0 && (
                                             <div style={{ marginTop: '0.2rem' }}>
                                                 {nzbLinks(ed.title)}
@@ -1156,7 +1180,7 @@ export default function AuthorDetail() {
                                 </td>
                                 {series && <td></td>}
                                 <td>
-                                    <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{b.title}</a>
+                                    <WorkTitle workKey={b.openLibraryWorkKey} title={b.title} />
                                     {editingSeriesId === b.id ? (
                                         <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
                                             <SeriesNamePicker
@@ -1216,7 +1240,7 @@ export default function AuthorDetail() {
                                     {series && <td></td>}
                                     <td style={{ paddingLeft: '2rem' }}>
                                         <span className="subtle" style={{ marginRight: '0.3rem' }}>↳</span>
-                                        <a href={`https://openlibrary.org/works/${ed.openLibraryWorkKey}`} target="_blank" rel="noreferrer">{ed.title}</a>
+                                        <WorkTitle workKey={ed.openLibraryWorkKey} title={ed.title} />
                                         {!ed.owned && nzbSites.length > 0 && <div style={{ marginTop: '0.2rem' }}>{nzbLinks(ed.title)}</div>}
                                         {ed.hasLocalFiles
                                             ? <div className="subtle">
@@ -1274,6 +1298,15 @@ export default function AuthorDetail() {
                     format={preview.format}
                     title={preview.title}
                     onClose={() => setPreview(null)} />
+            )}
+
+            {showAddBook && (
+                <AddBookDialog
+                    authorId={Number(id)}
+                    authorName={data.name}
+                    knownSeries={knownSeries}
+                    onAdded={(updated) => { setData(updated); setShowAddBook(false) }}
+                    onClose={() => setShowAddBook(false)} />
             )}
         </section>
     )

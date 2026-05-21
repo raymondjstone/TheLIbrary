@@ -1019,7 +1019,7 @@ public sealed class SyncService
 
                 int earlyCount = 0;
                 var enqueuedJobs = JobStorage.Current.GetMonitoringApi().GetStatistics().Enqueued;
-                if (enqueuedJobs < 5)
+                if (enqueuedJobs < 5 && authorIds.Count < MinimumBatch)
                 {
                     var extra = await db.Authors
                         .Where(a => a.NextFetchAt > now)

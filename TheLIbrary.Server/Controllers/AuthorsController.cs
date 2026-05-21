@@ -18,17 +18,20 @@ public class AuthorsController : ControllerBase
     private readonly OpenLibraryClient _ol;
     private readonly AuthorRefresher _refresher;
     private readonly BackgroundTaskCoordinator _coordinator;
+    private readonly ManualBookService _manualBooks;
 
     public AuthorsController(
         LibraryDbContext db,
         OpenLibraryClient ol,
         AuthorRefresher refresher,
-        BackgroundTaskCoordinator coordinator)
+        BackgroundTaskCoordinator coordinator,
+        ManualBookService manualBooks)
     {
         _db = db;
         _ol = ol;
         _refresher = refresher;
         _coordinator = coordinator;
+        _manualBooks = manualBooks;
     }
 
     public sealed record AuthorListItem(
@@ -839,6 +842,33 @@ public class AuthorsController : ControllerBase
             author.Id, author.Name, author.CalibreFolderName, author.OpenLibraryKey,
             author.Status.ToString(), author.ExclusionReason,
             author.Priority, 0, 0, 0, 0, author.LastSyncedAt));
+    }
+
+    public sealed record AddBookRequest(
+        string Title,
+        int? FirstPublishYear,
+        string? SeriesName,
+        string? SeriesPosition,
+        bool Owned);
+
+    // Catalogues a book by hand — a work OpenLibrary doesn't list yet. It gets
+    // a synthetic "XX" work key in place of an OL one; a later works-refresh
+    // promotes the row in place (keeping its Book.Id) if OL picks the title
+    // up. Books can only be created against an existing author.
+    [HttpPost("{id:int}/books")]
+    public async Task<ActionResult<AuthorDetail>> AddBook(
+        int id, [FromBody] AddBookRequest body, CancellationToken ct)
+    {
+        var result = await _manualBooks.CreateAsync(
+            id, body.Title, body.FirstPublishYear,
+            body.SeriesName, body.SeriesPosition, body.Owned, ct);
+
+        if (result.Error is not null)
+            return result.Conflict
+                ? Conflict(new { error = result.Error })
+                : BadRequest(new { error = result.Error });
+
+        return await Get(id, ct);
     }
 
     // Updates CalibreFolderName for every member of `author`'s collision group

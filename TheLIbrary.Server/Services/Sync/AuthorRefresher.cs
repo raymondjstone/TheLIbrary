@@ -146,6 +146,20 @@ public sealed class AuthorRefresher
             b => b.OpenLibraryWorkKey, b => b, StringComparer.OrdinalIgnoreCase);
         var seen = new HashSet<string>(existingByKey.Keys, StringComparer.OrdinalIgnoreCase);
 
+        // Books the user catalogued by hand (synthetic "XX" keys) that OL might
+        // now list. Keyed by normalized title: a fetched OL work with a
+        // matching title promotes the manual row in place — its Book.Id is
+        // kept, so the row's series link, local files, read status and
+        // ownership all carry over untouched.
+        var manualBooks = await _db.Books
+            .Where(b => b.AuthorId == author.Id
+                     && b.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix))
+            .ToListAsync(ct);
+        var manualByTitle = manualBooks
+            .Where(b => !string.IsNullOrEmpty(b.NormalizedTitle))
+            .GroupBy(b => b.NormalizedTitle!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
         // Starred authors (Priority >= 1) bypass the English-only filter so
         // works in any language are retrieved.
         var worksStream = author.Priority >= 1
@@ -153,6 +167,7 @@ public sealed class AuthorRefresher
             : _ol.GetEnglishWorksAsync(author.OpenLibraryKey!, ct);
 
         int fetched = 0;
+        int promoted = 0;
         await foreach (var doc in worksStream)
         {
             ct.ThrowIfCancellationRequested();
@@ -200,6 +215,28 @@ public sealed class AuthorRefresher
                 continue;
             }
 
+            // If the user already catalogued this title by hand, promote that
+            // row to the real OL work instead of inserting a duplicate. The
+            // OL-sourced fields are refreshed; the series, position, read
+            // status and ownership the user set are left as they were.
+            var normTitle = TitleNormalizer.Normalize(doc.Title);
+            if (manualByTitle.Remove(normTitle, out var manual))
+            {
+                manual.OpenLibraryWorkKey = workKey;
+                manual.Title = doc.Title!;
+                manual.NormalizedTitle = normTitle;
+                if (doc.FirstPublishYear is not null) manual.FirstPublishYear = doc.FirstPublishYear;
+                if (doc.CoverId is not null) manual.CoverId = doc.CoverId;
+                if (string.IsNullOrEmpty(manual.Subjects)) manual.Subjects = BuildSubjects(doc.Subject);
+                if (manual.SeriesId is null && seriesName is not null)
+                    manual.SeriesId = (await FindOrCreateSeriesAsync(seriesName, author.Id, ct)).Id;
+                if (manual.SeriesPosition is null && seriesPos is not null)
+                    manual.SeriesPosition = seriesPos;
+                promoted++;
+                onMessage?.Invoke($"Linked manual entry \"{manual.Title}\" to OpenLibrary work {workKey}");
+                continue;
+            }
+
             int? seriesId = null;
             if (seriesName is not null)
             {
@@ -211,7 +248,7 @@ public sealed class AuthorRefresher
             {
                 OpenLibraryWorkKey = workKey,
                 Title = doc.Title!,
-                NormalizedTitle = TitleNormalizer.Normalize(doc.Title),
+                NormalizedTitle = normTitle,
                 FirstPublishYear = doc.FirstPublishYear,
                 CoverId = doc.CoverId,
                 AuthorId = author.Id,
@@ -223,6 +260,11 @@ public sealed class AuthorRefresher
             if (fetched % 50 == 0) await _db.SaveChangesAsync(ct);
         }
         await _db.SaveChangesAsync(ct);
+
+        if (promoted > 0)
+            _log.LogInformation(
+                "Promoted {Count} manually-added book(s) to OpenLibrary works for '{Name}'",
+                promoted, author.Name);
 
         // Exclusion rules evaluated over all stored books for idempotency.
         var years = await _db.Books

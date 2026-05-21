@@ -36,6 +36,7 @@ builder.Services.AddScoped<TheLibrary.Server.Services.Incoming.IncomingProcessor
 builder.Services.AddSingleton<TheLibrary.Server.Services.Incoming.IncomingService>();
 builder.Services.AddScoped<TheLibrary.Server.Services.AuthorUpdates.AuthorUpdateProcessor>();
 builder.Services.AddScoped<TheLibrary.Server.Services.Sync.AuthorRefresher>();
+builder.Services.AddScoped<TheLibrary.Server.Services.Sync.ManualBookService>();
 builder.Services.Configure<TheLibrary.Server.Services.Remarkable.RemarkableOptions>(
     builder.Configuration.GetSection("Remarkable"));
 builder.Services.Configure<TheLibrary.Server.Services.Calibre.CalibreOptions>(
