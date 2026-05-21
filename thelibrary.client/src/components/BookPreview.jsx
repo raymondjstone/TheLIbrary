@@ -14,8 +14,14 @@ export default function BookPreview({ fileId, format, onClose, title }) {
     const f = (format || '').toLowerCase()
     return (
         <div className="modal-backdrop" onClick={onClose}>
+            {/*
+              * The modal needs a CONCRETE height — epub.js sizes its inner
+              * iframe to its container's pixel dimensions on first render,
+              * and a `maxHeight`-only container with no content collapses
+              * to a few pixels, producing a blank pane. Pin to 85vh.
+              */}
             <div className="modal"
-                 style={{ width: 'min(900px, 90vw)', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}
+                 style={{ width: 'min(900px, 90vw)', height: '85vh', display: 'flex', flexDirection: 'column' }}
                  onClick={e => e.stopPropagation()}>
                 <div className="modal-header">
                     <h3 style={{ margin: 0 }}>
@@ -39,44 +45,91 @@ export default function BookPreview({ fileId, format, onClose, title }) {
 function EpubPane({ fileId }) {
     const ref = useRef(null)
     const renditionRef = useRef(null)
+    const bookRef = useRef(null)
     const [error, setError] = useState(null)
+    const [loading, setLoading] = useState(true)
 
     useEffect(() => {
-        if (!ref.current) return
-        const url = `/api/files/${fileId}/preview?format=epub`
-        // epub.js accepts a URL; it fetches with byte-range requests so large
-        // EPUBs don't slurp into RAM. The book stays open until we explicitly
-        // destroy() on unmount.
-        let book
-        try {
-            book = ePub(url)
-            const rendition = book.renderTo(ref.current, {
-                width: '100%',
-                height: '100%',
-                flow: 'paginated',
-                spread: 'auto',
+        let cancelled = false
+        const container = ref.current
+        if (!container) return
+
+        // Fetch as an ArrayBuffer first instead of giving epub.js the URL.
+        // This surfaces HTTP errors (404 / 403 / 415) cleanly via fetch's
+        // promise, and avoids epub.js's range-request quirks against our
+        // ASP.NET endpoint (which silently render as a blank pane otherwise).
+        setLoading(true)
+        setError(null)
+        fetch(`/api/files/${fileId}/preview?format=epub`)
+            .then(async r => {
+                if (!r.ok) {
+                    const body = await r.text().catch(() => '')
+                    throw new Error(`${r.status} ${r.statusText}${body ? ' — ' + body : ''}`)
+                }
+                return r.arrayBuffer()
             })
-            renditionRef.current = rendition
-            rendition.display().catch(err => setError(String(err.message || err)))
-        } catch (err) {
-            setError(String(err.message || err))
-        }
+            .then(async buf => {
+                if (cancelled) return
+                const book = ePub(buf)
+                bookRef.current = book
+
+                // Wait one frame so the container has its final flex-laid-out
+                // size — epub.js measures it on renderTo() and won't recover
+                // if it sees 0×0.
+                await new Promise(resolve => requestAnimationFrame(resolve))
+                if (cancelled) return
+
+                const rendition = book.renderTo(container, {
+                    width: '100%',
+                    height: '100%',
+                    flow: 'paginated',
+                    spread: 'none',          // single page; "auto" can collapse on narrow modal
+                    allowScriptedContent: false,
+                })
+                renditionRef.current = rendition
+
+                // book.ready resolves once the OPF spine has loaded — only
+                // then is display() guaranteed to find a section.
+                await book.ready
+                if (cancelled) return
+                await rendition.display()
+                if (!cancelled) setLoading(false)
+            })
+            .catch(err => {
+                if (!cancelled) {
+                    setError(String(err.message || err))
+                    setLoading(false)
+                }
+            })
+
         return () => {
+            cancelled = true
             try { renditionRef.current?.destroy?.() } catch { /* best effort */ }
-            try { book?.destroy?.() } catch { /* best effort */ }
+            try { bookRef.current?.destroy?.() } catch { /* best effort */ }
         }
     }, [fileId])
 
     const next = () => renditionRef.current?.next?.()
     const prev = () => renditionRef.current?.prev?.()
 
-    if (error) return <p className="error" style={{ padding: '1rem' }}>EPUB failed to render: {error}</p>
     return (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-            <div ref={ref} style={{ flex: 1, minHeight: 0, background: 'var(--card)' }} />
+            <div style={{ flex: 1, position: 'relative', minHeight: 0, background: 'var(--card)' }}>
+                <div ref={ref} style={{ position: 'absolute', inset: 0 }} />
+                {loading && !error && (
+                    <p className="subtle" style={{ position: 'absolute', top: '1rem', left: '1rem' }}>
+                        Loading EPUB…
+                    </p>
+                )}
+                {error && (
+                    <p className="error" style={{ position: 'absolute', top: '1rem', left: '1rem', right: '1rem' }}>
+                        EPUB failed to render: {error}
+                    </p>
+                )}
+            </div>
             <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center', padding: '0.4rem', borderTop: '1px solid var(--border)' }}>
-                <button className="btn-ghost" onClick={prev}>← Prev</button>
-                <button className="btn-ghost" onClick={next}>Next →</button>
+                <button className="btn-ghost" onClick={prev} disabled={loading || !!error}>← Prev</button>
+                <button className="btn-ghost" onClick={next} disabled={loading || !!error}>Next →</button>
             </div>
         </div>
     )

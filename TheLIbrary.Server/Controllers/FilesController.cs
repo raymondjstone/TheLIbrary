@@ -52,13 +52,21 @@ public class FilesController : ControllerBase
         if (!System.IO.File.Exists(resolution.Ok.FullPath))
             return NotFound(new { error = "File no longer exists on disk" });
 
+        // Explicitly set `inline` disposition so the browser's PDF viewer
+        // renders the file in an <iframe> instead of triggering a download.
+        // PhysicalFile() with a fileName argument sets `attachment` by default,
+        // which is why an earlier version of this endpoint kept downloading
+        // the PDF rather than previewing it. We still expose the filename so
+        // the browser's "save as" dialog picks a sensible default.
+        var safeName = resolution.Ok.FileName.Replace("\"", "");
+        Response.Headers["Content-Disposition"] = $"inline; filename=\"{safeName}\"";
+
         // EnableRangeProcessing lets the browser stream large EPUB/PDFs without
         // pulling the whole file into memory — epub.js + the native PDF viewer
         // both make byte-range requests.
         return PhysicalFile(
             resolution.Ok.FullPath,
             resolution.Ok.ContentType,
-            resolution.Ok.FileName,
             enableRangeProcessing: true);
     }
 }
