@@ -53,6 +53,13 @@ dist-ssr/
 # OS
 Thumbs.db
 .DS_Store
-/TheLIbrary.Server/Properties/PublishProfiles/galcomp.pubxml
-/TheLIbrary.Server/Properties/PublishProfiles/galcomp1.pubxml
 /publish.ps1
+
+# Publish profiles — deployment-specific (server names, deploy paths,
+# .pubxml.user credentials). Not committed.
+/TheLIbrary.Server/Properties/PublishProfiles/
+
+# Claude Code per-machine settings — should never be tracked; the local
+# permission allowlist can capture full command lines.
+.claude/settings.local.json
+/.claude/settings.local.json

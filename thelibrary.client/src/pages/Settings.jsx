@@ -27,6 +27,9 @@ export default function Settings() {
     const [nzbSites, setNzbSites] = useState([])
     const [nzbNew, setNzbNew] = useState({ name: '', urlTemplate: '', order: 99, active: true })
     const [nzbEdits, setNzbEdits] = useState({})    // id → draft object
+    const [olIdentity, setOlIdentity] = useState(null)
+    const [olEdit, setOlEdit] = useState({ appName: '', contactEmail: '' })
+    const [olSaving, setOlSaving] = useState(false)
 
     const load = async () => {
         // Independent loads — a failing endpoint (e.g. pending migration) must
@@ -75,6 +78,14 @@ export default function Settings() {
             for (const s of sites) drafts[s.id] = { ...s }
             setNzbEdits(drafts)
         } catch (e) { setNzbSites([]); setError(prev => prev ?? String(e)) }
+
+        try {
+            const r = await fetch('/api/settings/openlibrary')
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setOlIdentity(body)
+            setOlEdit({ appName: body.appName ?? '', contactEmail: body.contactEmail ?? '' })
+        } catch (e) { setError(prev => prev ?? String(e)) }
     }
 
     useEffect(() => { load() }, [])
@@ -231,6 +242,26 @@ export default function Settings() {
         setIncoming(await r.json())
     }
 
+    const saveOpenLibrary = async () => {
+        setError(null)
+        setOlSaving(true)
+        try {
+            const r = await fetch('/api/settings/openlibrary', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(olEdit),
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setOlIdentity(body)
+            setOlEdit({ appName: body.appName ?? '', contactEmail: body.contactEmail ?? '' })
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setOlSaving(false)
+        }
+    }
+
     const updateRow = (id, patch) => {
         setLocations(locations.map(l => l.id === id ? { ...l, ...patch } : l))
     }
@@ -354,6 +385,39 @@ export default function Settings() {
                         : 'not configured'}
                 </span>
             </div>
+
+            <h2 style={{ marginTop: '1.5rem' }}>OpenLibrary identity</h2>
+            <p className="subtle">
+                Sent as the <code>User-Agent</code> on every OpenLibrary API call.
+                OpenLibrary asks frequent API users to identify their application and
+                give a contact email; doing so also unlocks their 3 requests/sec tier
+                (anonymous callers get 1/sec). Stored in the database, not in any file.
+                {' '}<strong>Use your own — never reuse another deployment's app name or
+                email address.</strong>
+            </p>
+            <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+                <input
+                    style={{ minWidth: 320 }}
+                    value={olEdit.appName}
+                    onChange={e => setOlEdit(p => ({ ...p, appName: e.target.value }))}
+                    placeholder="App name or repo URL" />
+                <input
+                    style={{ minWidth: 240 }}
+                    value={olEdit.contactEmail}
+                    onChange={e => setOlEdit(p => ({ ...p, contactEmail: e.target.value }))}
+                    placeholder="Contact email" />
+                <button onClick={saveOpenLibrary} disabled={olSaving}>
+                    {olSaving ? 'Saving…' : 'Save'}
+                </button>
+                <span className="subtle">
+                    {olIdentity?.identified ? 'identified · 3 req/sec' : 'anonymous · 1 req/sec'}
+                </span>
+            </div>
+            {olIdentity?.userAgent && (
+                <p className="subtle" style={{ fontFamily: 'monospace', fontSize: '0.85em' }}>
+                    User-Agent: {olIdentity.userAgent}
+                </p>
+            )}
 
             <h2 style={{ marginTop: '1.5rem' }}>reMarkable sync</h2>
             <p className="subtle">

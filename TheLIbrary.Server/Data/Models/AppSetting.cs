@@ -27,4 +27,10 @@ public static class AppSettingKeys
     // JSON blob of { jobId: { cron, enabled } } for the four recurring tasks.
     // Missing entries fall back to built-in defaults (disabled, daily).
     public const string Schedules = "Schedules";
+
+    // OpenLibrary User-Agent identity, set from the Settings page. The app name
+    // and contact email are sent on every OpenLibrary API call; a contact email
+    // also unlocks OpenLibrary's 3 req/sec identified tier.
+    public const string OpenLibraryAppName = "OpenLibraryAppName";
+    public const string OpenLibraryContactEmail = "OpenLibraryContactEmail";
 }

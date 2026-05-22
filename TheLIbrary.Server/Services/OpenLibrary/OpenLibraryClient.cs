@@ -9,19 +9,21 @@ public sealed class OpenLibraryClient
 {
     private readonly HttpClient _http;
     private readonly OpenLibraryRateLimiter _limiter;
+    private readonly OpenLibrarySettings _settings;
     private readonly ILogger<OpenLibraryClient> _log;
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
-    public OpenLibraryClient(HttpClient http, OpenLibraryRateLimiter limiter, ILogger<OpenLibraryClient> log)
+    public OpenLibraryClient(
+        HttpClient http, OpenLibraryRateLimiter limiter,
+        OpenLibrarySettings settings, ILogger<OpenLibraryClient> log)
     {
         _http = http;
         _limiter = limiter;
+        _settings = settings;
         _log = log;
         if (_http.BaseAddress is null)
             _http.BaseAddress = new Uri("https://openlibrary.org/");
-        if (!_http.DefaultRequestHeaders.UserAgent.Any())
-            _http.DefaultRequestHeaders.UserAgent.ParseAdd("TheLibrary/1.0 (self-hosted collection manager)");
     }
 
     public Task<AuthorSearchResponse?> SearchAuthorsAsync(string name, CancellationToken ct)
@@ -91,10 +93,25 @@ public sealed class OpenLibraryClient
             {
                 return await _limiter.RunAsync(async () =>
                 {
-                    using var resp = await _http.GetAsync(relativeUrl, ct);
+                    // The User-Agent is set per request so an edit in the
+                    // Settings UI takes effect on the very next call. It's
+                    // added without validation because the configured app
+                    // name may be a URL — not a legal product token, but fine
+                    // on the wire and exactly what OpenLibrary wants for contact.
+                    using var request = new HttpRequestMessage(HttpMethod.Get, relativeUrl);
+                    request.Headers.TryAddWithoutValidation("User-Agent", _settings.UserAgent);
+                    using var resp = await _http.SendAsync(request, ct);
                     if (resp.StatusCode == HttpStatusCode.NotFound) return default;
                     if ((int)resp.StatusCode == 429 || (int)resp.StatusCode >= 500)
                     {
+                        // A 429 means OpenLibrary is rate-limiting us — drop to
+                        // the 1 req/sec anonymous pace for the rest of the run.
+                        if ((int)resp.StatusCode == 429 && !_limiter.IsDemoted)
+                        {
+                            _log.LogWarning(
+                                "OpenLibrary rate-limited the app (429) — dropping to 1 req/sec until restart");
+                            _limiter.Demote();
+                        }
                         var retryAfter = resp.Headers.RetryAfter?.Delta
                                          ?? TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, attempt)));
                         _log.LogWarning("OpenLibrary {Status} for {Url} — waiting {Delay}s (attempt {Attempt})",

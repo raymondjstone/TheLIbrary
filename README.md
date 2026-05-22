@@ -39,6 +39,7 @@ from a drop folder and re-running matching against previously-unmatched files.
 | Series | `/series` | Hierarchical series tree with owned/total progress bars; create new series; inline edit of name, primary author, additional authors, parent series, and reading order position; deep-linkable via `?q=SeriesName` |
 | Stats | `/stats` | KPI cards, books-read-by-year chart, top genres, per-author coverage |
 | Duplicates | `/duplicates` | Books matched to more than one local file folder |
+| Manual Books | `/manual-books` | Every manually-added book (works not on OpenLibrary), with inline edit and delete |
 | Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket (with one-click "Try matching all" against the current watchlist) |
 | Unmatched physical | `/physical-unmatched` | Editable list of physical-books-import rows that couldn't be matched; "Re-run matching" re-tries the whole list against the current library |
 | Sync | `/sync` | Live sync dashboard with phase tracking and progress |
@@ -90,9 +91,82 @@ bucket for reprocessing. The force-match accepts books owned by any non-pen-name
 linked child author too, so a canonical's view can claim its duplicates' works
 without re-parenting them in the DB first.
 
-OpenLibrary asks for no more than ~1 request per second. A single shared
-`OpenLibraryRateLimiter` serializes all outbound calls with a 1.1s minimum gap,
-and the client retries on `429`/`5xx` honoring `Retry-After`.
+See [OpenLibrary integration](#openlibrary-integration) for what the app
+calls OpenLibrary for, how it identifies itself, and how calls are rate-limited.
+
+## OpenLibrary integration
+
+[OpenLibrary](https://openlibrary.org/developers/api) is the catalogue of
+record — every tracked author and all of their works originate from it. The
+app talks to these OpenLibrary endpoints:
+
+| Used for | Endpoint | When it fires |
+|----------|----------|---------------|
+| Author search | `search/authors.json?q=` | Adding an author from the UI, the Untracked page's "Suggest from OL" button, and resolving an unresolved watchlist name |
+| Works fetch | `search.json?author_key=…&language=eng` | Every per-author refresh — one row per *work*, carrying `subject` (genre) and `series` |
+| Author detail / bio | `authors/{key}.json` | The first refresh after an author's OL key resolves, to store their bio |
+| Author-merge changelog | OpenLibrary's daily merge-authors change log | The `author-updates` job — rewrites local OL keys when OpenLibrary folds two author records into one |
+| Author bulk dump | `ol_dump_authors_latest.txt.gz` | The `seed` job — fills the local `OpenLibraryAuthor` catalogue so author lookups are instant and offline |
+| Cover images | `covers.openlibrary.org` CDN | Loaded directly by the browser and by OPDS readers — never proxied through the server |
+
+Two things deliberately make **no** API calls: the `same-name-authors` job and
+the offline portion of author lookups both read the locally-seeded
+`OpenLibraryAuthor` catalogue instead of hitting the network.
+
+### Identifying the application (`User-Agent`)
+
+OpenLibrary asks any application making frequent API use to send a `User-Agent`
+header that names the application and gives a contact address, so they can
+reach the operator about request volume. Identified callers also get a
+**3× higher rate limit**.
+
+The header is built from two values — an application name and a contact
+email — producing `User-Agent: <AppName> (<ContactEmail>)`.
+
+> ⚠️ **If you run this app yourself you MUST set your own app name and contact
+> email — never reuse anyone else's.** The header is a contact channel:
+> OpenLibrary uses it to reach *the operator of that deployment* about its
+> traffic. Sending another person's name and email means **they** get
+> contacted about **your** requests. There is deliberately no shared default
+> identity, and nothing identifying is shipped in the repo.
+
+Set both on the **Settings** page under **OpenLibrary identity**. They're
+stored in the database (the `OpenLibraryAppName` / `OpenLibraryContactEmail`
+`AppSetting` rows) — never in `appsettings.json` or any other file in the
+repo — and an edit takes effect on the very next API call, with no restart.
+
+Until you set them, the app sends a generic `User-Agent: TheLibrary` and runs
+at the anonymous 1 req/sec tier. The app name may be a URL — it's sent with
+`TryAddWithoutValidation`, so a value that isn't a strict `User-Agent` product
+token still goes out verbatim. With a contact email set the deployment is
+identified and gets the 3 req/sec tier; with it blank it stays anonymous at
+1 req/sec.
+
+### Rate limiting
+
+A single shared `OpenLibraryRateLimiter` serializes **every** outbound
+OpenLibrary call — author searches, works fetches, bio lookups and the
+author-update changelog all funnel through the one instance — and enforces a
+minimum gap between consecutive calls. The gap is chosen once at startup from
+whether a contact email is configured:
+
+| Tier | Condition | OpenLibrary ceiling | Enforced gap | Effective rate |
+|------|-----------|---------------------|--------------|----------------|
+| Identified | `ContactEmail` is set   | 3 requests/sec | 350 ms  | ~2.85 req/sec |
+| Anonymous  | `ContactEmail` is blank | 1 request/sec  | 1100 ms | ~0.9 req/sec  |
+
+The enforced gap sits just under the applicable ceiling so timing jitter can't
+tip a burst over the limit, and because everything shares the one limiter a
+long author-refresh sweep and an interactive search can't collectively exceed
+the rate. The client also retries `429` and `5xx` responses, honoring any
+`Retry-After` header.
+
+**Self-demotion on 429.** If OpenLibrary ever returns an HTTP 429
+(rate-limited) despite the pacing, the limiter immediately **demotes itself**
+to the 1100 ms anonymous gap for the rest of the process — it returns to the
+configured (identified) pace only on the next app restart. Clearing the
+contact email has the same effect from the start, so either way you can't
+keep hammering OpenLibrary above the rate it's willing to serve.
 
 ## Genres and subjects
 
@@ -123,6 +197,33 @@ To bulk-import reading history, use **Goodreads import** on the Settings page
 Any unowned book can be starred as **Wanted** (☆ / ★ toggle on the Missing Works
 page and the author detail page). Wanted books sort to the top of Missing Works.
 Goodreads "to-read" shelf items are also set as wanted during import.
+
+## Manually-added books
+
+Not every book is on OpenLibrary — new releases especially. The **+ Add book**
+button on an author's detail page (and the "add as a new book" action when
+[resolving an unmatched physical row](#unmatched-persistence-and-rematching))
+catalogues one by hand.
+
+A manual book behaves like any other — series, read status, ownership, cover —
+but instead of a real OpenLibrary work key (`OL…W`) it gets a synthetic one
+shaped `XX` + 8 digits + `W`. That marks it as not-yet-on-OpenLibrary: the UI
+shows a small **manual** tag in place of the OpenLibrary link, and the OPDS
+feed omits the (would-be-dead) OpenLibrary link for it.
+
+When a later author works-refresh fetches an OpenLibrary work whose title
+matches a manual book — exactly, or as a single clear ≥ 0.92 fuzzy match — the
+manual row is **promoted in place**: it keeps its `Book.Id` (so its series
+link, local files, read status and ownership all carry over) and only the work
+key and OL-sourced fields (title, year, cover, subjects) are rewritten. An
+ambiguous match promotes nothing, leaving a harmless duplicate to merge by hand.
+
+The **Manual Books** page (`/manual-books`) lists every manual book across all
+authors for review, edit, or deletion. Any book — manual or OpenLibrary — can
+also be edited (title, year, author reassignment) or deleted from the author
+page; deleting a book leaves its local files as unmatched rather than removing
+them. Manual books have no OpenLibrary cover, so the edit dialog lets you paste
+a cover image URL or pick one from a Google Books search.
 
 ## Local file → book matching
 
@@ -425,6 +526,18 @@ The maintenance job does the heavy lifting on legacy data:
 The job runs through `BackgroundTaskCoordinator` like every other organiser,
 so it can't overlap with sync, incoming, or series-organize runs.
 
+## Finding split authors
+
+OpenLibrary frequently splits one real author across several author records.
+The `same-name-authors` scheduled job (every 6 hours by default) finds the
+rest: for every author already on your watchlist it looks up the locally-seeded
+`OpenLibraryAuthor` catalogue for records sharing the exact same normalised
+name and adds any that aren't tracked yet, as `Pending` (a later refresh fills
+in their works). It's a pure local DB lookup — **no OpenLibrary API calls** —
+and skips blacklisted names plus any name so generic it matches more than 25
+catalogue records. Review the additions and link them as duplicates or pen
+names from each author's detail page.
+
 ## Series organizer
 
 The series organizer enforces a canonical flat-file layout across every tracked
@@ -504,9 +617,11 @@ page and the importer flips `Book.ManuallyOwned = true` on every row it can
 match against your tracked library. Books already owned (in any sense — file
 or physical) are counted but not updated. Empty-title rows are skipped.
 
-The expected format is one book per line, either tab-separated (`Author<TAB>Title<TAB>Series+pos`)
-or fixed-width with the columns at character offsets 0 (Author, 26 chars),
-26 (Title, 44 chars), and 70+ (Series + position):
+The expected format is one book per line, either tab-separated
+(`Author<TAB>Title<TAB>Series+pos[<TAB>ISBN]`) or fixed-width with the columns
+at character offsets 0 (Author, 26 chars), 26 (Title, 44 chars), and 70+
+(Series + position). An **ISBN** is captured when present — a dedicated 4th
+tab column, or any ISBN-10/13-shaped token anywhere on the line:
 
 ```
 Abbey, Lynn              Sanctuary                            Thieves' World 4
@@ -514,33 +629,45 @@ Adams, Douglas           The Hitchhiker's Guide to the Galaxy H2G2 1
 …
 ```
 
-Matching runs two passes per row so format quirks across catalogues don't
-sabotage the match:
+Matching tries the most reliable key first:
 
-1. **Standard normalised title** — same pipeline as the rest of the app
+1. **ISBN** — an exact ISBN match is definitive; the row's title and author
+   are ignored when it hits.
+2. **Standard normalised title** — same pipeline as the rest of the app
    (`The Hobbit (1)` → `hobbit`).
-2. **Loose key** — replaces `&` with `and`, normalises, then collapses all
+3. **Loose key** — replaces `&` with `and`, normalises, then collapses all
    spaces. Catches `Rock & Roll` vs `Rock and Roll`, hyphen-vs-space
    differences, possessive apostrophes, and general punctuation noise.
 
-Author is used as a tiebreaker when multiple books share the same normalised
-title. The two-pass strategy is shared with the rematch endpoint via the
-private `PhysicalMatchIndex` so both code paths apply the same rules.
+A title hit (passes 2–3) only counts when the **author also matches** — two
+different authors can share a title, so a title-only hit is left for manual
+resolution rather than silently marking the wrong book owned. The match logic
+lives in `PhysicalMatchIndex`, shared by the initial import and the rematch so
+both apply identical rules.
 
 ### Unmatched persistence and rematching
 
-Rows that fail both passes are persisted to the `PhysicalBookUnmatched` table
+Rows that match nothing are persisted to the `PhysicalBookUnmatched` table
 (deduped by author+title, case-insensitive). The **Unmatched physical** page
-(`/physical-unmatched`) lets you:
+(`/physical-unmatched`) is where you clear them:
 
-- Edit any row's Author / Title / Series-position inline
-- Delete rows you don't care about
-- Re-run the whole pipeline against your current library with one click —
-  matched rows mark their book owned and disappear from the unmatched table;
-  rows that still don't match stay put for further editing
+- **Edit** any row's Author / Title / Series-position / ISBN inline.
+- **Delete** rows you don't care about.
+- **Resolve** a row through an inline panel: it auto-selects a likely tracked
+  author (an exact name — including Calibre's "Surname, Forename" order —
+  resolves with no typing), then either matches the row to one of that
+  author's books (with fuzzy title suggestions) or **adds it as a new book**
+  under that author. Only top-level authors and pen names are offered as
+  targets — a non-pen-name child's books fold into its canonical.
+- **Re-run matching** retries the whole list against the current library in
+  one transaction — an exact (ISBN / title+author) hit *or* a high-confidence
+  (≥ 0.9) fuzzy title match marks the book owned and clears the row.
+- **Preview matches** is the same as a dry run: it lists every proposed
+  (row → book) pairing with checkboxes so you review and apply only the ones
+  you want.
 
-This makes the import workflow non-destructive: nothing is silently lost, and
-the unmatched list shrinks every time you fix a row or add the missing book.
+This keeps the import workflow non-destructive: nothing is silently lost, and
+the unmatched list shrinks every time you fix, resolve, or add a row.
 
 ## OPDS catalog
 
@@ -625,6 +752,7 @@ on every startup.
 | `organize-series` | `0 1,13 * * *` | Enforce flat-file layout, move files to series folders |
 | `unzip` | `0 0 * * *` | Extract `.zip`/`.rar` archives to incoming folder |
 | `disambiguate-folders` | `0 11 * * *` | Split shared-name author folders into per-OL-key folders; route files by title match |
+| `same-name-authors` | `0 */6 * * *` | Add OpenLibrary authors that share a name with one you already track — a pure DB lookup against the seeded `OpenLibraryAuthor` catalogue, no API calls |
 
 Hangfire runs with `WorkerCount=1`, and all background work also passes through
 a single `BackgroundTaskCoordinator`, so a manual UI run and a cron tick can't
@@ -774,6 +902,12 @@ Alternative for production deployments — set the environment variable
 `ConnectionStrings__Library` (double-underscore, escapes the `:`) and skip the
 user-secret command.
 
+The app's **OpenLibrary identity** (a `User-Agent` app name + contact email) is
+not a secret-file setting — you set it on the **Settings** page after first
+launch, and it's stored in the database. It's optional (the app runs fine
+anonymously at 1 req/sec) but recommended; see
+[Identifying the application](#identifying-the-application-user-agent).
+
 ### 3. Configure library locations
 
 Library locations and the incoming drop folder are stored in the database and
@@ -799,7 +933,7 @@ dotnet run
 Expected first-boot output:
 - EF Core applies all pending migrations against the empty database.
 - Hangfire registers its recurring jobs (all disabled by default except
-  `organize-series`, `unzip`, and `disambiguate-folders`).
+  `organize-series`, `unzip`, `disambiguate-folders`, and `same-name-authors`).
 - Kestrel reports the listening URL (typically `https://localhost:5043`).
 
 The Vite dev server starts automatically and proxies `/api` and `/hangfire`
@@ -919,6 +1053,7 @@ deployment without re-syncing.
 |--------|------|---------|
 | GET    | `/api/authors` | List tracked authors |
 | POST   | `/api/authors` | Add an author to the watchlist from an OL key |
+| POST   | `/api/authors/{id}/books` | Catalogue a manually-added book under this author (synthetic `XX` work key) |
 | GET    | `/api/authors/{id}` | Author detail + books (with genres, series, read status) + unmatched local files + associated series (primary and secondary) |
 | PUT    | `/api/authors/{id}/priority` | Set 0–5 star priority |
 | PUT    | `/api/authors/{id}/refresh-interval` | Set or clear a fixed works-refresh interval (days) |
@@ -951,6 +1086,11 @@ deployment without re-syncing.
 | GET    | `/api/books/genres` | All distinct subject tags sorted by frequency |
 | GET    | `/api/books/series` | All series with book lists, owned counts, and primary author |
 | PUT    | `/api/books/{id}/series` | Set or clear a book's series name and position |
+| PUT    | `/api/books/{id}` | Edit a book's title, publish year, and/or author |
+| DELETE | `/api/books/{id}` | Delete a book (its local files fall back to unmatched) |
+| GET    | `/api/books/manual` | List every manually-added book |
+| PUT    | `/api/books/{id}/cover` | Set or clear a custom cover image URL |
+| GET    | `/api/books/cover-search?q=` | Cover-image candidates from Google Books |
 
 ### Series
 
@@ -969,9 +1109,15 @@ deployment without re-syncing.
 | POST   | `/api/import/goodreads` | Import a Goodreads export CSV (multipart/form-data `file`) |
 | POST   | `/api/import/physical-books` | Import a physical-books inventory (tab or fixed-width); marks matches as `ManuallyOwned` and persists unmatched rows for later editing |
 | GET    | `/api/import/physical-books/unmatched` | List rows from past imports that couldn't be matched |
-| PUT    | `/api/import/physical-books/unmatched/{id}` | Edit an unmatched row's Author / Title / SeriesPos |
+| PUT    | `/api/import/physical-books/unmatched/{id}` | Edit an unmatched row's Author / Title / SeriesPos / ISBN |
 | DELETE | `/api/import/physical-books/unmatched/{id}` | Remove an unmatched row |
-| POST   | `/api/import/physical-books/unmatched/rematch` | Re-run matching against the current library; matched rows mark their book owned and are deleted |
+| GET    | `/api/import/physical-books/unmatched/author-suggestions` | Likely tracked author per unmatched row |
+| GET    | `/api/import/physical-books/unmatched/{id}/book-suggestions?authorId=` | Fuzzy-scored book candidates for a chosen author |
+| POST   | `/api/import/physical-books/unmatched/{id}/match` | Resolve a row by tying it to an existing book |
+| POST   | `/api/import/physical-books/unmatched/{id}/add-book` | Resolve a row by creating a new book under an author |
+| POST   | `/api/import/physical-books/unmatched/rematch` | Re-run matching; exact or ≥0.9 fuzzy hits mark the book owned and clear the row |
+| POST   | `/api/import/physical-books/unmatched/rematch/preview` | Dry run of rematch — proposed matches without applying |
+| POST   | `/api/import/physical-books/unmatched/bulk-resolve` | Apply a reviewed set of (row → book) matches in one transaction |
 
 ### Unclaimed / unknown
 
@@ -995,6 +1141,8 @@ deployment without re-syncing.
 | DELETE | `/api/locations/{id}` | Delete a library location |
 | GET    | `/api/settings/incoming` | Read the configured incoming folder |
 | PUT    | `/api/settings/incoming` | Update the incoming folder path |
+| GET    | `/api/settings/openlibrary` | Read the OpenLibrary `User-Agent` identity (app name + contact email) |
+| PUT    | `/api/settings/openlibrary` | Update the OpenLibrary app name + contact email (stored in the DB) |
 | GET    | `/api/ignored-folders` | Folder names excluded from every scan |
 | POST   | `/api/ignored-folders` | Add an ignored folder |
 | DELETE | `/api/ignored-folders/{id}` | Remove an ignored folder |
@@ -1080,11 +1228,13 @@ trusted LAN).
   across authors (e.g. co-written or continued by another writer).
 - `SeriesAuthor` — join table linking `Series` ↔ `Author` for additional/co-authors
   beyond the primary.
-- `Book` — OL work key (unique per author), title, first-publish year, cover id,
-  `ManuallyOwned` flag + timestamp, `Subjects` (semicolon-delimited OL subject
-  tags; `NULL` = never checked, `""` = checked/none found), `SeriesId` (FK to
-  `Series`), `SeriesPosition`, `ReadStatus` (Unread/Reading/Read/Dnf), `ReadAt`,
-  `Wanted`, `Isbn` (ISBN-13 preferred, normalised on insert), FK to Author.
+- `Book` — OL work key (unique per author; a synthetic `XX…W` key for
+  manually-added books not yet on OpenLibrary), title, first-publish year,
+  `CoverId` (OpenLibrary cover) and `CoverUrl` (custom cover, mainly for manual
+  books), `ManuallyOwned` flag + timestamp, `Subjects` (semicolon-delimited OL
+  subject tags; `NULL` = never checked, `""` = checked/none found), `SeriesId`
+  (FK to `Series`), `SeriesPosition`, `ReadStatus` (Unread/Reading/Read/Dnf),
+  `ReadAt`, `Wanted`, `Isbn` (ISBN-13 preferred, normalised on insert), FK to Author.
 - `LocalBookFile` — path on disk (file path after organizer runs, directory path
   in classic Calibre layout), Calibre folder names, optional FKs to Author
   and Book (null FK = unmatched), `Isbn` (extracted from `dc:identifier` when
@@ -1104,9 +1254,9 @@ trusted LAN).
 - `RemarkableAuth` — singleton row holding the paired reMarkable device
   token, cached user token + expiry, device GUID, and last-sent timestamp.
 - `PhysicalBookUnmatched` — rows from a physical-books import that couldn't be
-  matched against any tracked book. Fields: Author, Title, SeriesPos, AddedAt.
-  Indexed by `(Author, Title)` for the dedupe check on re-import. Editable and
-  re-runnable from `/physical-unmatched`.
+  matched against any tracked book. Fields: Author, Title, SeriesPos, Isbn,
+  AddedAt. Indexed by `(Author, Title)` for the dedupe check on re-import.
+  Editable, resolvable, and re-runnable from `/physical-unmatched`.
 
 ## Running the tests
 
@@ -1155,7 +1305,7 @@ in-memory inputs.
   canonicalisation that stays inside the root, escape attempts that exit
   the root, and root-prefix collisions (`/books/Coll` vs `/books/Collection`).
 
-231 tests total at the time of writing.
+259 tests total at the time of writing.
 
 ## Adding a schema change
 
@@ -1170,6 +1320,12 @@ It gets applied on the next server start — no manual `database update`.
 
 - The connection string must not be committed. Use user secrets, environment
   variables (`ConnectionStrings__Library`), or a deployment-time secret store.
+- The OpenLibrary contact email and app name are **not** stored in any file —
+  they live in the database and are set on the Settings page, so they never
+  enter the repo; see
+  [Identifying the application](#identifying-the-application-user-agent).
+  **Never reuse another deployment's OpenLibrary identity** — the email is a
+  contact address that points OpenLibrary at whoever's name is on it.
 - `.gitignore` excludes `bin/`, `obj/`, `*.user`, `.vs/`, `secrets.json`,
   `.env*`, and any `appsettings.*.Local.json` / `appsettings.Production.json`.
 - `appsettings.json` ships with an empty `ConnectionStrings:Library` on purpose —

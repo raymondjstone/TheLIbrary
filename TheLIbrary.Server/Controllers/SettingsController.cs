@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.OpenLibrary;
 
 namespace TheLibrary.Server.Controllers;
 
@@ -38,5 +39,29 @@ public class SettingsController : ControllerBase
         await _db.SaveChangesAsync(ct);
         return new IncomingDto(string.IsNullOrWhiteSpace(path) ? null : path,
             !string.IsNullOrWhiteSpace(path) && Directory.Exists(path));
+    }
+
+    public sealed record OpenLibraryIdentityDto(
+        string AppName, string ContactEmail, bool Identified, string UserAgent);
+    public sealed record UpdateOpenLibraryIdentity(string? AppName, string? ContactEmail);
+
+    // The OpenLibrary User-Agent identity (app name + contact email). Stored in
+    // the database so it stays out of the git repo and is set per deployment.
+    [HttpGet("openlibrary")]
+    public ActionResult<OpenLibraryIdentityDto> GetOpenLibrary([FromServices] OpenLibrarySettings ol)
+        => new OpenLibraryIdentityDto(ol.AppName, ol.ContactEmail, ol.IsIdentified, ol.UserAgent);
+
+    [HttpPut("openlibrary")]
+    public async Task<ActionResult<OpenLibraryIdentityDto>> SetOpenLibrary(
+        [FromBody] UpdateOpenLibraryIdentity body,
+        [FromServices] OpenLibrarySettings ol,
+        CancellationToken ct)
+    {
+        var email = body.ContactEmail?.Trim() ?? "";
+        if (email.Length > 0 && (!email.Contains('@') || email.Contains(' ')))
+            return BadRequest(new { error = "Contact email doesn't look like an email address." });
+
+        await ol.UpdateAsync(body.AppName, email, ct);
+        return new OpenLibraryIdentityDto(ol.AppName, ol.ContactEmail, ol.IsIdentified, ol.UserAgent);
     }
 }

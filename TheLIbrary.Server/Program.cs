@@ -27,6 +27,10 @@ builder.Services.AddDbContext<LibraryDbContext>(opt =>
         sql.CommandTimeout(300);
     }));
 
+// OpenLibrary identity (User-Agent app name + contact email) is stored in the
+// database and editable from the Settings page. The rate limiter reads it to
+// pick the 3 req/sec identified pace over the 1 req/sec anonymous one.
+builder.Services.AddSingleton<OpenLibrarySettings>();
 builder.Services.AddSingleton<OpenLibraryRateLimiter>();
 builder.Services.AddHttpClient<OpenLibraryClient>();
 builder.Services.AddHttpClient();
@@ -83,6 +87,10 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
     await db.Database.MigrateAsync();
+
+    // Load the OpenLibrary User-Agent identity from the database into the
+    // in-memory singleton so the first API call already carries it.
+    await scope.ServiceProvider.GetRequiredService<OpenLibrarySettings>().LoadAsync();
 
     if (!await db.LibraryLocations.AnyAsync())
     {

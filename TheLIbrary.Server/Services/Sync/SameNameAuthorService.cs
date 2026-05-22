@@ -1,28 +1,35 @@
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
-using TheLibrary.Server.Services.OpenLibrary;
 using TheLibrary.Server.Services.Scheduling;
 
 namespace TheLibrary.Server.Services.Sync;
 
 public sealed record SameNameAuthorSummary(
     int AuthorsScanned,
-    int NamesSearched,
+    int NamesMatched,
     int AuthorsAdded,
     IReadOnlyList<string> Added,
     IReadOnlyList<string> Warnings);
 
-// Scheduled job: for every author already on the watchlist, searches
-// OpenLibrary for author records with the exact same name and adds any that
-// aren't tracked yet. Catches the common case where OpenLibrary has split one
-// real author across several author records — the user picks one, this finds
-// the rest. New rows go in as Pending; a later works-refresh fills them in.
+// Scheduled job: for every author already on the watchlist, finds OpenLibrary
+// author records with the exact same name and adds any that aren't tracked
+// yet. Catches the common case where OpenLibrary has split one real author
+// across several author records — the user picks one, this finds the rest.
+//
+// Pure DB work: it queries the local OpenLibraryAuthor catalogue (the OL
+// authors dump, indexed by NormalizedName) — no OpenLibrary web requests.
+// New rows go in as Pending; a later works-refresh fills them in.
 //
 // Runs as a singleton through BackgroundTaskCoordinator so it can't overlap
 // with sync, organize, incoming, etc.
 public sealed class SameNameAuthorService
 {
+    // A name shared by more catalogue records than this is treated as a
+    // generic name (not an author OL has split) and skipped, so the watchlist
+    // isn't flooded with unrelated people who happen to share a common name.
+    private const int MaxAdditionsPerName = 25;
+
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly ILogger<SameNameAuthorService> _log;
@@ -66,7 +73,6 @@ public sealed class SameNameAuthorService
         _log.LogInformation("Same-name author job starting");
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-        var ol = scope.ServiceProvider.GetRequiredService<OpenLibraryClient>();
 
         var authors = await db.Authors.AsNoTracking()
             .Select(a => new { a.Name, a.OpenLibraryKey })
@@ -84,67 +90,73 @@ public sealed class SameNameAuthorService
             .ToListAsync(ct))
             .ToHashSet(StringComparer.Ordinal);
 
-        // One search per distinct normalized name, so linked duplicates and
-        // pen-name variants that collapse to the same name aren't searched twice.
-        var namesByNorm = new Dictionary<string, string>(StringComparer.Ordinal);
+        // Distinct normalized names of every tracked author. NormalizeAuthor is
+        // exactly what the dump seeder used to fill OpenLibraryAuthor.
+        // NormalizedName, so these line up for a direct indexed lookup.
+        var trackedNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (var a in authors)
         {
             var norm = TitleNormalizer.NormalizeAuthor(a.Name);
             if (norm.Length == 0) continue;
-            namesByNorm.TryAdd(norm, a.Name);
+            if (norm.Length > 300) norm = norm[..300];   // catalogue column is nvarchar(300)
+            trackedNames.Add(norm);
         }
+        if (trackedNames.Count == 0)
+            return new SameNameAuthorSummary(authors.Count, 0, 0, Array.Empty<string>(), Array.Empty<string>());
+
+        // One indexed query against the local OL authors catalogue: every
+        // catalogue record that shares a normalized name with a tracked author.
+        var nameList = trackedNames.ToList();
+        var catalogMatches = await db.OpenLibraryAuthors.AsNoTracking()
+            .Where(o => nameList.Contains(o.NormalizedName))
+            .Select(o => new { o.OlKey, o.Name, o.NormalizedName })
+            .ToListAsync(ct);
 
         int added = 0;
         var addedNames = new List<string>();
         var warnings = new List<string>();
         var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var (norm, displayName) in namesByNorm)
+        if (catalogMatches.Count == 0)
+            warnings.Add("No matches — the OpenLibrary authors catalogue looks empty; run the Seed job.");
+
+        foreach (var group in catalogMatches.GroupBy(o => o.NormalizedName, StringComparer.Ordinal))
         {
             ct.ThrowIfCancellationRequested();
-            if (blacklist.Contains(norm)) continue;
+            if (blacklist.Contains(group.Key)) continue;
 
-            AuthorSearchResponse? resp;
-            try
+            var newOnes = group
+                .Where(o => !string.IsNullOrWhiteSpace(o.OlKey) && !trackedKeys.Contains(o.OlKey))
+                .ToList();
+            if (newOnes.Count == 0) continue;
+
+            if (newOnes.Count > MaxAdditionsPerName)
             {
-                resp = await ol.SearchAuthorsAsync(displayName, ct);
-            }
-            catch (Exception ex)
-            {
-                warnings.Add($"{displayName}: OpenLibrary search failed — {ex.Message}");
+                warnings.Add(
+                    $"'{group.First().Name}': {newOnes.Count} same-name records — skipped as too generic");
                 continue;
             }
-            if (resp?.Docs is null) continue;
 
-            foreach (var doc in resp.Docs)
+            foreach (var o in newOnes)
             {
-                if (string.IsNullOrWhiteSpace(doc.Key) || string.IsNullOrWhiteSpace(doc.Name)) continue;
-                // Exact same-name records only — not every fuzzy search hit.
-                if (TitleNormalizer.NormalizeAuthor(doc.Name) != norm) continue;
-
-                var key = doc.Key!.StartsWith("/authors/", StringComparison.OrdinalIgnoreCase)
-                    ? doc.Key!["/authors/".Length..]
-                    : doc.Key!;
-                if (trackedKeys.Contains(key)) continue;   // already on the watchlist
-                if (!seenKeys.Add(key)) continue;          // already queued this run
-
+                if (!seenKeys.Add(o.OlKey)) continue;
                 db.Authors.Add(new Author
                 {
-                    Name = doc.Name!.Trim(),
-                    OpenLibraryKey = key,
+                    Name = string.IsNullOrWhiteSpace(o.Name) ? o.OlKey : o.Name.Trim(),
+                    OpenLibraryKey = o.OlKey,
                     Status = AuthorStatus.Pending,
                 });
                 added++;
-                addedNames.Add($"{doc.Name!.Trim()} ({key})");
+                addedNames.Add($"{o.Name} ({o.OlKey})");
             }
         }
 
         if (added > 0) await db.SaveChangesAsync(ct);
 
         _log.LogInformation(
-            "Same-name author job done. Scanned={Scanned} names, searched {Searched}, added {Added}",
-            authors.Count, namesByNorm.Count, added);
+            "Same-name author job done. Tracked names={Names}, catalogue matches={Matches}, added {Added}",
+            trackedNames.Count, catalogMatches.Count, added);
 
-        return new SameNameAuthorSummary(authors.Count, namesByNorm.Count, added, addedNames, warnings);
+        return new SameNameAuthorSummary(authors.Count, trackedNames.Count, added, addedNames, warnings);
     }
 }
