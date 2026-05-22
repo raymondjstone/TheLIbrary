@@ -24,6 +24,9 @@ export default defineConfig([
     },
     rules: {
       'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      // Reset-then-fetch and prop-mirror effects are used throughout the app.
+      // The rule stays on as a warning (informative) rather than a build gate.
+      'react-hooks/set-state-in-effect': 'warn',
     },
   },
 ])

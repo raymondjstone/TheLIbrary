@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.Import;
 using TheLibrary.Server.Services.Incoming;
 using TheLibrary.Server.Services.Sync;
@@ -187,7 +188,7 @@ public class ImportController : ControllerBase
         {
             if (string.IsNullOrWhiteSpace(row.Title)) { skipped++; continue; }
 
-            var hit = index.TryMatch(row.Title, row.Author);
+            var hit = index.TryMatch(row.Title, row.Author, row.Isbn);
             if (hit is null) { unmatchedRows.Add(row); continue; }
 
             if (!seen.Add(hit.Value.Id)) continue;
@@ -218,12 +219,12 @@ public class ImportController : ControllerBase
     {
         var rows = await _db.PhysicalBookUnmatched
             .OrderBy(u => u.Author).ThenBy(u => u.Title)
-            .Select(u => new { u.Id, u.Author, u.Title, u.SeriesPos, u.AddedAt })
+            .Select(u => new { u.Id, u.Author, u.Title, u.SeriesPos, u.Isbn, u.AddedAt })
             .ToListAsync(ct);
         return Ok(rows);
     }
 
-    public sealed record UpdateUnmatchedRequest(string Author, string Title, string SeriesPos);
+    public sealed record UpdateUnmatchedRequest(string Author, string Title, string SeriesPos, string? Isbn);
 
     // PUT /api/import/physical-books/unmatched/{id}
     [HttpPut("physical-books/unmatched/{id:int}")]
@@ -234,8 +235,10 @@ public class ImportController : ControllerBase
         row.Author    = req.Author ?? "";
         row.Title     = req.Title ?? "";
         row.SeriesPos = req.SeriesPos ?? "";
+        // Normalise the ISBN so a hyphenated/spaced entry still matches.
+        row.Isbn      = string.IsNullOrWhiteSpace(req.Isbn) ? null : EpubMetadataReader.NormaliseIsbn(req.Isbn);
         await _db.SaveChangesAsync(ct);
-        return Ok(new { row.Id, row.Author, row.Title, row.SeriesPos, row.AddedAt });
+        return Ok(new { row.Id, row.Author, row.Title, row.SeriesPos, row.Isbn, row.AddedAt });
     }
 
     // DELETE /api/import/physical-books/unmatched/{id}
@@ -248,7 +251,16 @@ public class ImportController : ControllerBase
 
     public sealed record RematchResult(int Matched, int StillUnmatched);
 
+    // Title Jaro-Winkler score at or above which the rematch auto-accepts a
+    // fuzzy hit (the exact and loose lookups having both missed). The author
+    // must independently match too — see PhysicalMatchIndex.TryFuzzyMatch.
+    private const double FuzzyRematchTitleThreshold = 0.9;
+
     // POST /api/import/physical-books/unmatched/rematch
+    // Re-runs matching over every unmatched row. Each row is tried against the
+    // exact + loose-key lookup first; rows that still miss fall back to a
+    // fuzzy title match (scoped to a matching author) so near-identical titles
+    // get picked up without the user resolving them by hand.
     [HttpPost("physical-books/unmatched/rematch")]
     public async Task<ActionResult<RematchResult>> Rematch(CancellationToken ct)
     {
@@ -262,20 +274,15 @@ public class ImportController : ControllerBase
 
         foreach (var row in pending)
         {
-            var hit = index.TryMatch(row.Title, row.Author);
+            var hit = index.TryMatch(row.Title, row.Author, row.Isbn)
+                      ?? index.TryFuzzyMatch(row.Title, row.Author, FuzzyRematchTitleThreshold);
             if (hit is null) continue;
             if (!hit.Value.ManuallyOwned)
                 toMarkOwned.Add(hit.Value.Id);
             nowMatched.Add(row.Id);
         }
 
-        if (toMarkOwned.Count > 0)
-            await MarkOwnedAsync(toMarkOwned, ct);
-
-        if (nowMatched.Count > 0)
-            await _db.PhysicalBookUnmatched
-                .Where(u => nowMatched.Contains(u.Id))
-                .ExecuteDeleteAsync(ct);
+        await ApplyResolutionAsync(toMarkOwned, nowMatched, ct);
 
         return Ok(new RematchResult(nowMatched.Count, pending.Count - nowMatched.Count));
     }
@@ -285,11 +292,13 @@ public class ImportController : ControllerBase
     public sealed record AuthorCandidate(int AuthorId, string Name, double Score);
     public sealed record RowAuthorSuggestions(int Id, IReadOnlyList<AuthorCandidate> Candidates);
 
-    // Top author candidates for every unmatched physical row, scored by name
-    // similarity so the UI can pre-select a likely author. Only top-level
-    // authors and pen names are offered — a non-pen-name child's books fold
-    // into its canonical, so cataloguing a physical book against one would
-    // hide it from the library view.
+    // Author candidates for every unmatched physical row. An exact name — in
+    // either "Forename Surname" or Calibre's "Surname, Forename" order —
+    // resolves by dictionary lookup and comes back as a single 1.0 candidate
+    // the UI auto-selects; only rows with no exact hit fall back to fuzzy
+    // scoring. Only top-level authors and pen names are offered — a
+    // non-pen-name child's books fold into its canonical, so cataloguing a
+    // physical book against one would hide it from the library view.
     [HttpGet("physical-books/unmatched/author-suggestions")]
     public async Task<ActionResult<IReadOnlyList<RowAuthorSuggestions>>> AuthorSuggestions(
         CancellationToken ct)
@@ -304,17 +313,25 @@ public class ImportController : ControllerBase
             .Select(a => new { a.Id, a.Name })
             .ToListAsync(ct);
 
-        // Pre-expand each author's name into its order variants once.
-        var authorVariants = authors
-            .Select(a => new
+        // Bucket authors by every order-variant of their normalized name so an
+        // exact name in any order resolves with a dictionary lookup. The
+        // per-author variant list is kept too, for the fuzzy fallback.
+        var byVariant = new Dictionary<string, List<int>>(StringComparer.Ordinal);
+        var authorVariants = new List<(int Id, string Name, List<string> Variants)>(authors.Count);
+        foreach (var a in authors)
+        {
+            var variants = AuthorMatcher
+                .ExpandNameVariants(TitleNormalizer.NormalizeAuthor(a.Name))
+                .ToList();
+            authorVariants.Add((a.Id, a.Name, variants));
+            foreach (var v in variants)
             {
-                a.Id,
-                a.Name,
-                Variants = AuthorMatcher
-                    .ExpandNameVariants(TitleNormalizer.NormalizeAuthor(a.Name))
-                    .ToList(),
-            })
-            .ToList();
+                if (!byVariant.TryGetValue(v, out var ids))
+                    byVariant[v] = ids = new List<int>();
+                if (!ids.Contains(a.Id)) ids.Add(a.Id);
+            }
+        }
+        var nameById = authors.ToDictionary(a => a.Id, a => a.Name);
 
         var result = new List<RowAuthorSuggestions>(rows.Count);
         foreach (var row in rows)
@@ -323,12 +340,32 @@ public class ImportController : ControllerBase
                 .ExpandNameVariants(TitleNormalizer.NormalizeAuthor(row.Author))
                 .ToList();
 
-            var candidates = authorVariants
-                .Select(a => new AuthorCandidate(a.Id, a.Name, BestNameScore(rowVariants, a.Variants)))
-                .Where(c => c.Score >= 0.4)
-                .OrderByDescending(c => c.Score)
-                .Take(3)
-                .ToList();
+            // 1. Exact name match, order-insensitive — the common case for an
+            //    inventory whose authors are real names or "Surname, Forename".
+            var exact = new List<int>();
+            foreach (var v in rowVariants)
+                if (byVariant.TryGetValue(v, out var ids))
+                    foreach (var id in ids)
+                        if (!exact.Contains(id)) exact.Add(id);
+
+            List<AuthorCandidate> candidates;
+            if (exact.Count > 0)
+            {
+                candidates = exact
+                    .Select(id => new AuthorCandidate(id, nameById[id], 1.0))
+                    .ToList();
+            }
+            else
+            {
+                // 2. No exact hit — fuzzy-score so a typo or a middle-initial
+                //    difference still surfaces a usable suggestion.
+                candidates = authorVariants
+                    .Select(a => new AuthorCandidate(a.Id, a.Name, BestNameScore(rowVariants, a.Variants)))
+                    .Where(c => c.Score >= 0.4)
+                    .OrderByDescending(c => c.Score)
+                    .Take(3)
+                    .ToList();
+            }
             result.Add(new RowAuthorSuggestions(row.Id, candidates));
         }
         return Ok(result);
@@ -374,18 +411,20 @@ public class ImportController : ControllerBase
             {
                 b.Id,
                 b.Title,
-                b.NormalizedTitle,
                 SeriesName = b.Series != null ? b.Series.Name : null,
                 b.SeriesPosition,
                 Owned = b.ManuallyOwned || b.LocalFiles.Any(),
             })
             .ToListAsync(ct);
 
+        // Recompute the title key from Title — same robustness reasoning as
+        // PhysicalMatchIndex: a stale/null stored NormalizedTitle would
+        // wrongly score an exact title near zero.
         var normTitle = TitleNormalizer.Normalize(row.Title);
         var ranked = books
             .Select(b => new BookCandidate(
                 b.Id, b.Title,
-                FuzzyScore.JaroWinkler(b.NormalizedTitle ?? "", normTitle),
+                FuzzyScore.JaroWinkler(TitleNormalizer.Normalize(b.Title), normTitle),
                 b.SeriesName, b.SeriesPosition, b.Owned))
             .OrderByDescending(c => c.Score)
             .ThenBy(c => c.Title, StringComparer.OrdinalIgnoreCase)
@@ -446,6 +485,91 @@ public class ImportController : ControllerBase
         return Ok(new { createdBookId = result.Book!.Id, result.Book.Title });
     }
 
+    public sealed record RematchProposal(
+        int UnmatchedId, string UnmatchedAuthor, string UnmatchedTitle,
+        int BookId, string BookTitle, string BookAuthor, bool BookAlreadyOwned);
+
+    // Dry run of the rematch: returns the book each unmatched row WOULD be
+    // tied to, without changing anything — feeds the review-before-apply UI.
+    [HttpPost("physical-books/unmatched/rematch/preview")]
+    public async Task<ActionResult<IReadOnlyList<RematchProposal>>> RematchPreview(CancellationToken ct)
+    {
+        var pending = await _db.PhysicalBookUnmatched.AsNoTracking().ToListAsync(ct);
+        if (pending.Count == 0) return Ok(Array.Empty<RematchProposal>());
+
+        var index = await PhysicalMatchIndex.LoadAsync(_db, ct);
+
+        var hits = new List<(int RowId, string RowAuthor, string RowTitle, int BookId)>();
+        foreach (var row in pending)
+        {
+            var hit = index.TryMatch(row.Title, row.Author, row.Isbn)
+                      ?? index.TryFuzzyMatch(row.Title, row.Author, FuzzyRematchTitleThreshold);
+            if (hit is not null) hits.Add((row.Id, row.Author, row.Title, hit.Value.Id));
+        }
+        if (hits.Count == 0) return Ok(Array.Empty<RematchProposal>());
+
+        var bookIds = hits.Select(h => h.BookId).Distinct().ToList();
+        var books = await _db.Books.AsNoTracking()
+            .Where(b => bookIds.Contains(b.Id))
+            .Select(b => new
+            {
+                b.Id,
+                b.Title,
+                AuthorName = b.Author.Name,
+                Owned = b.ManuallyOwned || b.LocalFiles.Any(),
+            })
+            .ToDictionaryAsync(b => b.Id, ct);
+
+        return Ok(hits
+            .Where(h => books.ContainsKey(h.BookId))
+            .Select(h =>
+            {
+                var bk = books[h.BookId];
+                return new RematchProposal(
+                    h.RowId, h.RowAuthor, h.RowTitle,
+                    bk.Id, bk.Title, bk.AuthorName, bk.Owned);
+            })
+            .ToList());
+    }
+
+    public sealed record BulkResolveItem(int UnmatchedId, int BookId);
+    public sealed record BulkResolveRequest(IReadOnlyList<BulkResolveItem> Items);
+    public sealed record BulkResolveResult(int Resolved);
+
+    // Applies a reviewed set of (unmatched row → book) matches: each book is
+    // flagged owned and its row cleared, all in one transaction.
+    [HttpPost("physical-books/unmatched/bulk-resolve")]
+    public async Task<ActionResult<BulkResolveResult>> BulkResolve(
+        [FromBody] BulkResolveRequest body, CancellationToken ct)
+    {
+        var items = (body.Items ?? Array.Empty<BulkResolveItem>())
+            .Where(i => i.UnmatchedId > 0 && i.BookId > 0)
+            .ToList();
+        if (items.Count == 0) return Ok(new BulkResolveResult(0));
+
+        var unmatchedIds = items.Select(i => i.UnmatchedId).Distinct().ToList();
+        var bookIds = items.Select(i => i.BookId).Distinct().ToList();
+
+        var validRows = (await _db.PhysicalBookUnmatched
+            .Where(u => unmatchedIds.Contains(u.Id))
+            .Select(u => u.Id)
+            .ToListAsync(ct)).ToHashSet();
+        var booksToOwn = await _db.Books
+            .Where(b => bookIds.Contains(b.Id) && !b.ManuallyOwned)
+            .Select(b => b.Id)
+            .ToListAsync(ct);
+
+        var rowsToClear = items
+            .Where(i => validRows.Contains(i.UnmatchedId))
+            .Select(i => i.UnmatchedId)
+            .Distinct()
+            .ToList();
+        if (rowsToClear.Count == 0) return Ok(new BulkResolveResult(0));
+
+        await ApplyResolutionAsync(booksToOwn, rowsToClear, ct);
+        return Ok(new BulkResolveResult(rowsToClear.Count));
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     // Marks a set of books as ManuallyOwned = true with the current timestamp.
@@ -458,6 +582,31 @@ public class ImportController : ControllerBase
             .ExecuteUpdateAsync(s => s
                 .SetProperty(b => b.ManuallyOwned, _ => true)
                 .SetProperty(b => b.ManuallyOwnedAt, _ => now), ct);
+    }
+
+    // Marks the given books owned and clears the given unmatched rows as one
+    // atomic unit, so a crash can't leave a book owned with its row still
+    // present (or vice versa). Wrapped in an execution strategy because the
+    // connection is configured with retry-on-failure.
+    private async Task ApplyResolutionAsync(
+        IReadOnlyCollection<int> bookIdsToOwn,
+        IReadOnlyCollection<int> unmatchedIdsToClear,
+        CancellationToken ct)
+    {
+        if (bookIdsToOwn.Count == 0 && unmatchedIdsToClear.Count == 0) return;
+        var clearIds = unmatchedIdsToClear.ToList();
+        var strategy = _db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
+        {
+            await using var tx = await _db.Database.BeginTransactionAsync(ct);
+            if (bookIdsToOwn.Count > 0)
+                await MarkOwnedAsync(bookIdsToOwn, ct);
+            if (clearIds.Count > 0)
+                await _db.PhysicalBookUnmatched
+                    .Where(u => clearIds.Contains(u.Id))
+                    .ExecuteDeleteAsync(ct);
+            await tx.CommitAsync(ct);
+        });
     }
 
     // Adds the given rows to PhysicalBookUnmatched, skipping any row whose
@@ -483,6 +632,7 @@ public class ImportController : ControllerBase
                 Author    = row.Author,
                 Title     = row.Title,
                 SeriesPos = row.SeriesPos,
+                Isbn      = row.Isbn,
                 AddedAt   = addedAt,
             });
         }
@@ -492,13 +642,37 @@ public class ImportController : ControllerBase
     private static string FormatUnmatched(PhysicalBookRow row) =>
         string.IsNullOrWhiteSpace(row.Author) ? row.Title : $"{row.Author} — {row.Title}";
 
-    private sealed record PhysicalBookRow(string Author, string Title, string SeriesPos);
+    private sealed record PhysicalBookRow(string Author, string Title, string SeriesPos, string? Isbn);
 
     // PhysicalMatchIndex now lives in Services/Import/PhysicalMatchIndex.cs so
     // it can be unit-tested directly without spinning up a DbContext.
 
+    // Matches a contiguous ISBN-shaped token (digits with optional hyphens,
+    // optional trailing X). Each hit is validated by NormaliseIsbn.
+    private static readonly Regex IsbnTokenRx =
+        new(@"[0-9][0-9-]{8,16}[0-9Xx]", RegexOptions.Compiled);
+
+    // Pulls a valid ISBN off an import line: a dedicated tab column wins,
+    // otherwise any ISBN-shaped token anywhere on the line is tried.
+    private static string? ExtractIsbn(string line, string? tabColumn)
+    {
+        if (!string.IsNullOrWhiteSpace(tabColumn))
+        {
+            var fromColumn = EpubMetadataReader.NormaliseIsbn(tabColumn);
+            if (fromColumn is not null) return fromColumn;
+        }
+        foreach (Match m in IsbnTokenRx.Matches(line))
+        {
+            var isbn = EpubMetadataReader.NormaliseIsbn(m.Value);
+            if (isbn is not null) return isbn;
+        }
+        return null;
+    }
+
     // Parses the fixed-width layout: author (26 chars), title (44 chars), series (rest).
     // Falls back to tab-separated columns when the line contains a tab character.
+    // An ISBN — a tab-separated 4th column, or any ISBN-shaped token on the
+    // line — is captured when present and used as the strongest match key.
     private static List<PhysicalBookRow> ParsePhysicalBooksFile(string text)
     {
         var rows = new List<PhysicalBookRow>();
@@ -508,12 +682,14 @@ public class ImportController : ControllerBase
             if (string.IsNullOrWhiteSpace(line)) continue;
 
             string author, title, seriesPos;
+            string? isbnColumn = null;
             if (line.Contains('\t'))
             {
                 var parts = line.Split('\t');
                 author    = parts.Length > 0 ? parts[0].Trim() : "";
                 title     = parts.Length > 1 ? parts[1].Trim() : "";
                 seriesPos = parts.Length > 2 ? parts[2].Trim() : "";
+                isbnColumn = parts.Length > 3 ? parts[3].Trim() : null;
             }
             else
             {
@@ -539,7 +715,7 @@ public class ImportController : ControllerBase
             }
 
             if (string.IsNullOrWhiteSpace(author)) continue;
-            rows.Add(new PhysicalBookRow(author, title, seriesPos));
+            rows.Add(new PhysicalBookRow(author, title, seriesPos, ExtractIsbn(line, isbnColumn)));
         }
         return rows;
     }

@@ -6,6 +6,7 @@ const labels = {
     'author-updates': 'Apply author updates',
     'incoming': 'Process incoming folder',
     'reprocess-unknown': 'Reprocess __unknown folder',
+    'same-name-authors': 'Add same-name OpenLibrary authors',
 }
 
 const fmtNextRun = (iso) => {

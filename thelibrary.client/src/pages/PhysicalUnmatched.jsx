@@ -20,9 +20,11 @@ const inputStyle = {
 // (a likely one is pre-selected), then either match an existing book or
 // catalogue a new one.
 function ResolvePanel({ row, authors, suggestedAuthors, onResolved, onCancel }) {
-    const topAuthor = suggestedAuthors?.[0]
+    // Auto-select the best author guess so the common case needs no input —
+    // an exact name (incl. Calibre's "Surname, Forename") comes back as a 1.0
+    // candidate, and even a fuzzy top guess is shown selected and overridable.
     const [authorId, setAuthorId] = useState(
-        topAuthor && topAuthor.score >= 0.85 ? String(topAuthor.authorId) : '')
+        suggestedAuthors?.[0] ? String(suggestedAuthors[0].authorId) : '')
     const [authorFilter, setAuthorFilter] = useState('')
     const [bookCandidates, setBookCandidates] = useState(null)
     const [bookFilter, setBookFilter] = useState('')
@@ -110,7 +112,7 @@ function ResolvePanel({ row, authors, suggestedAuthors, onResolved, onCancel }) 
     }
 
     return (
-        <td colSpan={5} style={{ background: 'var(--card)', padding: '0.75rem 1rem' }}>
+        <td colSpan={6} style={{ background: 'var(--card)', padding: '0.75rem 1rem' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
                 <strong>Resolve “{row.title}” by {row.author}</strong>
 
@@ -224,6 +226,103 @@ function ResolvePanel({ row, authors, suggestedAuthors, onResolved, onCancel }) 
     )
 }
 
+// Modal: a dry-run of the rematch. Lists the book each unmatched row would be
+// tied to and lets the user untick any before applying them in one batch.
+function RematchPreviewModal({ onClose, onApplied }) {
+    const [proposals, setProposals] = useState(null)
+    const [checked, setChecked] = useState(() => new Set())
+    const [error, setError] = useState(null)
+    const [busy, setBusy] = useState(false)
+
+    useEffect(() => {
+        fetch('/api/import/physical-books/unmatched/rematch/preview', { method: 'POST' })
+            .then(r => r.ok ? r.json() : Promise.reject(`${r.status} ${r.statusText}`))
+            .then(list => {
+                setProposals(list)
+                setChecked(new Set(list.map(p => p.unmatchedId)))
+            })
+            .catch(e => { setError(String(e)); setProposals([]) })
+    }, [])
+
+    const toggle = (id) => setChecked(prev => {
+        const n = new Set(prev)
+        if (n.has(id)) n.delete(id); else n.add(id)
+        return n
+    })
+
+    const apply = async () => {
+        const items = (proposals ?? [])
+            .filter(p => checked.has(p.unmatchedId))
+            .map(p => ({ unmatchedId: p.unmatchedId, bookId: p.bookId }))
+        if (items.length === 0) { onClose(); return }
+        setBusy(true)
+        setError(null)
+        try {
+            const r = await fetch('/api/import/physical-books/unmatched/bulk-resolve', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ items }),
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            const result = await r.json()
+            onApplied(result.resolved)
+        } catch (e) {
+            setError(String(e.message || e))
+            setBusy(false)
+        }
+    }
+
+    return (
+        <div className="modal-backdrop" onClick={onClose}>
+            <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '780px' }}>
+                <div className="modal-header">
+                    <h3>Preview auto-matches</h3>
+                    <button onClick={onClose} className="btn-ghost">&times;</button>
+                </div>
+                {error && <p className="error">{error}</p>}
+                {proposals === null && !error && <p className="subtle">Finding matches…</p>}
+                {proposals !== null && proposals.length === 0 && !error && (
+                    <p className="subtle">No automatic matches found — resolve these rows individually.</p>
+                )}
+                {proposals !== null && proposals.length > 0 && (
+                    <>
+                        <p className="subtle">
+                            Each row below would be tied to the book shown and marked owned.
+                            Untick any you don't want, then apply.
+                        </p>
+                        <table className="grid">
+                            <thead>
+                                <tr><th></th><th>Unmatched row</th><th>→ Book</th></tr>
+                            </thead>
+                            <tbody>
+                                {proposals.map(p => (
+                                    <tr key={p.unmatchedId}>
+                                        <td><input type="checkbox"
+                                                   checked={checked.has(p.unmatchedId)}
+                                                   onChange={() => toggle(p.unmatchedId)} /></td>
+                                        <td>{p.unmatchedAuthor} — {p.unmatchedTitle}</td>
+                                        <td>
+                                            {p.bookTitle}{' '}
+                                            <span className="subtle">({p.bookAuthor})</span>
+                                            {p.bookAlreadyOwned && <span className="subtle"> · already owned</span>}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                        <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.6rem' }}>
+                            <button onClick={apply} disabled={busy}>
+                                {busy ? 'Applying…' : `Apply ${checked.size} match${checked.size === 1 ? '' : 'es'}`}
+                            </button>
+                            <button className="btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
+                        </div>
+                    </>
+                )}
+            </div>
+        </div>
+    )
+}
+
 export default function PhysicalUnmatched() {
     const [rows, setRows] = useState(cachedUnmatched)
     const [error, setError] = useState(null)
@@ -234,6 +333,7 @@ export default function PhysicalUnmatched() {
     const [authors, setAuthors] = useState([])
     const [authorSuggestions, setAuthorSuggestions] = useState({})  // rowId -> [candidates]
     const [resolveId, setResolveId] = useState(null)
+    const [showPreview, setShowPreview] = useState(false)
 
     const load = async () => {
         setError(null)
@@ -283,7 +383,7 @@ export default function PhysicalUnmatched() {
     const startEdit = (row) => {
         setEditing(prev => ({
             ...prev,
-            [row.id]: { author: row.author, title: row.title, seriesPos: row.seriesPos }
+            [row.id]: { author: row.author, title: row.title, seriesPos: row.seriesPos, isbn: row.isbn ?? '' }
         }))
     }
 
@@ -341,7 +441,14 @@ export default function PhysicalUnmatched() {
         setRematchResult(null)
         try {
             const r = await fetch('/api/import/physical-books/unmatched/rematch', { method: 'POST' })
-            if (!r.ok) throw new Error(r.statusText)
+            if (!r.ok) {
+                // Surface whatever the server actually said — a JSON { error }
+                // payload or, in development, the exception page text.
+                const body = await r.text().catch(() => '')
+                let detail = body
+                try { detail = JSON.parse(body)?.error || body } catch { /* not json */ }
+                throw new Error(detail ? `${r.status}: ${String(detail).slice(0, 300)}` : `${r.status} ${r.statusText}`)
+            }
             setRematchResult(await r.json())
             await load()
         } catch (e) {
@@ -363,6 +470,12 @@ export default function PhysicalUnmatched() {
                 <button className="btn-ghost" onClick={load}>Refresh</button>
                 <button
                     className="btn-ghost"
+                    onClick={() => setShowPreview(true)}
+                    disabled={!rows || rows.length === 0}>
+                    Preview matches
+                </button>
+                <button
+                    className="btn-ghost"
                     onClick={rematch}
                     disabled={rematching || !rows || rows.length === 0}>
                     {rematching ? 'Rematching…' : 'Re-run matching'}
@@ -371,7 +484,8 @@ export default function PhysicalUnmatched() {
 
             {rematchResult && (
                 <p className="subtle">
-                    Matched {rematchResult.matched}, still unmatched {rematchResult.stillUnmatched}.
+                    Matched {rematchResult.matched}
+                    {rematchResult.stillUnmatched != null && <>, still unmatched {rematchResult.stillUnmatched}</>}.
                 </p>
             )}
 
@@ -388,6 +502,7 @@ export default function PhysicalUnmatched() {
                             <th>Author</th>
                             <th>Title</th>
                             <th>Series/Pos</th>
+                            <th>ISBN</th>
                             <th>Added</th>
                             <th></th>
                         </tr>
@@ -412,6 +527,11 @@ export default function PhysicalUnmatched() {
                                             ? <input value={draft.seriesPos}
                                                      onChange={e => editField(row.id, 'seriesPos', e.target.value)} />
                                             : row.seriesPos}</td>
+                                        <td>{draft
+                                            ? <input value={draft.isbn ?? ''}
+                                                     placeholder="ISBN"
+                                                     onChange={e => editField(row.id, 'isbn', e.target.value)} />
+                                            : (row.isbn || '—')}</td>
                                         <td style={{ color: 'var(--subtle)', whiteSpace: 'nowrap' }}>
                                             {new Date(row.addedAt).toLocaleDateString()}
                                         </td>
@@ -443,7 +563,10 @@ export default function PhysicalUnmatched() {
                                     </tr>
                                     {isResolving && (
                                         <tr>
+                                            {/* Remount once author suggestions arrive so the
+                                                panel re-runs its auto-select with them. */}
                                             <ResolvePanel
+                                                key={authorSuggestions[row.id] === undefined ? 'pending' : 'ready'}
                                                 row={row}
                                                 authors={authors}
                                                 suggestedAuthors={authorSuggestions[row.id] ?? []}
@@ -456,6 +579,16 @@ export default function PhysicalUnmatched() {
                         })}
                     </tbody>
                 </table>
+            )}
+
+            {showPreview && (
+                <RematchPreviewModal
+                    onClose={() => setShowPreview(false)}
+                    onApplied={(count) => {
+                        setShowPreview(false)
+                        setRematchResult({ matched: count, stillUnmatched: null })
+                        load()
+                    }} />
             )}
         </section>
     )

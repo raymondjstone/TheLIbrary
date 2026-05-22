@@ -27,6 +27,11 @@ public class Book
 
     public int? CoverId { get; set; }
 
+    // Custom cover image URL, set by hand for manually-added books that have no
+    // OpenLibrary cover. When present the UI prefers it over CoverId.
+    [MaxLength(1024)]
+    public string? CoverUrl { get; set; }
+
     public bool ManuallyOwned { get; set; }
 
     public DateTime? ManuallyOwnedAt { get; set; }

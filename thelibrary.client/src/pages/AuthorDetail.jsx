@@ -4,6 +4,22 @@ import StarRating from '../components/StarRating.jsx'
 import LinkAuthorDialog from './LinkAuthorDialog.jsx'
 import BookPreview from '../components/BookPreview.jsx'
 import AddBookDialog from './AddBookDialog.jsx'
+import BookEditDialog from './BookEditDialog.jsx'
+import { bookCoverSrc } from '../bookCover.js'
+
+// Compact per-book edit / delete controls shown next to the title.
+function BookActions({ book, onEdit, onDelete }) {
+    return (
+        <span style={{ marginLeft: '0.3rem', whiteSpace: 'nowrap' }}>
+            <button className="btn-ghost" title="Edit this book"
+                    onClick={() => onEdit(book)}
+                    style={{ fontSize: '0.72rem', padding: '0 0.3rem', opacity: 0.55 }}>edit</button>
+            <button className="btn-ghost" title="Delete this book"
+                    onClick={() => onDelete(book)}
+                    style={{ fontSize: '0.72rem', padding: '0 0.3rem', opacity: 0.55, color: 'var(--danger, #b91c1c)' }}>delete</button>
+        </span>
+    )
+}
 
 // Book title link. Real OpenLibrary works link out to their OL page;
 // manually-added books (synthetic "XX" work keys) have no OL page, so they
@@ -328,6 +344,7 @@ export default function AuthorDetail() {
     const [intervalSaving, setIntervalSaving] = useState(false)
     const [showLinkDialog, setShowLinkDialog] = useState(false)
     const [showAddBook, setShowAddBook] = useState(false)
+    const [editBook, setEditBook] = useState(null)
     const [unlinking, setUnlinking] = useState(false)
     const [suggestionsByFile, setSuggestionsByFile] = useState({})  // { fileId: { inferredTitle, candidates } }
     const [bulkBusy, setBulkBusy] = useState(false)
@@ -598,6 +615,24 @@ export default function AuthorDetail() {
             setReturnBusyIds(prev => {
                 const n = new Set(prev); n.delete(fileId); return n
             })
+        }
+    }
+
+    const reloadAuthor = () => {
+        fetch(`/api/authors/${id}`)
+            .then(r => r.ok ? r.json() : null)
+            .then(d => { if (d) setData(d) })
+            .catch(() => {})
+    }
+
+    const deleteBook = async (book) => {
+        if (!confirm(`Delete "${book.title}"? Any local files linked to it become unmatched.`)) return
+        try {
+            const r = await fetch(`/api/books/${book.id}`, { method: 'DELETE' })
+            if (!r.ok) throw new Error(r.statusText)
+            setData(prev => prev ? { ...prev, books: prev.books.filter(b => b.id !== book.id) } : prev)
+        } catch (e) {
+            alert(`Delete failed: ${e.message}`)
         }
     }
 
@@ -960,10 +995,12 @@ export default function AuthorDetail() {
                 <button onClick={refresh} disabled={refreshing}>
                     {refreshing ? 'Refreshing…' : 'Refresh from OpenLibrary'}
                 </button>
-                <button onClick={() => setShowAddBook(true)}
-                        title="Catalogue a book OpenLibrary doesn't list yet">
-                    + Add book
-                </button>
+                {!(data.linkedTo && !data.linkedTo.isPenName) && (
+                    <button onClick={() => setShowAddBook(true)}
+                            title="Catalogue a book OpenLibrary doesn't list yet">
+                        + Add book
+                    </button>
+                )}
                 {rmConnected && (
                     <button
                         onClick={sendAllUnread}
@@ -1006,8 +1043,8 @@ export default function AuthorDetail() {
                         <React.Fragment key={b.id}>
                             <tr className={b.owned ? '' : 'missing'}>
                                 <td>
-                                    {b.coverId
-                                        ? <img alt="" loading="lazy" src={`https://covers.openlibrary.org/b/id/${b.coverId}-S.jpg`} />
+                                    {bookCoverSrc(b)
+                                        ? <img alt="" loading="lazy" src={bookCoverSrc(b)} />
                                         : null}
                                 </td>
                                 {series && <td style={{ textAlign: 'center', fontWeight: 600, fontSize: '0.85rem', color: 'var(--subtle)', whiteSpace: 'nowrap' }}>
@@ -1015,6 +1052,7 @@ export default function AuthorDetail() {
                                 </td>}
                                 <td>
                                     <WorkTitle workKey={b.openLibraryWorkKey} title={b.title} />
+                                    <BookActions book={b} onEdit={setEditBook} onDelete={deleteBook} />
                                     {editingSeriesId === b.id ? (
                                         <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
                                             <SeriesNamePicker
@@ -1118,6 +1156,7 @@ export default function AuthorDetail() {
                                     <td style={{ paddingLeft: '2rem' }}>
                                         <span className="subtle" style={{ marginRight: '0.3rem' }}>↳</span>
                                         <WorkTitle workKey={ed.openLibraryWorkKey} title={ed.title} />
+                                        <BookActions book={ed} onEdit={setEditBook} onDelete={deleteBook} />
                                         {!ed.owned && nzbSites.length > 0 && (
                                             <div style={{ marginTop: '0.2rem' }}>
                                                 {nzbLinks(ed.title)}
@@ -1174,13 +1213,14 @@ export default function AuthorDetail() {
                         <React.Fragment key={b.id}>
                             <tr className={b.owned ? '' : 'missing'}>
                                 <td>
-                                    {b.coverId
-                                        ? <img alt="" loading="lazy" src={`https://covers.openlibrary.org/b/id/${b.coverId}-S.jpg`} />
+                                    {bookCoverSrc(b)
+                                        ? <img alt="" loading="lazy" src={bookCoverSrc(b)} />
                                         : null}
                                 </td>
                                 {series && <td></td>}
                                 <td>
                                     <WorkTitle workKey={b.openLibraryWorkKey} title={b.title} />
+                                    <BookActions book={b} onEdit={setEditBook} onDelete={deleteBook} />
                                     {editingSeriesId === b.id ? (
                                         <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
                                             <SeriesNamePicker
@@ -1241,6 +1281,7 @@ export default function AuthorDetail() {
                                     <td style={{ paddingLeft: '2rem' }}>
                                         <span className="subtle" style={{ marginRight: '0.3rem' }}>↳</span>
                                         <WorkTitle workKey={ed.openLibraryWorkKey} title={ed.title} />
+                                        <BookActions book={ed} onEdit={setEditBook} onDelete={deleteBook} />
                                         {!ed.owned && nzbSites.length > 0 && <div style={{ marginTop: '0.2rem' }}>{nzbLinks(ed.title)}</div>}
                                         {ed.hasLocalFiles
                                             ? <div className="subtle">
@@ -1307,6 +1348,13 @@ export default function AuthorDetail() {
                     knownSeries={knownSeries}
                     onAdded={(updated) => { setData(updated); setShowAddBook(false) }}
                     onClose={() => setShowAddBook(false)} />
+            )}
+
+            {editBook && (
+                <BookEditDialog
+                    book={editBook}
+                    onSaved={() => { setEditBook(null); reloadAuthor() }}
+                    onClose={() => setEditBook(null)} />
             )}
         </section>
     )

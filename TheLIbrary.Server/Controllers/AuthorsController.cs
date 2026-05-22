@@ -222,7 +222,9 @@ public class AuthorsController : ControllerBase
         string? SeriesPosition,
         IReadOnlyList<LocalFileRow> Files,
         int? SeriesId = null,
-        string? SeriesPrimaryAuthorName = null);
+        string? SeriesPrimaryAuthorName = null,
+        string? CoverUrl = null,
+        int AuthorId = 0);
 
     public sealed record LocalFileRow(int Id, string FullPath, IReadOnlyList<string> Formats);
 
@@ -330,8 +332,8 @@ public class AuthorsController : ControllerBase
                 .ThenBy(b => b.Title)
                 .Select(b => new
                 {
-                    b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
-                    b.ManuallyOwned, b.ReadStatus, b.ReadAt, b.Wanted, b.Subjects,
+                    b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.CoverUrl, b.OpenLibraryWorkKey,
+                    b.AuthorId, b.ManuallyOwned, b.ReadStatus, b.ReadAt, b.Wanted, b.Subjects,
                     SeriesName = b.Series != null ? b.Series.Name : null,
                     b.SeriesId,
                     SeriesPrimaryAuthorName = b.Series != null && b.Series.PrimaryAuthor != null ? b.Series.PrimaryAuthor.Name : null,
@@ -353,7 +355,9 @@ public class AuthorsController : ControllerBase
             b.SeriesPosition,
             b.Files.Select(f => new LocalFileRow(f.Id, f.FullPath, FormatsInFolder(f.FullPath))).ToList(),
             b.SeriesId,
-            b.SeriesPrimaryAuthorName
+            b.SeriesPrimaryAuthorName,
+            b.CoverUrl,
+            b.AuthorId
         )).ToList();
 
         // Include orphan rows (AuthorId == null) whose Calibre folder matches

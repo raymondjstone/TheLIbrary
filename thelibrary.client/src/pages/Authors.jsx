@@ -11,7 +11,7 @@ const loadPrefs = () => {
     catch { return {} }
 }
 const savePrefs = (prefs) => {
-    try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)) } catch { }
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)) } catch { /* localStorage unavailable */ }
 }
 
 // Module-level cache: navigating to a detail page and back shows the list
@@ -152,7 +152,8 @@ export default function Authors() {
         )
     }
 
-    const Pager = () => totalPages <= 1 ? null : (
+    // Plain JSX value (not a component) so it isn't re-created each render.
+    const pager = totalPages <= 1 ? null : (
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: '0.75rem 0', fontSize: '0.9rem', color: 'var(--subtle)' }}>
             <button className="btn-ghost" disabled={safePage <= 1} onClick={() => setPage(safePage - 1)}>← Prev</button>
             <span>Page {safePage} of {totalPages}</span>
@@ -199,7 +200,7 @@ export default function Authors() {
                 : authors.length === 0
                     ? <p className="subtle">No authors tracked yet. Click <strong>Add author</strong> above.</p>
                     : <>
-                        <Pager />
+                        {pager}
                         <table className="grid">
                             <thead>
                                 <tr>
@@ -243,7 +244,7 @@ export default function Authors() {
                                 ))}
                             </tbody>
                         </table>
-                        <Pager />
+                        {pager}
                     </>
             }
 

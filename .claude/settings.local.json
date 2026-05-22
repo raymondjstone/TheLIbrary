@@ -52,7 +52,8 @@
       "Bash(grep -iE \"archivefactory|^Open$\")",
       "Bash(grep -iE \"Factory$\")",
       "Bash(git *)",
-      "Bash(node *)"
+      "Bash(node *)",
+      "Bash(export ConnectionStrings__Library=\"Server=\\(local\\);Database=design;Trusted_Connection=True;TrustServerCertificate=True\")"
     ]
   }
 }

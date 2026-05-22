@@ -11,7 +11,152 @@ namespace TheLibrary.Server.Controllers;
 public class BooksController : ControllerBase
 {
     private readonly LibraryDbContext _db;
-    public BooksController(LibraryDbContext db) { _db = db; }
+    private readonly IHttpClientFactory _httpFactory;
+
+    public BooksController(LibraryDbContext db, IHttpClientFactory httpFactory)
+    {
+        _db = db;
+        _httpFactory = httpFactory;
+    }
+
+    public sealed record UpdateBookRequest(string? Title, int? FirstPublishYear, int? AuthorId);
+
+    // Edits a book's title, publish year and/or author. Author reassignment is
+    // rejected when the target author already has this work (the per-author
+    // work-key uniqueness index would otherwise blow up).
+    [HttpPut("{id:int}")]
+    public async Task<IActionResult> Update(int id, [FromBody] UpdateBookRequest body, CancellationToken ct)
+    {
+        var book = await _db.Books.FirstOrDefaultAsync(b => b.Id == id, ct);
+        if (book is null) return NotFound();
+
+        if (body.FirstPublishYear is int y && (y < 1 || y > DateTime.UtcNow.Year + 5))
+            return BadRequest(new { error = $"First publish year looks implausible: {y}" });
+
+        if (body.AuthorId is int newAuthorId && newAuthorId != book.AuthorId)
+        {
+            var target = await _db.Authors.FirstOrDefaultAsync(a => a.Id == newAuthorId, ct);
+            if (target is null) return BadRequest(new { error = "Target author not found" });
+            var clash = await _db.Books.AnyAsync(
+                b => b.AuthorId == newAuthorId
+                  && b.OpenLibraryWorkKey == book.OpenLibraryWorkKey
+                  && b.Id != id, ct);
+            if (clash) return Conflict(new { error = "The target author already has this work." });
+            book.AuthorId = newAuthorId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(body.Title))
+        {
+            var title = body.Title.Trim();
+            book.Title = title;
+            book.NormalizedTitle = Services.Sync.TitleNormalizer.Normalize(title);
+        }
+        book.FirstPublishYear = body.FirstPublishYear;
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { book.Id, book.Title, book.FirstPublishYear, book.AuthorId });
+    }
+
+    // Deletes a book. Any local files linked to it fall back to unmatched
+    // (the LocalBookFile→Book FK is SetNull); the author and series are kept.
+    [HttpDelete("{id:int}")]
+    public async Task<IActionResult> Delete(int id, CancellationToken ct)
+    {
+        var book = await _db.Books.FirstOrDefaultAsync(b => b.Id == id, ct);
+        if (book is null) return NotFound();
+        _db.Books.Remove(book);
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    public sealed record ManualBookRow(
+        int Id, string Title, int? FirstPublishYear, int? CoverId, string? CoverUrl,
+        string? Series, string? SeriesPosition, int AuthorId, string AuthorName,
+        bool Owned, string OpenLibraryWorkKey);
+
+    // Every manually-added book — synthetic "XX" work key, not (yet) on
+    // OpenLibrary. Surfaces them as a group so they can be reviewed, edited
+    // or deleted from one place.
+    [HttpGet("manual")]
+    public async Task<IReadOnlyList<ManualBookRow>> Manual(CancellationToken ct)
+    {
+        return await _db.Books.AsNoTracking()
+            .Where(b => b.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix))
+            .OrderBy(b => b.Author.Name).ThenBy(b => b.Title)
+            .Select(b => new ManualBookRow(
+                b.Id, b.Title, b.FirstPublishYear, b.CoverId, b.CoverUrl,
+                b.Series != null ? b.Series.Name : null, b.SeriesPosition,
+                b.AuthorId, b.Author.Name,
+                b.ManuallyOwned || b.LocalFiles.Any(), b.OpenLibraryWorkKey))
+            .ToListAsync(ct);
+    }
+
+    public sealed record SetCoverRequest(string? Url);
+
+    // Sets (or clears, with an empty URL) a custom cover image for a book —
+    // mainly for manual books that have no OpenLibrary cover.
+    [HttpPut("{id:int}/cover")]
+    public async Task<IActionResult> SetCover(int id, [FromBody] SetCoverRequest body, CancellationToken ct)
+    {
+        var book = await _db.Books.FirstOrDefaultAsync(b => b.Id == id, ct);
+        if (book is null) return NotFound();
+
+        var url = body.Url?.Trim();
+        if (!string.IsNullOrEmpty(url) && !Uri.TryCreate(url, UriKind.Absolute, out _))
+            return BadRequest(new { error = "Cover must be an absolute URL." });
+        book.CoverUrl = string.IsNullOrEmpty(url) ? null : url;
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { book.Id, book.CoverUrl });
+    }
+
+    public sealed record CoverCandidate(string ThumbnailUrl, string Title, string? Authors);
+
+    // Cover-image candidates from Google Books (keyless volume search).
+    // Best-effort: any failure returns an empty list rather than an error.
+    [HttpGet("cover-search")]
+    public async Task<IReadOnlyList<CoverCandidate>> CoverSearch(
+        [FromQuery] string q, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(q)) return Array.Empty<CoverCandidate>();
+        try
+        {
+            var http = _httpFactory.CreateClient();
+            http.Timeout = TimeSpan.FromSeconds(10);
+            var url = $"https://www.googleapis.com/books/v1/volumes?maxResults=8&q={Uri.EscapeDataString(q)}";
+            using var resp = await http.GetAsync(url, ct);
+            if (!resp.IsSuccessStatusCode) return Array.Empty<CoverCandidate>();
+
+            using var stream = await resp.Content.ReadAsStreamAsync(ct);
+            using var doc = await System.Text.Json.JsonDocument.ParseAsync(stream, cancellationToken: ct);
+            if (!doc.RootElement.TryGetProperty("items", out var items)) return Array.Empty<CoverCandidate>();
+
+            var result = new List<CoverCandidate>();
+            foreach (var item in items.EnumerateArray())
+            {
+                if (!item.TryGetProperty("volumeInfo", out var vi)) continue;
+                if (!vi.TryGetProperty("imageLinks", out var links)) continue;
+                var thumb = links.TryGetProperty("thumbnail", out var t) ? t.GetString()
+                          : links.TryGetProperty("smallThumbnail", out var st) ? st.GetString()
+                          : null;
+                if (string.IsNullOrEmpty(thumb)) continue;
+                // Google serves http thumbnails — force https so the page doesn't block them.
+                thumb = thumb.Replace("http://", "https://");
+
+                var title = vi.TryGetProperty("title", out var tt) ? tt.GetString() ?? "" : "";
+                string? authors = null;
+                if (vi.TryGetProperty("authors", out var au)
+                    && au.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    authors = string.Join(", ", au.EnumerateArray()
+                        .Select(a => a.GetString()).Where(s => !string.IsNullOrEmpty(s)));
+                result.Add(new CoverCandidate(thumb, title, authors));
+            }
+            return result;
+        }
+        catch
+        {
+            return Array.Empty<CoverCandidate>();
+        }
+    }
 
     public sealed record OwnershipRequest(bool Owned);
 

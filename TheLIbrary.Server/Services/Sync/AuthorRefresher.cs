@@ -25,6 +25,10 @@ public sealed class AuthorRefresher
     // Author is excluded if every work's first_publish_year is < this.
     public const int MinPublishYear = 1930;
 
+    // Manual-book title score at/above which a fetched OL work is treated as
+    // the same book, so the manual row is promoted in place.
+    private const double ManualPromotionTitleThreshold = 0.92;
+
     // Extracts a series position from OL title parentheticals. Handles:
     //   (Series, #3)  (Series, Book 3)  (Series, Book #3)  (Series, 3)
     //   (Series Book 3)  (Series #3)  (Book 3)  (Part 2)  (Vol. 4)
@@ -155,10 +159,6 @@ public sealed class AuthorRefresher
             .Where(b => b.AuthorId == author.Id
                      && b.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix))
             .ToListAsync(ct);
-        var manualByTitle = manualBooks
-            .Where(b => !string.IsNullOrEmpty(b.NormalizedTitle))
-            .GroupBy(b => b.NormalizedTitle!, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
         // Starred authors (Priority >= 1) bypass the English-only filter so
         // works in any language are retrieved.
@@ -220,8 +220,10 @@ public sealed class AuthorRefresher
             // OL-sourced fields are refreshed; the series, position, read
             // status and ownership the user set are left as they were.
             var normTitle = TitleNormalizer.Normalize(doc.Title);
-            if (manualByTitle.Remove(normTitle, out var manual))
+            var manual = PickManualToPromote(manualBooks, normTitle);
+            if (manual is not null)
             {
+                manualBooks.Remove(manual);
                 manual.OpenLibraryWorkKey = workKey;
                 manual.Title = doc.Title!;
                 manual.NormalizedTitle = normTitle;
@@ -355,6 +357,31 @@ public sealed class AuthorRefresher
         if (docs is null || docs.Count == 0) return null;
         var norm = TitleNormalizer.NormalizeAuthor(searchName);
         return docs.FirstOrDefault(d => TitleNormalizer.NormalizeAuthor(d.Name) == norm);
+    }
+
+    // Chooses which manually-added book (if any) a fetched OL work should
+    // promote into. An exact normalized-title match wins; failing that, a
+    // single clear fuzzy match above the threshold. An ambiguous tie promotes
+    // nothing — a duplicate the user can merge is safer than a wrong rewrite.
+    private static Book? PickManualToPromote(List<Book> manual, string normTitle)
+    {
+        if (manual.Count == 0 || normTitle.Length == 0) return null;
+
+        var exact = manual
+            .Where(m => string.Equals(m.NormalizedTitle, normTitle, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (exact.Count == 1) return exact[0];
+        if (exact.Count > 1) return null;
+
+        var fuzzy = manual
+            .Where(m => !string.IsNullOrEmpty(m.NormalizedTitle))
+            .Select(m => (Book: m, Score: FuzzyScore.JaroWinkler(m.NormalizedTitle!, normTitle)))
+            .Where(x => x.Score >= ManualPromotionTitleThreshold)
+            .OrderByDescending(x => x.Score)
+            .ToList();
+        if (fuzzy.Count == 1) return fuzzy[0].Book;
+        if (fuzzy.Count > 1 && fuzzy[0].Score > fuzzy[1].Score) return fuzzy[0].Book;
+        return null;
     }
 
     // OL subjects list → semicolon-delimited string, capped at 2000 chars.

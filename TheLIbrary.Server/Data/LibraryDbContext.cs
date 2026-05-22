@@ -129,6 +129,7 @@ public class LibraryDbContext : DbContext
             e.Property(x => x.Author).HasMaxLength(512);
             e.Property(x => x.Title).HasMaxLength(1024);
             e.Property(x => x.SeriesPos).HasMaxLength(100);
+            e.Property(x => x.Isbn).HasMaxLength(20);
             e.HasIndex(x => new { x.Author, x.Title });
         });
 

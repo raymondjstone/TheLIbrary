@@ -21,6 +21,7 @@ public sealed class ScheduledJobs
     private readonly SeriesOrganizerService _organizer;
     private readonly UnzipService _unzip;
     private readonly AuthorFolderDisambiguatorService _disambiguator;
+    private readonly SameNameAuthorService _sameNames;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -31,12 +32,13 @@ public sealed class ScheduledJobs
         SeriesOrganizerService organizer,
         UnzipService unzip,
         AuthorFolderDisambiguatorService disambiguator,
+        SameNameAuthorService sameNames,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
     {
         _sync = sync; _incoming = incoming; _organizer = organizer; _unzip = unzip;
-        _disambiguator = disambiguator;
+        _disambiguator = disambiguator; _sameNames = sameNames;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -93,6 +95,12 @@ public sealed class ScheduledJobs
         ScheduleJobIds.DisambiguateFolders, manualTrigger,
         ct => _disambiguator.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _disambiguator.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunSameNameAuthors(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.SameNameAuthors, manualTrigger,
+        ct => _sameNames.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _sameNames.IsRunning);
 
     private async Task RunWithPolling(
         string jobId,

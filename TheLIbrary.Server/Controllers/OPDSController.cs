@@ -4,6 +4,7 @@ using System.Text;
 using System.Xml.Linq;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.Sync;
 
 namespace TheLibrary.Server.Controllers;
 
@@ -104,11 +105,14 @@ public class OPDSController : ControllerBase
                     entry.Add(new XElement(Atom + "category", new XAttribute("term", subj), new XAttribute("label", subj)));
             }
 
-            entry.Add(new XElement(Atom + "link",
-                new XAttribute("rel", "alternate"),
-                new XAttribute("href", $"https://openlibrary.org/works/{b.OpenLibraryWorkKey}"),
-                new XAttribute("type", "text/html"),
-                new XAttribute("title", "OpenLibrary")));
+            // Manually-added books (synthetic "XX" keys) have no OpenLibrary
+            // page, so the alternate link is omitted for them.
+            if (!ManualWorkKey.IsManual(b.OpenLibraryWorkKey))
+                entry.Add(new XElement(Atom + "link",
+                    new XAttribute("rel", "alternate"),
+                    new XAttribute("href", $"https://openlibrary.org/works/{b.OpenLibraryWorkKey}"),
+                    new XAttribute("type", "text/html"),
+                    new XAttribute("title", "OpenLibrary")));
 
             var summary = new StringBuilder();
             if (!string.IsNullOrWhiteSpace(b.Series?.Name))
@@ -159,10 +163,11 @@ public class OPDSController : ControllerBase
                     new XAttribute("href", $"https://covers.openlibrary.org/b/id/{b.CoverId}-M.jpg"),
                     new XAttribute("type", "image/jpeg")));
 
-            entry.Add(new XElement(Atom + "link",
-                new XAttribute("rel", "alternate"),
-                new XAttribute("href", $"https://openlibrary.org/works/{b.OpenLibraryWorkKey}"),
-                new XAttribute("type", "text/html")));
+            if (!ManualWorkKey.IsManual(b.OpenLibraryWorkKey))
+                entry.Add(new XElement(Atom + "link",
+                    new XAttribute("rel", "alternate"),
+                    new XAttribute("href", $"https://openlibrary.org/works/{b.OpenLibraryWorkKey}"),
+                    new XAttribute("type", "text/html")));
 
             return entry;
         });
@@ -208,10 +213,11 @@ public class OPDSController : ControllerBase
                     new XAttribute("href", $"https://covers.openlibrary.org/b/id/{b.CoverId}-M.jpg"),
                     new XAttribute("type", "image/jpeg")));
 
-            entry.Add(new XElement(Atom + "link",
-                new XAttribute("rel", "alternate"),
-                new XAttribute("href", $"https://openlibrary.org/works/{b.OpenLibraryWorkKey}"),
-                new XAttribute("type", "text/html")));
+            if (!ManualWorkKey.IsManual(b.OpenLibraryWorkKey))
+                entry.Add(new XElement(Atom + "link",
+                    new XAttribute("rel", "alternate"),
+                    new XAttribute("href", $"https://openlibrary.org/works/{b.OpenLibraryWorkKey}"),
+                    new XAttribute("type", "text/html")));
 
             entry.Add(new XElement(Atom + "summary", b.Owned ? "Owned" : "Missing"));
             return entry;
