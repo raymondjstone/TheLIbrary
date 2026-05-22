@@ -33,4 +33,11 @@ public static class AppSettingKeys
     // also unlocks OpenLibrary's 3 req/sec identified tier.
     public const string OpenLibraryAppName = "OpenLibraryAppName";
     public const string OpenLibraryContactEmail = "OpenLibraryContactEmail";
+
+    // Limits for the refresh-due-works job, set from the Settings page.
+    //   RefreshMaxAuthorsPerRun — most authors refreshed in one run (0 = no limit).
+    //   RefreshEarlyWhenNoneDue — when no author is due, how many of the
+    //                             soonest-due authors to refresh early.
+    public const string RefreshMaxAuthorsPerRun = "RefreshMaxAuthorsPerRun";
+    public const string RefreshEarlyWhenNoneDue = "RefreshEarlyWhenNoneDue";
 }

@@ -30,6 +30,9 @@ export default function Settings() {
     const [olIdentity, setOlIdentity] = useState(null)
     const [olEdit, setOlEdit] = useState({ appName: '', contactEmail: '' })
     const [olSaving, setOlSaving] = useState(false)
+    const [refreshLimits, setRefreshLimits] = useState(null)
+    const [refreshLimitsEdit, setRefreshLimitsEdit] = useState({ maxAuthorsPerRun: 0, maxEarlyWhenNoneDue: 200 })
+    const [refreshLimitsSaving, setRefreshLimitsSaving] = useState(false)
 
     const load = async () => {
         // Independent loads — a failing endpoint (e.g. pending migration) must
@@ -85,6 +88,17 @@ export default function Settings() {
             const body = await r.json()
             setOlIdentity(body)
             setOlEdit({ appName: body.appName ?? '', contactEmail: body.contactEmail ?? '' })
+        } catch (e) { setError(prev => prev ?? String(e)) }
+
+        try {
+            const r = await fetch('/api/settings/refresh-limits')
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setRefreshLimits(body)
+            setRefreshLimitsEdit({
+                maxAuthorsPerRun: body.maxAuthorsPerRun,
+                maxEarlyWhenNoneDue: body.maxEarlyWhenNoneDue,
+            })
         } catch (e) { setError(prev => prev ?? String(e)) }
     }
 
@@ -262,6 +276,32 @@ export default function Settings() {
         }
     }
 
+    const saveRefreshLimits = async () => {
+        setError(null)
+        setRefreshLimitsSaving(true)
+        try {
+            const r = await fetch('/api/settings/refresh-limits', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    maxAuthorsPerRun: Number(refreshLimitsEdit.maxAuthorsPerRun) || 0,
+                    maxEarlyWhenNoneDue: Number(refreshLimitsEdit.maxEarlyWhenNoneDue) || 0,
+                }),
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setRefreshLimits(body)
+            setRefreshLimitsEdit({
+                maxAuthorsPerRun: body.maxAuthorsPerRun,
+                maxEarlyWhenNoneDue: body.maxEarlyWhenNoneDue,
+            })
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setRefreshLimitsSaving(false)
+        }
+    }
+
     const updateRow = (id, patch) => {
         setLocations(locations.map(l => l.id === id ? { ...l, ...patch } : l))
     }
@@ -418,6 +458,37 @@ export default function Settings() {
                     User-Agent: {olIdentity.userAgent}
                 </p>
             )}
+
+            <h2 style={{ marginTop: '1.5rem' }}>Works refresh limits</h2>
+            <p className="subtle">
+                Limits for the <code>refresh-due-works</code> job.
+                {' '}<strong>Max authors per run</strong> caps how many authors have
+                their works fetched in a single run (0 = no limit).
+                {' '}<strong>Pull early when none due</strong> — when no author is
+                actually due, this many of the soonest-due authors are refreshed
+                early so the run still does useful work (0 disables early pulls).
+            </p>
+            <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+                <label>Max authors per run{' '}
+                    <input type="number" min="0" style={{ width: 90 }}
+                        value={refreshLimitsEdit.maxAuthorsPerRun}
+                        onChange={e => setRefreshLimitsEdit(p => ({ ...p, maxAuthorsPerRun: e.target.value }))} />
+                </label>
+                <label>Pull early when none due{' '}
+                    <input type="number" min="0" style={{ width: 90 }}
+                        value={refreshLimitsEdit.maxEarlyWhenNoneDue}
+                        onChange={e => setRefreshLimitsEdit(p => ({ ...p, maxEarlyWhenNoneDue: e.target.value }))} />
+                </label>
+                <button onClick={saveRefreshLimits} disabled={refreshLimitsSaving}>
+                    {refreshLimitsSaving ? 'Saving…' : 'Save'}
+                </button>
+                {refreshLimits && (
+                    <span className="subtle">
+                        active: {refreshLimits.maxAuthorsPerRun === 0 ? 'no cap' : `${refreshLimits.maxAuthorsPerRun}/run`}
+                        {', '}{refreshLimits.maxEarlyWhenNoneDue} early
+                    </span>
+                )}
+            </div>
 
             <h2 style={{ marginTop: '1.5rem' }}>reMarkable sync</h2>
             <p className="subtle">

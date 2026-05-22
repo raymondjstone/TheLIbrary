@@ -979,6 +979,11 @@ public sealed class SyncService
         return true;
     }
 
+    // Reads a non-negative integer AppSetting value, falling back to `fallback`
+    // when the row is missing, blank, or unparseable.
+    private static int ReadIntSetting(IReadOnlyDictionary<string, string> rows, string key, int fallback)
+        => rows.TryGetValue(key, out var v) && int.TryParse(v, out var n) && n >= 0 ? n : fallback;
+
     // Walks the Authors table for anyone whose NextFetchAt is null or past and
     // re-runs AuthorRefresher per author. Null NextFetchAt goes first (never
     // refreshed), then oldest-due up. RefreshAsync saves per-author, so a
@@ -1008,8 +1013,17 @@ public sealed class SyncService
                 var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
                 var refresher = scope.ServiceProvider.GetRequiredService<AuthorRefresher>();
 
-                const int MinimumBatch = 100;
                 var now = DateTime.UtcNow;
+
+                // Operational limits, read fresh from the DB each run (Settings page).
+                var limits = await db.AppSettings
+                    .Where(s => s.Key == AppSettingKeys.RefreshMaxAuthorsPerRun
+                             || s.Key == AppSettingKeys.RefreshEarlyWhenNoneDue)
+                    .ToDictionaryAsync(s => s.Key, s => s.Value, hostCt);
+                int maxPerRun = ReadIntSetting(limits, AppSettingKeys.RefreshMaxAuthorsPerRun, 0);
+                int maxEarly  = ReadIntSetting(limits, AppSettingKeys.RefreshEarlyWhenNoneDue, 200);
+
+                // Authors actually due (NextFetchAt null or past), oldest first.
                 var authorIds = await db.Authors
                     .Where(a => a.NextFetchAt == null || a.NextFetchAt <= now)
                     .OrderBy(a => a.NextFetchAt.HasValue) // false (null) first
@@ -1017,18 +1031,25 @@ public sealed class SyncService
                     .Select(a => a.Id)
                     .ToListAsync(hostCt);
 
+                // Nothing due → pull up to `maxEarly` of the soonest-due authors
+                // forward so the run still does useful work.
                 int earlyCount = 0;
-                var enqueuedJobs = JobStorage.Current.GetMonitoringApi().GetStatistics().Enqueued;
-                if (enqueuedJobs < 5 && authorIds.Count < MinimumBatch)
+                if (authorIds.Count == 0 && maxEarly > 0)
                 {
-                    var extra = await db.Authors
+                    authorIds = await db.Authors
                         .Where(a => a.NextFetchAt > now)
                         .OrderBy(a => a.NextFetchAt)
                         .Select(a => a.Id)
-                        .Take(MinimumBatch - authorIds.Count)
+                        .Take(maxEarly)
                         .ToListAsync(hostCt);
-                    earlyCount = extra.Count;
-                    authorIds.AddRange(extra);
+                    earlyCount = authorIds.Count;
+                }
+
+                // Cap the whole run (0 = no limit).
+                if (maxPerRun > 0 && authorIds.Count > maxPerRun)
+                {
+                    authorIds = authorIds.Take(maxPerRun).ToList();
+                    if (earlyCount > maxPerRun) earlyCount = maxPerRun;
                 }
 
                 MutateState(s =>
@@ -1039,7 +1060,7 @@ public sealed class SyncService
                     s.Message = authorIds.Count == 0
                         ? "No authors due for refresh"
                         : earlyCount > 0
-                            ? $"Refreshing {authorIds.Count} author(s) ({earlyCount} pulled early; queue had {enqueuedJobs} job(s))"
+                            ? $"Refreshing {authorIds.Count} author(s) ({earlyCount} pulled early — none were due)"
                             : $"Refreshing {authorIds.Count} due author(s)";
                 });
 

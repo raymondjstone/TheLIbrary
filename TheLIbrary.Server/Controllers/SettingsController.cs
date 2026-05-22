@@ -64,4 +64,45 @@ public class SettingsController : ControllerBase
         await ol.UpdateAsync(body.AppName, email, ct);
         return new OpenLibraryIdentityDto(ol.AppName, ol.ContactEmail, ol.IsIdentified, ol.UserAgent);
     }
+
+    public sealed record RefreshLimitsDto(int MaxAuthorsPerRun, int MaxEarlyWhenNoneDue);
+
+    // Limits for the refresh-due-works job: how many authors it refreshes per
+    // run (0 = no limit), and how many to refresh early when none are due.
+    [HttpGet("refresh-limits")]
+    public async Task<RefreshLimitsDto> GetRefreshLimits(CancellationToken ct)
+    {
+        var rows = await _db.AppSettings
+            .Where(s => s.Key == AppSettingKeys.RefreshMaxAuthorsPerRun
+                     || s.Key == AppSettingKeys.RefreshEarlyWhenNoneDue)
+            .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
+        return new RefreshLimitsDto(
+            ReadInt(rows, AppSettingKeys.RefreshMaxAuthorsPerRun, 0),
+            ReadInt(rows, AppSettingKeys.RefreshEarlyWhenNoneDue, 200));
+    }
+
+    [HttpPut("refresh-limits")]
+    public async Task<ActionResult<RefreshLimitsDto>> SetRefreshLimits(
+        [FromBody] RefreshLimitsDto body, CancellationToken ct)
+    {
+        if (body.MaxAuthorsPerRun < 0 || body.MaxEarlyWhenNoneDue < 0)
+            return BadRequest(new { error = "Values cannot be negative." });
+
+        await UpsertSettingAsync(AppSettingKeys.RefreshMaxAuthorsPerRun,
+            body.MaxAuthorsPerRun.ToString(), ct);
+        await UpsertSettingAsync(AppSettingKeys.RefreshEarlyWhenNoneDue,
+            body.MaxEarlyWhenNoneDue.ToString(), ct);
+        await _db.SaveChangesAsync(ct);
+        return new RefreshLimitsDto(body.MaxAuthorsPerRun, body.MaxEarlyWhenNoneDue);
+    }
+
+    private static int ReadInt(IReadOnlyDictionary<string, string> rows, string key, int fallback)
+        => rows.TryGetValue(key, out var v) && int.TryParse(v, out var n) && n >= 0 ? n : fallback;
+
+    private async Task UpsertSettingAsync(string key, string value, CancellationToken ct)
+    {
+        var row = await _db.AppSettings.FirstOrDefaultAsync(s => s.Key == key, ct);
+        if (row is null) _db.AppSettings.Add(new AppSetting { Key = key, Value = value });
+        else row.Value = value;
+    }
 }

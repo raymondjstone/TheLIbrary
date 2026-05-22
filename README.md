@@ -418,9 +418,15 @@ When set, it overrides the calculated cadence — useful for very active authors
 you want checked daily or long-dormant ones you only want checked monthly.
 Set to blank to revert to the calculated interval.
 
-The `refresh-due-works` scheduled job only pulls authors early (before
-`NextFetchAt`) when the Hangfire queue has fewer than 5 pending jobs, ensuring
-the catch-up pass doesn't pile on during busy periods.
+The `refresh-due-works` scheduled job refreshes every author whose
+`NextFetchAt` is due. Two limits — set on the **Settings** page under **Works
+refresh limits**, stored in the database — govern the rest:
+
+- **Max authors per run** caps how many authors are refreshed in a single run;
+  `0` (the default) means no limit.
+- **Pull early when none are due** — when no author is actually due, this many
+  of the soonest-due authors are refreshed early so the run still does useful
+  work (default `200`; `0` disables early pulls).
 
 ## Incoming pipeline
 
@@ -1150,6 +1156,8 @@ deployment without re-syncing.
 | PUT    | `/api/settings/incoming` | Update the incoming folder path |
 | GET    | `/api/settings/openlibrary` | Read the OpenLibrary `User-Agent` identity (app name + contact email) |
 | PUT    | `/api/settings/openlibrary` | Update the OpenLibrary app name + contact email (stored in the DB) |
+| GET    | `/api/settings/refresh-limits` | Read the refresh-due-works limits (max authors per run, pull-early count) |
+| PUT    | `/api/settings/refresh-limits` | Update the refresh-due-works limits |
 | GET    | `/api/ignored-folders` | Folder names excluded from every scan |
 | POST   | `/api/ignored-folders` | Add an ignored folder |
 | DELETE | `/api/ignored-folders/{id}` | Remove an ignored folder |
