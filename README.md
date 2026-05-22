@@ -2,9 +2,14 @@
 
 Self-hosted collection manager that tracks a **watchlist of authors from
 [OpenLibrary](https://openlibrary.org/developers/api)** and reconciles their
-published works against your local Calibre library so you can see, per author,
+published works against your local ebook files so you can see, per author,
 which books you own and which you're missing. Also handles ingesting new files
 from a drop folder and re-running matching against previously-unmatched files.
+
+**You don't need an existing Calibre library to start.** Point it at an empty
+folder and grow the collection through the drop-folder pipeline, use any plain
+folder tree (Calibre layout is supported but not required), or run it with no
+local files at all as a pure author/works tracker and wishlist.
 
 ## Stack
 
@@ -768,9 +773,11 @@ failing fast on contention. The dashboard is exposed at `/hangfire`.
   [nodejs.org](https://nodejs.org). Check with `node --version`.
 - **A SQL Server instance** — any edition reachable over TCP/IP works. The next
   section walks through the easy free options.
-- **A folder of ebooks** — either an existing Calibre library or any folder
-  tree the server can read. You can also start empty and populate via the
-  incoming pipeline.
+- **A folder for ebooks** — *not required to be a Calibre library, or to exist
+  yet.* An existing Calibre library works; so does any plain folder tree, or an
+  empty folder you populate later through the incoming pipeline. You can even
+  skip library locations entirely and use the app purely to track authors,
+  works, and a wishlist.
 - *(optional)* **Calibre's `ebook-convert` CLI** — only needed if you want to
   push non-EPUB/PDF formats to reMarkable. See [reMarkable sync](#remarkable-sync).
 - *(optional)* **Docker** — useful for the one-shot SQL Server container
