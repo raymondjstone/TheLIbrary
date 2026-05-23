@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
+using TheLibrary.Server.Services.IO;
 using TheLibrary.Server.Services.Sync;
 
 namespace TheLibrary.Server.Services.Incoming;
@@ -17,11 +18,12 @@ public sealed record IncomingResult(
 public sealed class IncomingProcessor
 {
     private readonly LibraryDbContext _db;
+    private readonly IFileSystem _fs;
     private readonly ILogger<IncomingProcessor> _log;
 
-    public IncomingProcessor(LibraryDbContext db, ILogger<IncomingProcessor> log)
+    public IncomingProcessor(LibraryDbContext db, IFileSystem fs, ILogger<IncomingProcessor> log)
     {
-        _db = db; _log = log;
+        _db = db; _fs = fs; _log = log;
     }
 
     public Task<IncomingResult> ProcessAsync(CancellationToken ct)
@@ -34,7 +36,7 @@ public sealed class IncomingProcessor
         var incomingPath = incomingSetting?.Value?.Trim();
         if (string.IsNullOrWhiteSpace(incomingPath))
             throw new InvalidOperationException("Incoming folder is not configured.");
-        if (!Directory.Exists(incomingPath))
+        if (!_fs.DirectoryExists(incomingPath))
             throw new InvalidOperationException($"Incoming folder does not exist: {incomingPath}");
 
         var primary = await ResolvePrimaryAsync(ct);
@@ -49,7 +51,7 @@ public sealed class IncomingProcessor
     {
         var primary = await ResolvePrimaryAsync(ct);
         var unknownPath = Path.Combine(primary.Path, CalibreScanner.UnknownAuthorFolder);
-        if (!Directory.Exists(unknownPath))
+        if (!_fs.DirectoryExists(unknownPath))
             return new IncomingResult(0, 0, 0, 0, 0,
                 new[] { $"No '{CalibreScanner.UnknownAuthorFolder}' folder under {primary.Path}" });
         return await RunAsync(unknownPath, primary.Path, leaveUnmatchedInPlace: true, onProgress, ct);
@@ -61,7 +63,7 @@ public sealed class IncomingProcessor
             .FirstOrDefaultAsync(l => l.IsPrimary, ct);
         if (primary is null)
             throw new InvalidOperationException("No primary library location is set.");
-        if (!Directory.Exists(primary.Path))
+        if (!_fs.DirectoryExists(primary.Path))
             throw new InvalidOperationException($"Primary location does not exist: {primary.Path}");
         return primary;
     }
@@ -305,7 +307,7 @@ public sealed class IncomingProcessor
                         var authorSegment = Sanitize(matchedEntry.FolderName) ?? CalibreScanner.UnknownAuthorFolder;
                         destDir = Path.Combine(destRoot, authorSegment, titleFolder);
                     }
-                    Directory.CreateDirectory(destDir);
+                    _fs.CreateDirectory(destDir);
                     var destPath = Path.Combine(destDir, Path.GetFileName(file));
 
                     // If the computed destination IS the current file location
@@ -322,7 +324,7 @@ public sealed class IncomingProcessor
                         continue;
                     }
 
-                    MoveAndWait(file, destPath, overwrite: File.Exists(destPath));
+                    MoveAndWait(file, destPath, overwrite: _fs.FileExists(destPath));
                     var destFolderLabel = matchedEntry?.FolderName ?? CalibreScanner.UnknownAuthorFolder;
                     Report($"Moved {Path.GetFileName(file)} → {destFolderLabel}",
                         $"moved: {file} → {destPath}");
@@ -339,7 +341,7 @@ public sealed class IncomingProcessor
             // Drop the opf when it's either orphaned (no book siblings) or its
             // book siblings were all successfully moved out. If any book move
             // failed we leave the opf in place so a retry can still use it.
-            if (opfPath is not null && File.Exists(opfPath)
+            if (opfPath is not null && _fs.FileExists(opfPath)
                 && (books.Count == 0 || allMoved))
             {
                 try { DeleteAndWait(opfPath); Report(null, $"deleted opf: {opfPath}"); }
@@ -675,7 +677,7 @@ public sealed class IncomingProcessor
             onDirVisited?.Invoke(dir);
 
             List<string> files;
-            try { files = Directory.EnumerateFiles(dir, "*", opts).ToList(); }
+            try { files = _fs.EnumerateFiles(dir, "*", opts).ToList(); }
             catch (Exception ex)
             {
                 _log.LogDebug(ex, "Skipping unreadable files in {Dir}", dir);
@@ -684,7 +686,7 @@ public sealed class IncomingProcessor
 
             try
             {
-                foreach (var sub in Directory.EnumerateDirectories(dir, "*", opts))
+                foreach (var sub in _fs.EnumerateDirectories(dir, "*", opts))
                     queue.Enqueue(sub);
             }
             catch (Exception ex)
@@ -701,58 +703,58 @@ public sealed class IncomingProcessor
     // visible to subsequent calls, and AV / indexers often hold a transient
     // handle after we close our own — retry with backoff so we don't proceed
     // while a handle is still open on the previous file.
-    private static void DeleteAndWait(string path)
+    private void DeleteAndWait(string path)
     {
         const int maxAttempts = 6;
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             try
             {
-                if (File.Exists(path)) File.Delete(path);
-                for (var i = 0; i < 20 && File.Exists(path); i++) Thread.Sleep(50);
-                if (!File.Exists(path)) return;
+                if (_fs.FileExists(path)) _fs.DeleteFile(path);
+                for (var i = 0; i < 20 && _fs.FileExists(path); i++) Thread.Sleep(50);
+                if (!_fs.FileExists(path)) return;
             }
             catch (IOException) when (attempt < maxAttempts) { }
             catch (UnauthorizedAccessException) when (attempt < maxAttempts) { }
             Thread.Sleep(200 * attempt);
         }
         // Final attempt without swallowing — let the caller log the failure.
-        File.Delete(path);
+        _fs.DeleteFile(path);
     }
 
-    private static void MoveAndWait(string src, string dst, bool overwrite)
+    private void MoveAndWait(string src, string dst, bool overwrite)
     {
         const int maxAttempts = 6;
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             try
             {
-                File.Move(src, dst, overwrite);
-                for (var i = 0; i < 20 && (File.Exists(src) || !File.Exists(dst)); i++)
+                _fs.MoveFile(src, dst, overwrite);
+                for (var i = 0; i < 20 && (_fs.FileExists(src) || !_fs.FileExists(dst)); i++)
                     Thread.Sleep(50);
-                if (!File.Exists(src) && File.Exists(dst)) return;
+                if (!_fs.FileExists(src) && _fs.FileExists(dst)) return;
             }
             catch (IOException) when (attempt < maxAttempts) { }
             catch (UnauthorizedAccessException) when (attempt < maxAttempts) { }
             Thread.Sleep(200 * attempt);
         }
-        File.Move(src, dst, overwrite);
+        _fs.MoveFile(src, dst, overwrite);
     }
 
     // Remove empty directories bottom-up so a drained incoming folder doesn't
     // leave clutter behind. Recurses depth-first and only evaluates a folder
     // after its children have been processed, so chains of nested-empty
     // folders collapse in one pass. Doesn't touch the root itself.
-    private static void CleanupEmptyDirs(string root, Action<string> emit)
+    private void CleanupEmptyDirs(string root, Action<string> emit)
     {
         var normalizedRoot = Path.TrimEndingDirectorySeparator(root);
         CleanDir(root, normalizedRoot, emit);
     }
 
-    private static void CleanDir(string dir, string root, Action<string> emit)
+    private void CleanDir(string dir, string root, Action<string> emit)
     {
         List<string> subs;
-        try { subs = Directory.EnumerateDirectories(dir).ToList(); }
+        try { subs = _fs.EnumerateDirectories(dir).ToList(); }
         catch { return; }
 
         foreach (var sub in subs)
@@ -766,9 +768,9 @@ public sealed class IncomingProcessor
 
         try
         {
-            if (!Directory.EnumerateFileSystemEntries(dir).Any())
+            if (!_fs.EnumerateFileSystemEntries(dir).Any())
             {
-                Directory.Delete(dir);
+                _fs.DeleteDirectory(dir);
                 emit($"removed empty dir: {dir}");
             }
         }

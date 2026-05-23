@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="Code Coverage" uri="datacollector://Microsoft/CodeCoverage/2.0" assemblyQualifiedName="Microsoft.VisualStudio.Coverage.DynamicCoverageDataCollector, Microsoft.VisualStudio.TraceCollector, Version=11.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a">
+        <Configuration>
+          <IncludeTestAssembly>false</IncludeTestAssembly>
+          <CodeCoverage>
+            <ModulePaths>
+              <Include>
+                <ModulePath>.*\\TheLIbrary\.Server\.dll$</ModulePath>
+              </Include>
+            </ModulePaths>
+            <Sources>
+              <Include>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Sync\\TitleNormalizer\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Incoming\\AuthorMatcher\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Incoming\\UnknownFolderRecovery\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Sync\\FilePreviewResolver\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Sync\\FuzzyScore\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Import\\PhysicalMatchIndex\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Sync\\AuthorFolderNameResolver\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Sync\\ManualWorkKey\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Sync\\AuthorRefreshCoordinator\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Sync\\ExceptionFormatter\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Controllers\\OpenLibraryController\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Controllers\\BooksController\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Controllers\\AuthorsController\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\OpenLibrary\\OpenLibraryClient\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Sync\\ManualBookService\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Incoming\\IncomingProcessor\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Remarkable\\RemarkableClient\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Calibre\\CalibreConverter\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Scheduling\\ScheduleService\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Services\\Scheduling\\ScheduledJobs\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Program\.cs$</Source>
+              </Include>
+            </Sources>
+            <Attributes>
+              <Exclude>
+                <Attribute>^System\.CodeDom\.Compiler\.GeneratedCodeAttribute$</Attribute>
+                <Attribute>^System\.Diagnostics\.CodeAnalysis\.ExcludeFromCodeCoverageAttribute$</Attribute>
+              </Exclude>
+            </Attributes>
+            <UseVerifiableInstrumentation>True</UseVerifiableInstrumentation>
+            <AllowLowIntegrityProcesses>True</AllowLowIntegrityProcesses>
+            <CollectFromChildProcesses>True</CollectFromChildProcesses>
+            <CollectAspDotNet>False</CollectAspDotNet>
+          </CodeCoverage>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>

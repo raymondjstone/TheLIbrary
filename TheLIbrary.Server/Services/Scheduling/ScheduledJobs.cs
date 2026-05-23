@@ -102,6 +102,17 @@ public sealed class ScheduledJobs
         ct => _sameNames.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _sameNames.IsRunning);
 
+    internal Task RunWithPollingForTests(
+        IReadOnlyDictionary<string, ScheduleEntry> schedules,
+        string jobId,
+        bool manualTrigger,
+        Func<CancellationToken, (bool started, string? error)> start,
+        Func<bool> isRunning,
+        TimeSpan waitCeiling,
+        TimeSpan poll,
+        CancellationToken ct)
+        => RunWithPollingCore(schedules, jobId, manualTrigger, start, isRunning, waitCeiling, poll, ct);
+
     private async Task RunWithPolling(
         string jobId,
         bool manualTrigger,
@@ -109,14 +120,35 @@ public sealed class ScheduledJobs
         Func<bool> isRunning)
     {
         var ct = _lifetime.ApplicationStopping;
+        var schedules = await _schedules.GetAllAsync(ct);
+        await RunWithPollingCore(
+            schedules,
+            jobId,
+            manualTrigger,
+            start,
+            isRunning,
+            TimeSpan.FromHours(2),
+            TimeSpan.FromSeconds(10),
+            ct);
+    }
+
+    private async Task RunWithPollingCore(
+        IReadOnlyDictionary<string, ScheduleEntry> schedules,
+        string jobId,
+        bool manualTrigger,
+        Func<CancellationToken, (bool started, string? error)> start,
+        Func<bool> isRunning,
+        TimeSpan waitCeiling,
+        TimeSpan poll,
+        CancellationToken ct)
+    {
 
         // Stale enqueued instances (from when the schedule was enabled, or from
         // a retry loop) must not run after the user disables the schedule.
         // Manual triggers bypass this so the user can always fire on demand.
         if (!manualTrigger)
         {
-            var all = await _schedules.GetAllAsync(ct);
-            if (!all.TryGetValue(jobId, out var entry) || !entry.Enabled)
+            if (!schedules.TryGetValue(jobId, out var entry) || !entry.Enabled)
             {
                 _log.LogInformation(
                     "Scheduled job {Job} is disabled — discarding stale enqueued run", jobId);
@@ -130,9 +162,7 @@ public sealed class ScheduledJobs
         // manual UI trigger can race a cron firing; the scheduled job should
         // just queue behind it. Ceiling prevents an indefinite stuck-hold
         // from silently blocking the Hangfire worker forever.
-        var waitCeiling = TimeSpan.FromHours(2);
         var waited = TimeSpan.Zero;
-        var poll = TimeSpan.FromSeconds(10);
         (bool started, string? error) outcome;
         while (true)
         {

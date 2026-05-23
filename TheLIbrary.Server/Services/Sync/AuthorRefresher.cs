@@ -47,14 +47,34 @@ public sealed class AuthorRefresher
 
     private readonly LibraryDbContext _db;
     private readonly OpenLibraryClient _ol;
+    private readonly AuthorRefreshCoordinator _coordinator;
     private readonly ILogger<AuthorRefresher> _log;
 
-    public AuthorRefresher(LibraryDbContext db, OpenLibraryClient ol, ILogger<AuthorRefresher> log)
+    public AuthorRefresher(
+        LibraryDbContext db,
+        OpenLibraryClient ol,
+        AuthorRefreshCoordinator coordinator,
+        ILogger<AuthorRefresher> log)
     {
-        _db = db; _ol = ol; _log = log;
+        _db = db; _ol = ol; _coordinator = coordinator; _log = log;
     }
 
     public async Task<AuthorRefreshOutcome> RefreshAsync(Author author, Action<string>? onMessage, CancellationToken ct)
+    {
+        if (!_coordinator.TryAcquire(author.Id))
+            throw new AuthorRefreshAlreadyRunningException(author.Id, author.Name);
+
+        try
+        {
+            return await RefreshCoreAsync(author, onMessage, ct);
+        }
+        finally
+        {
+            _coordinator.Release(author.Id);
+        }
+    }
+
+    private async Task<AuthorRefreshOutcome> RefreshCoreAsync(Author author, Action<string>? onMessage, CancellationToken ct)
     {
         onMessage?.Invoke($"Resolving {author.Name}");
 

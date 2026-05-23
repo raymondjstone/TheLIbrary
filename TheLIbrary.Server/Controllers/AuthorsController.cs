@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
@@ -17,21 +18,21 @@ public class AuthorsController : ControllerBase
     private readonly LibraryDbContext _db;
     private readonly OpenLibraryClient _ol;
     private readonly AuthorRefresher _refresher;
-    private readonly BackgroundTaskCoordinator _coordinator;
     private readonly ManualBookService _manualBooks;
+    private readonly ILogger<AuthorsController> _log;
 
     public AuthorsController(
         LibraryDbContext db,
         OpenLibraryClient ol,
         AuthorRefresher refresher,
-        BackgroundTaskCoordinator coordinator,
-        ManualBookService manualBooks)
+        ManualBookService manualBooks,
+        ILogger<AuthorsController> log)
     {
         _db = db;
         _ol = ol;
         _refresher = refresher;
-        _coordinator = coordinator;
         _manualBooks = manualBooks;
+        _log = log;
     }
 
     public sealed record AuthorListItem(
@@ -739,16 +740,21 @@ public class AuthorsController : ControllerBase
         return string.IsNullOrEmpty(s) ? "returned" : s;
     }
 
-    public sealed record AddAuthorRequest(string OpenLibraryKey, string? Name);
+    public sealed class AddAuthorRequest
+    {
+        [Required]
+        [StringLength(64)]
+        public string OpenLibraryKey { get; init; } = "";
+
+        [StringLength(512)]
+        public string? Name { get; init; }
+    }
 
     // Adds an author to the watchlist from an OpenLibrary key.
     // If Name is omitted we resolve it via OL search.
     [HttpPost]
     public async Task<ActionResult<AuthorListItem>> Add([FromBody] AddAuthorRequest body, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(body.OpenLibraryKey))
-            return BadRequest(new { error = "OpenLibraryKey is required" });
-
         var key = body.OpenLibraryKey.Trim();
         // Accept "/authors/OL1234A" or "OL1234A".
         if (key.StartsWith("/authors/", StringComparison.OrdinalIgnoreCase))
@@ -790,9 +796,25 @@ public class AuthorsController : ControllerBase
         var name = body.Name?.Trim();
         if (string.IsNullOrWhiteSpace(name))
         {
-            var search = await _ol.SearchAuthorsAsync(key, ct);
-            name = search?.Docs.FirstOrDefault(d => string.Equals(d.Key, key, StringComparison.OrdinalIgnoreCase))?.Name
-                   ?? key;
+            try
+            {
+                var authorInfo = await _ol.FetchAuthorAsync(key, ct);
+                if (string.IsNullOrWhiteSpace(authorInfo?.Name))
+                {
+                    ModelState.AddModelError(nameof(AddAuthorRequest.OpenLibraryKey),
+                        $"OpenLibrary author '{key}' was not found.");
+                    return ValidationProblem(ModelState);
+                }
+
+                name = authorInfo.Name.Trim();
+            }
+            catch (OpenLibraryRequestFailedException ex)
+            {
+                return Problem(
+                    title: "OpenLibrary request failed",
+                    detail: ex.Message,
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
         }
 
         // Blacklist wins over manual add. If the user wants this author back
@@ -841,6 +863,31 @@ public class AuthorsController : ControllerBase
         // key, apply the disambiguating suffix to every member's
         // CalibreFolderName so the on-disk layout stays unambiguous.
         await ApplyCollisionSuffixesAsync(author, ct);
+
+        // Populate works immediately for newly-added authors so the detail page
+        // has data before the next scheduled refresh cycle.
+        try
+        {
+            var outcome = await _refresher.RefreshAsync(author, onMessage: null, ct);
+            if (outcome.MergedIntoCanonical && outcome.CanonicalAuthorId is int canonicalId)
+            {
+                var canonical = await _db.Authors.FirstOrDefaultAsync(a => a.Id == canonicalId, ct);
+                if (canonical is not null)
+                {
+                    return Ok(new AuthorListItem(
+                        canonical.Id, canonical.Name, canonical.CalibreFolderName, canonical.OpenLibraryKey,
+                        canonical.Status.ToString(), canonical.ExclusionReason,
+                        canonical.Priority, 0, 0, 0, 0, canonical.LastSyncedAt));
+                }
+            }
+        }
+        catch (AuthorRefreshAlreadyRunningException)
+        {
+        }
+        catch (OpenLibraryRequestFailedException ex)
+        {
+            _log.LogWarning(ex, "Immediate works fetch failed for newly added author {AuthorId}", author.Id);
+        }
 
         return CreatedAtAction(nameof(Get), new { id = author.Id }, new AuthorListItem(
             author.Id, author.Name, author.CalibreFolderName, author.OpenLibraryKey,
@@ -1133,25 +1180,29 @@ public class AuthorsController : ControllerBase
     }
 
     // On-demand refresh of a single author: resolves the OL key if missing,
-    // fetches English works, reapplies exclusion rules, and reschedules.
-    // Uses the same global coordinator as the full sync so this can't run
-    // concurrently with any other background task.
+    // fetches works, reapplies exclusion rules, and reschedules. This runs
+    // independently of the Hangfire-coordinated jobs; only same-author refreshes
+    // are serialized.
     [HttpPost("{id:int}/refresh")]
     public async Task<ActionResult<AuthorDetail>> Refresh(int id, CancellationToken ct)
     {
         var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
         if (author is null) return NotFound();
 
-        if (!_coordinator.TryAcquire($"refresh author {author.Name}", out var holder))
-            return Conflict(new { error = $"Another task is already running ({holder})" });
-
         try
         {
             await _refresher.RefreshAsync(author, onMessage: null, ct);
         }
-        finally
+        catch (AuthorRefreshAlreadyRunningException)
         {
-            _coordinator.Release();
+            return Conflict(new { error = $"Author '{author.Name}' is already being refreshed." });
+        }
+        catch (OpenLibraryRequestFailedException ex)
+        {
+            return Problem(
+                title: "OpenLibrary request failed",
+                detail: ex.Message,
+                statusCode: StatusCodes.Status503ServiceUnavailable);
         }
 
         return await Get(id, ct);

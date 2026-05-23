@@ -1072,10 +1072,22 @@ public sealed class SyncService
                     var author = await db.Authors.FirstOrDefaultAsync(a => a.Id == id, hostCt);
                     if (author is null) { MutateState(s => s.AuthorsProcessed++); continue; }
 
-                    var outcome = await refresher.RefreshAsync(
-                        author,
-                        msg => MutateState(s => s.Message = msg),
-                        hostCt);
+                    AuthorRefreshOutcome outcome;
+                    try
+                    {
+                        outcome = await refresher.RefreshAsync(
+                            author,
+                            msg => MutateState(s => s.Message = msg),
+                            hostCt);
+                    }
+                    catch (AuthorRefreshAlreadyRunningException ex)
+                    {
+                        _log.LogInformation(ex,
+                            "Skipping works refresh for author {AuthorId} because another refresh is already in progress",
+                            id);
+                        MutateState(s => s.AuthorsProcessed++);
+                        continue;
+                    }
                     MutateState(s =>
                     {
                         s.BooksAdded += outcome.BooksAdded;

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Options;
+using TheLibrary.Server.Services.IO;
 
 namespace TheLibrary.Server.Services.Calibre;
 
@@ -13,11 +14,19 @@ public sealed class CalibreConverter
     private static readonly TimeSpan ConversionTimeout = TimeSpan.FromMinutes(10);
 
     private readonly CalibreOptions _opts;
+    private readonly IFileSystem _fs;
+    private readonly IProcessRunner _runner;
     private readonly ILogger<CalibreConverter> _log;
 
-    public CalibreConverter(IOptions<CalibreOptions> opts, ILogger<CalibreConverter> log)
+    public CalibreConverter(
+        IOptions<CalibreOptions> opts,
+        IFileSystem fs,
+        IProcessRunner runner,
+        ILogger<CalibreConverter> log)
     {
         _opts = opts.Value;
+        _fs = fs;
+        _runner = runner;
         _log = log;
     }
 
@@ -29,14 +38,14 @@ public sealed class CalibreConverter
     // any failure (binary missing, non-zero exit code, timeout, …).
     public async Task<string> ConvertToEpubAsync(string sourcePath, CancellationToken ct)
     {
-        if (!System.IO.File.Exists(sourcePath))
+        if (!_fs.FileExists(sourcePath))
             throw new CalibreConversionException($"Source file not found: {sourcePath}");
         if (string.IsNullOrWhiteSpace(_opts.EbookConvert))
             throw new CalibreConversionException(
                 "ebook-convert path is not configured. Set Calibre:EbookConvert in appsettings.json.");
 
         var tempDir = Path.Combine(Path.GetTempPath(), "thelibrary-rm");
-        Directory.CreateDirectory(tempDir);
+        _fs.CreateDirectory(tempDir);
         var outPath = Path.Combine(tempDir, $"{Guid.NewGuid():N}.epub");
 
         var psi = new ProcessStartInfo
@@ -51,11 +60,17 @@ public sealed class CalibreConverter
         psi.ArgumentList.Add(sourcePath);
         psi.ArgumentList.Add(outPath);
 
-        using var proc = new Process { StartInfo = psi };
         try
         {
-            if (!proc.Start())
-                throw new CalibreConversionException("Failed to start ebook-convert.");
+            var result = await _runner.RunAsync(psi, ConversionTimeout, ct);
+
+            if (result.ExitCode != 0)
+            {
+                TryDelete(outPath);
+                _log.LogWarning("ebook-convert failed: exit {Code} stderr {Stderr}", result.ExitCode, result.StandardError);
+                throw new CalibreConversionException(
+                    $"ebook-convert exited {result.ExitCode}. {Trim(result.StandardError)}");
+            }
         }
         catch (System.ComponentModel.Win32Exception ex)
         {
@@ -63,46 +78,65 @@ public sealed class CalibreConverter
                 $"Could not run ebook-convert ({ex.Message}). " +
                 "Install Calibre and set Calibre:EbookConvert in appsettings.json to the ebook-convert executable.", ex);
         }
-
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(ConversionTimeout);
-
-        try
+        catch (ProcessRunTimeoutException)
         {
-            await proc.WaitForExitAsync(timeoutCts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            TryKill(proc);
             TryDelete(outPath);
-            if (ct.IsCancellationRequested) throw;
             throw new CalibreConversionException(
                 $"ebook-convert exceeded the {ConversionTimeout.TotalMinutes:0}-minute timeout on {Path.GetFileName(sourcePath)}.");
         }
 
-        if (proc.ExitCode != 0)
-        {
-            var stderr = await proc.StandardError.ReadToEndAsync(ct);
-            TryDelete(outPath);
-            _log.LogWarning("ebook-convert failed: exit {Code} stderr {Stderr}", proc.ExitCode, stderr);
-            throw new CalibreConversionException(
-                $"ebook-convert exited {proc.ExitCode}. {Trim(stderr)}");
-        }
-
-        if (!System.IO.File.Exists(outPath))
+        if (!_fs.FileExists(outPath))
             throw new CalibreConversionException("ebook-convert reported success but produced no output file.");
 
         return outPath;
     }
 
-    private static void TryKill(Process p) { try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { } }
-    private static void TryDelete(string path) { try { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); } catch { } }
+    private void TryDelete(string path) { try { if (_fs.FileExists(path)) _fs.DeleteFile(path); } catch { } }
 
     private static string Trim(string s)
     {
         if (string.IsNullOrWhiteSpace(s)) return "";
         s = s.Trim();
         return s.Length > 400 ? s[..400] + "…" : s;
+    }
+}
+
+public interface IProcessRunner
+{
+    Task<ProcessRunResult> RunAsync(ProcessStartInfo startInfo, TimeSpan timeout, CancellationToken ct);
+}
+
+public sealed record ProcessRunResult(int ExitCode, string StandardOutput, string StandardError);
+
+public sealed class ProcessRunTimeoutException : Exception
+{
+    public ProcessRunTimeoutException() { }
+}
+
+public sealed class SystemProcessRunner : IProcessRunner
+{
+    public async Task<ProcessRunResult> RunAsync(ProcessStartInfo startInfo, TimeSpan timeout, CancellationToken ct)
+    {
+        using var proc = new Process { StartInfo = startInfo };
+        if (!proc.Start())
+            throw new InvalidOperationException("Failed to start ebook-convert.");
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(timeout);
+
+        try
+        {
+            await proc.WaitForExitAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
+            throw new ProcessRunTimeoutException();
+        }
+
+        var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
+        var stderr = await proc.StandardError.ReadToEndAsync(ct);
+        return new ProcessRunResult(proc.ExitCode, stdout, stderr);
     }
 }
 

@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
+using TheLibrary.Server.Services.IO;
 
 namespace TheLibrary.Server.Services.Remarkable;
 
@@ -21,6 +22,7 @@ public sealed class RemarkableClient
     private readonly HttpClient _http;
     private readonly RemarkableOptions _opts;
     private readonly CalibreConverter _converter;
+    private readonly IFileSystem _fs;
     private readonly ILogger<RemarkableClient> _log;
 
     // Refresh the user token this long before the JWT `exp` to avoid racing
@@ -41,12 +43,14 @@ public sealed class RemarkableClient
         IHttpClientFactory httpFactory,
         IOptions<RemarkableOptions> opts,
         CalibreConverter converter,
+        IFileSystem fs,
         ILogger<RemarkableClient> log)
     {
         _db = db;
         _http = httpFactory.CreateClient("remarkable");
         _opts = opts.Value;
         _converter = converter;
+        _fs = fs;
         _log = log;
     }
 
@@ -153,7 +157,7 @@ public sealed class RemarkableClient
             var metaJson = JsonSerializer.Serialize(new { file_name = displayName });
             var metaHeader = Convert.ToBase64String(Encoding.UTF8.GetBytes(metaJson));
 
-            await using var stream = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            await using var stream = _fs.OpenRead(sourcePath);
             using var req = new HttpRequestMessage(HttpMethod.Post,
                 $"{_opts.ApiHost.TrimEnd('/')}/doc/v2/files")
             {
@@ -181,7 +185,7 @@ public sealed class RemarkableClient
         {
             if (tempFile is not null)
             {
-                try { System.IO.File.Delete(tempFile); } catch { /* best effort */ }
+                try { _fs.DeleteFile(tempFile); } catch { /* best effort */ }
             }
         }
     }
@@ -234,7 +238,7 @@ public sealed class RemarkableClient
 
         // Edge case: FullPath already points at a file (older rows where a
         // loose file sat directly under the author folder).
-        if (System.IO.File.Exists(folderOrFile))
+        if (_fs.FileExists(folderOrFile))
         {
             var ext = Path.GetExtension(folderOrFile).ToLowerInvariant();
             if (ext is ".epub" or ".pdf") return (folderOrFile, null);
@@ -242,11 +246,11 @@ public sealed class RemarkableClient
             return (epub, epub);
         }
 
-        if (!Directory.Exists(folderOrFile))
+        if (!_fs.DirectoryExists(folderOrFile))
             throw new RemarkableException($"Folder no longer exists on disk: {folderOrFile}");
 
         List<string> files;
-        try { files = Directory.EnumerateFiles(folderOrFile).ToList(); }
+        try { files = _fs.EnumerateFiles(folderOrFile).ToList(); }
         catch (Exception ex)
         { throw new RemarkableException($"Could not read folder {folderOrFile}: {ex.Message}"); }
 

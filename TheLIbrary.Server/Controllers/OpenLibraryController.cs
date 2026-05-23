@@ -25,7 +25,19 @@ public class OpenLibraryController : ControllerBase
         if (string.IsNullOrWhiteSpace(q))
             return new List<AuthorSearchRow>();
 
-        var resp = await _ol.SearchAuthorsAsync(q.Trim(), ct);
+        AuthorSearchResponse? resp;
+        try
+        {
+            resp = await _ol.SearchAuthorsAsync(q.Trim(), ct);
+        }
+        catch (OpenLibraryRequestFailedException ex)
+        {
+            return Problem(
+                title: "OpenLibrary request failed",
+                detail: ex.Message,
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
         if (resp?.Docs is null) return new List<AuthorSearchRow>();
 
         return resp.Docs

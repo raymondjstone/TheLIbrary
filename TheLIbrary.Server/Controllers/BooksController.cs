@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
@@ -91,7 +92,25 @@ public class BooksController : ControllerBase
             .ToListAsync(ct);
     }
 
-    public sealed record SetCoverRequest(string? Url);
+    public sealed class SetCoverRequest : IValidatableObject
+    {
+        [StringLength(1024)]
+        public string? Url { get; init; }
+
+        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+        {
+            if (string.IsNullOrWhiteSpace(Url)) yield break;
+
+            var trimmed = Url.Trim();
+            if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri)
+                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            {
+                yield return new ValidationResult(
+                    "Cover must be an absolute http/https URL.",
+                    new[] { nameof(Url) });
+            }
+        }
+    }
 
     // Sets (or clears, with an empty URL) a custom cover image for a book —
     // mainly for manual books that have no OpenLibrary cover.
@@ -102,8 +121,6 @@ public class BooksController : ControllerBase
         if (book is null) return NotFound();
 
         var url = body.Url?.Trim();
-        if (!string.IsNullOrEmpty(url) && !Uri.TryCreate(url, UriKind.Absolute, out _))
-            return BadRequest(new { error = "Cover must be an absolute URL." });
         book.CoverUrl = string.IsNullOrEmpty(url) ? null : url;
         await _db.SaveChangesAsync(ct);
         return Ok(new { book.Id, book.CoverUrl });

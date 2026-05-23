@@ -5,6 +5,17 @@ using System.Web;
 
 namespace TheLibrary.Server.Services.OpenLibrary;
 
+public sealed class OpenLibraryRequestFailedException : Exception
+{
+    public OpenLibraryRequestFailedException(string relativeUrl)
+        : base($"OpenLibrary request failed after multiple attempts: {relativeUrl}")
+    {
+        RelativeUrl = relativeUrl;
+    }
+
+    public string RelativeUrl { get; }
+}
+
 public sealed class OpenLibraryClient
 {
     private readonly HttpClient _http;
@@ -33,7 +44,9 @@ public sealed class OpenLibraryClient
     }
 
     // Fetches a single author record by OL key (e.g. "OL123A"). Returns null on
-    // 404 or if the record is a redirect (merged into another key).
+    // 404 or if the record is a redirect (merged into another key). Upstream
+    // failures throw OpenLibraryRequestFailedException so callers can distinguish
+    // them from a real miss.
     public Task<AuthorDetailResponse?> FetchAuthorAsync(string key, CancellationToken ct)
         => GetJsonAsync<AuthorDetailResponse>($"authors/{HttpUtility.UrlEncode(key)}.json", ct);
 
@@ -142,7 +155,7 @@ public sealed class OpenLibraryClient
             }
         }
         _log.LogError("OpenLibrary request gave up after {N} attempts: {Url}", maxAttempts, relativeUrl);
-        return default;
+        throw new OpenLibraryRequestFailedException(relativeUrl);
     }
 
     private sealed class TransientException : Exception { }

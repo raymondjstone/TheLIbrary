@@ -63,3 +63,4 @@ Thumbs.db
 # permission allowlist can capture full command lines.
 .claude/settings.local.json
 /.claude/settings.local.json
+/TestResults
