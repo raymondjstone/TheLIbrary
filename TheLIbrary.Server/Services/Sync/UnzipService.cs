@@ -17,6 +17,15 @@ namespace TheLibrary.Server.Services.Sync;
 // sync, incoming, or any other background job.
 public sealed class UnzipService
 {
+    internal static string UniqueDestinationPathForTests(string dir, string fileName)
+        => UniqueDestinationPath(dir, fileName);
+
+    internal static string ResolveEffectivePathForTests(string path)
+        => ResolveEffectivePath(path);
+
+    internal static bool ShouldSkipFileForTests(string fullPath)
+        => !CalibreScanner.ArchiveExtensions.Contains(Path.GetExtension(ResolveEffectivePath(fullPath)));
+
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly BackgroundTaskCoordinator _coordinator;

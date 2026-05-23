@@ -49,6 +49,47 @@ public sealed class SameNameAuthorService
     public bool IsRunning => _isRunning;
     public SameNameAuthorSummary? LastResult => _lastResult;
 
+    internal static SameNameAuthorSummary SummarizeForTests(
+        IReadOnlyList<(string OlKey, string Name, string NormalizedName)> catalogMatches,
+        IReadOnlyCollection<string> trackedKeys,
+        IReadOnlyCollection<string> blacklist,
+        int authorsCount)
+    {
+        int added = 0;
+        var addedNames = new List<string>();
+        var warnings = new List<string>();
+        var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var trackedNames = catalogMatches.Select(x => x.NormalizedName).Distinct(StringComparer.Ordinal).Count();
+
+        if (catalogMatches.Count == 0)
+            warnings.Add("No matches — the OpenLibrary authors catalogue looks empty; run the Seed job.");
+
+        foreach (var group in catalogMatches.GroupBy(o => o.NormalizedName, StringComparer.Ordinal))
+        {
+            if (blacklist.Contains(group.Key)) continue;
+
+            var newOnes = group
+                .Where(o => !string.IsNullOrWhiteSpace(o.OlKey) && !trackedKeys.Contains(o.OlKey))
+                .ToList();
+            if (newOnes.Count == 0) continue;
+
+            if (newOnes.Count > MaxAdditionsPerName)
+            {
+                warnings.Add($"'{group.First().Name}': {newOnes.Count} same-name records — skipped as too generic");
+                continue;
+            }
+
+            foreach (var o in newOnes)
+            {
+                if (!seenKeys.Add(o.OlKey)) continue;
+                added++;
+                addedNames.Add($"{o.Name} ({o.OlKey})");
+            }
+        }
+
+        return new SameNameAuthorSummary(authorsCount, trackedNames, added, addedNames, warnings);
+    }
+
     public bool TryStart(CancellationToken hostCt, out string? error)
     {
         if (!_coordinator.TryAcquire("add same-name authors", out var holder))

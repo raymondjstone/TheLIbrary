@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
+using TheLibrary.Server.Services.IO;
 using TheLibrary.Server.Services.Scheduling;
 
 namespace TheLibrary.Server.Services.Sync;
@@ -25,20 +26,70 @@ public sealed class SeriesOrganizerService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly BackgroundTaskCoordinator _coordinator;
+    private readonly IFileSystem _fs;
     private readonly ILogger<SeriesOrganizerService> _log;
     private volatile bool _isRunning;
 
     public SeriesOrganizerService(
         IServiceScopeFactory scopeFactory,
         BackgroundTaskCoordinator coordinator,
+        IFileSystem fs,
         ILogger<SeriesOrganizerService> log)
     {
         _scopeFactory = scopeFactory;
         _coordinator = coordinator;
+        _fs = fs;
         _log = log;
     }
 
     public bool IsRunning => _isRunning;
+
+    internal string MoveSingleFileForTests(LocalBookFile file, string targetDir)
+    {
+        _fs.CreateDirectory(targetDir);
+        var destPath = DestinationPath(targetDir, file.FullPath);
+        if (!string.Equals(file.FullPath, destPath, StringComparison.OrdinalIgnoreCase))
+            _fs.MoveFile(file.FullPath, destPath, overwrite: false);
+        file.FullPath = destPath;
+        file.TitleFolder = Path.GetFileNameWithoutExtension(destPath);
+        return destPath;
+    }
+
+    internal void PruneEmptyDirsForTests(string dir) => PruneEmptyDirs(dir);
+
+    internal void DeleteEmptyAncestorsForTests(string dir, string authorDir, string targetDir)
+        => DeleteEmptyAncestors(dir, authorDir, targetDir);
+
+    internal static string? ResolveSeriesNameForTests(string storedSeriesName, int? seriesId, string stem)
+    {
+        var seriesName = storedSeriesName;
+        if (!string.IsNullOrWhiteSpace(seriesName))
+        {
+            var (cleanedSeries, _, _, _) = TitleNormalizer.TryParseSeriesFilename(seriesName);
+            if (!string.IsNullOrWhiteSpace(cleanedSeries)
+                && !string.Equals(cleanedSeries, seriesName, StringComparison.OrdinalIgnoreCase))
+            {
+                return cleanedSeries;
+            }
+            return seriesName;
+        }
+
+        if (seriesName is null && seriesId is null)
+        {
+            var (parsedSeries, _, _, _) = TitleNormalizer.TryParseSeriesFilename(stem);
+            return string.IsNullOrWhiteSpace(parsedSeries) ? null : parsedSeries;
+        }
+
+        return null;
+    }
+
+    internal static string ComputeTargetDirForTests(string libRoot, string authorFolder, string? seriesName)
+    {
+        var authorDir = Path.Combine(libRoot.TrimEnd('\\', '/'), authorFolder);
+        return string.IsNullOrWhiteSpace(seriesName)
+            ? authorDir
+            : Path.Combine(authorDir, SanitizeFolderName(seriesName));
+    }
 
     public bool TryStart(CancellationToken hostCt, out string? error)
     {
@@ -510,15 +561,15 @@ public sealed class SeriesOrganizerService
 
     // Recursively deletes empty subdirectories bottom-up. Does not throw — any
     // directory that cannot be removed is silently left in place.
-    private static void PruneEmptyDirs(string dir)
+    private void PruneEmptyDirs(string dir)
     {
-        if (!Directory.Exists(dir)) return;
+        if (!_fs.DirectoryExists(dir)) return;
         try
         {
-            foreach (var sub in Directory.EnumerateDirectories(dir))
+            foreach (var sub in _fs.EnumerateDirectories(dir))
                 PruneEmptyDirs(sub);
-            if (!Directory.EnumerateFileSystemEntries(dir).Any())
-                Directory.Delete(dir);
+            if (!_fs.EnumerateFileSystemEntries(dir).Any())
+                _fs.DeleteDirectory(dir);
         }
         catch { }
     }
@@ -526,17 +577,17 @@ public sealed class SeriesOrganizerService
     // Deletes dir if it is empty and is not authorDir or targetDir, then recurses
     // upward so that intermediate grouping folders (e.g. "Misc" containing title
     // subfolders) are also removed once all their children have been emptied.
-    private static void DeleteEmptyAncestors(string dir, string authorDir, string targetDir)
+    private void DeleteEmptyAncestors(string dir, string authorDir, string targetDir)
     {
         if (string.Equals(dir, authorDir, StringComparison.OrdinalIgnoreCase)) return;
         if (string.Equals(dir, targetDir, StringComparison.OrdinalIgnoreCase)) return;
 
         var parent = Path.GetDirectoryName(dir);
 
-        if (Directory.Exists(dir))
+        if (_fs.DirectoryExists(dir))
         {
-            if (Directory.EnumerateFileSystemEntries(dir).Any()) return;
-            try { Directory.Delete(dir); }
+            if (_fs.EnumerateFileSystemEntries(dir).Any()) return;
+            try { _fs.DeleteDirectory(dir); }
             catch { return; }
         }
 
@@ -546,11 +597,11 @@ public sealed class SeriesOrganizerService
 
     // Returns a unique destination path inside targetDir for a file being moved.
     // If targetDir\filename already exists, appends _{n} to the stem.
-    private static string DestinationPath(string targetDir, string srcFile)
+    private string DestinationPath(string targetDir, string srcFile)
     {
         var name = Path.GetFileName(srcFile);
         var dest = Path.Combine(targetDir, name);
-        if (!File.Exists(dest) ||
+        if (!_fs.FileExists(dest) ||
             string.Equals(dest, srcFile, StringComparison.OrdinalIgnoreCase))
             return dest;
 
@@ -559,7 +610,7 @@ public sealed class SeriesOrganizerService
         for (int n = 1; ; n++)
         {
             dest = Path.Combine(targetDir, $"{stem}_{n}{ext}");
-            if (!File.Exists(dest)) return dest;
+            if (!_fs.FileExists(dest)) return dest;
         }
     }
 

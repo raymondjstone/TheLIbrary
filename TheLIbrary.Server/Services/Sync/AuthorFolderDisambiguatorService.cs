@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.IO;
 using TheLibrary.Server.Services.Scheduling;
 
 namespace TheLibrary.Server.Services.Sync;
@@ -32,6 +33,7 @@ public sealed class AuthorFolderDisambiguatorService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly BackgroundTaskCoordinator _coordinator;
+    private readonly IFileSystem _fs;
     private readonly ILogger<AuthorFolderDisambiguatorService> _log;
     private volatile bool _isRunning;
     private AuthorDisambiguationSummary? _lastResult;
@@ -39,15 +41,47 @@ public sealed class AuthorFolderDisambiguatorService
     public AuthorFolderDisambiguatorService(
         IServiceScopeFactory scopeFactory,
         BackgroundTaskCoordinator coordinator,
+        IFileSystem fs,
         ILogger<AuthorFolderDisambiguatorService> log)
     {
         _scopeFactory = scopeFactory;
         _coordinator = coordinator;
+        _fs = fs;
         _log = log;
     }
 
     public bool IsRunning => _isRunning;
     public AuthorDisambiguationSummary? LastResult => _lastResult;
+
+    internal static IReadOnlyList<IReadOnlyList<Author>> FindGroupsForTests(IReadOnlyList<Author> allAuthors)
+    {
+        var seenRepresentatives = new HashSet<int>();
+        var groups = new List<IReadOnlyList<Author>>();
+        foreach (var a in allAuthors)
+        {
+            var group = AuthorFolderNameResolver.FindCollisionGroup(a, allAuthors);
+            if (group.Count < 2) continue;
+            var rep = group.Min(x => x.Id);
+            if (!seenRepresentatives.Add(rep)) continue;
+            if (group.Any(x => string.IsNullOrWhiteSpace(x.OpenLibraryKey))) continue;
+            groups.Add(group);
+        }
+        return groups;
+    }
+
+    internal static Author ResolveOwnerForTests(
+        LocalBookFile file,
+        IReadOnlyDictionary<string, int> ownerByTitle,
+        Author fallback)
+        => ResolveOwner(file, ownerByTitle, fallback);
+
+    internal void MoveFileToFolderForTests(
+        LocalBookFile file,
+        Author owner,
+        string newFolder,
+        IReadOnlyList<string> locations,
+        List<string> warnings)
+        => MoveFileToFolder(file, owner, newFolder, locations, warnings);
 
     public bool TryStart(CancellationToken hostCt, out string? error)
     {
@@ -84,19 +118,7 @@ public sealed class AuthorFolderDisambiguatorService
         // Build collision groups: every author with another unlinked author of
         // the same normalised name. Sets are de-duplicated by representative
         // (the lowest-id member), so each group is processed exactly once.
-        var seenRepresentatives = new HashSet<int>();
-        var groups = new List<IReadOnlyList<Author>>();
-        foreach (var a in allAuthors)
-        {
-            var group = AuthorFolderNameResolver.FindCollisionGroup(a, allAuthors);
-            if (group.Count < 2) continue;
-            var rep = group.Min(x => x.Id);
-            if (!seenRepresentatives.Add(rep)) continue;
-            // Only act on groups where every member has an OL key — otherwise
-            // the resolver leaves the bare name and there's nothing to do yet.
-            if (group.Any(x => string.IsNullOrWhiteSpace(x.OpenLibraryKey))) continue;
-            groups.Add(group);
-        }
+        var groups = FindGroupsForTests(allAuthors);
 
         int authorsRenamed = 0, filesMoved = 0, filesOrphaned = 0;
         var warnings = new List<string>();
@@ -243,17 +265,17 @@ public sealed class AuthorFolderDisambiguatorService
 
         try
         {
-            if (destDir is not null) Directory.CreateDirectory(destDir);
-            if (File.Exists(file.FullPath))
+            if (destDir is not null) _fs.CreateDirectory(destDir);
+            if (_fs.FileExists(file.FullPath))
             {
                 var final = UniqueFile(destPath);
-                File.Move(file.FullPath, final);
+                _fs.MoveFile(file.FullPath, final, overwrite: false);
                 file.FullPath = final;
             }
-            else if (Directory.Exists(file.FullPath))
+            else if (_fs.DirectoryExists(file.FullPath))
             {
                 var final = UniqueDirectory(Path.GetDirectoryName(destPath)!, Path.GetFileName(destPath));
-                Directory.Move(file.FullPath, final);
+                _fs.MoveDirectory(file.FullPath, final);
                 file.FullPath = final;
             }
             else
@@ -267,28 +289,28 @@ public sealed class AuthorFolderDisambiguatorService
         }
     }
 
-    private static string UniqueFile(string desired)
+    private string UniqueFile(string desired)
     {
-        if (!File.Exists(desired) && !Directory.Exists(desired)) return desired;
+        if (!_fs.FileExists(desired) && !_fs.DirectoryExists(desired)) return desired;
         var dir = Path.GetDirectoryName(desired) ?? "";
         var stem = Path.GetFileNameWithoutExtension(desired);
         var ext  = Path.GetExtension(desired);
         for (var i = 2; i < 1000; i++)
         {
             var next = Path.Combine(dir, $"{stem}_{i}{ext}");
-            if (!File.Exists(next) && !Directory.Exists(next)) return next;
+            if (!_fs.FileExists(next) && !_fs.DirectoryExists(next)) return next;
         }
         return Path.Combine(dir, $"{stem}_{DateTime.UtcNow:yyyyMMddHHmmss}{ext}");
     }
 
-    private static string UniqueDirectory(string parent, string leaf)
+    private string UniqueDirectory(string parent, string leaf)
     {
         var candidate = Path.Combine(parent, leaf);
-        if (!Directory.Exists(candidate) && !File.Exists(candidate)) return candidate;
+        if (!_fs.DirectoryExists(candidate) && !_fs.FileExists(candidate)) return candidate;
         for (var i = 2; i < 1000; i++)
         {
             var next = Path.Combine(parent, $"{leaf} ({i})");
-            if (!Directory.Exists(next) && !File.Exists(next)) return next;
+            if (!_fs.DirectoryExists(next) && !_fs.FileExists(next)) return next;
         }
         return Path.Combine(parent, $"{leaf} ({DateTime.UtcNow:yyyyMMddHHmmss})");
     }

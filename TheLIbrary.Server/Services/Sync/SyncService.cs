@@ -622,6 +622,56 @@ public sealed class SyncService
         return stem;
     }
 
+    internal static (List<LocalBookFile> Inserts, List<LocalBookFile> Updates, HashSet<string> Processed)
+        MatchAuthorFilesForTests(
+            Author author,
+            Dictionary<string, List<CalibreBookEntry>> entriesByFolderKey,
+            Dictionary<int, List<Book>> booksByAuthorId,
+            Dictionary<int, List<int>> nonPenNameChildrenByCanonical,
+            Dictionary<string, LocalBookFile> existingByPath)
+    {
+        var processed = new HashSet<string>(StringComparer.Ordinal);
+        var toInsert = new List<LocalBookFile>();
+        var toUpdate = new List<LocalBookFile>();
+        MatchAuthorFiles(author, entriesByFolderKey, booksByAuthorId, nonPenNameChildrenByCanonical, existingByPath, processed, toInsert, toUpdate);
+        return (toInsert, toUpdate, processed);
+    }
+
+    internal static (List<int> RemovedIds, List<int> StaleOrphanIds, List<int> DefinitelyStaleIds)
+        ComputeCleanupSetsForTests(
+            IReadOnlyList<LocalBookFile> existingList,
+            IReadOnlyDictionary<string, LocalBookFile> existingByPath,
+            IReadOnlyDictionary<string, CalibreBookEntry> deduped,
+            IReadOnlyCollection<int> updatedIds,
+            IReadOnlyCollection<string> trackedFolderKeys,
+            Func<string, bool> fileExists)
+    {
+        static string Canon(string p) =>
+            p.Normalize(System.Text.NormalizationForm.FormC).ToUpperInvariant();
+
+        var removedIds = existingByPath
+            .Where(kvp => !deduped.ContainsKey(kvp.Key) && !updatedIds.Contains(kvp.Value.Id))
+            .Select(kvp => kvp.Value.Id)
+            .Distinct()
+            .ToList();
+
+        var staleOrphanIds = existingList
+            .Where(f => f.AuthorId == null &&
+                        !trackedFolderKeys.Contains(TitleNormalizer.NormalizeAuthor(f.AuthorFolder)))
+            .Select(f => f.Id)
+            .ToList();
+
+        var definitelyStaleIds = existingList
+            .Where(f => !deduped.ContainsKey(Canon(f.FullPath)))
+            .Where(f => string.IsNullOrEmpty(Path.GetExtension(f.FullPath))
+                         ? true
+                         : !fileExists(f.FullPath))
+            .Select(f => f.Id)
+            .ToList();
+
+        return (removedIds, staleOrphanIds, definitelyStaleIds);
+    }
+
     // True when `segment` normalises (with name-variant rotations) to the
     // author's name or Calibre folder name.
     private static bool MatchesAuthor(string segment, Author author)
