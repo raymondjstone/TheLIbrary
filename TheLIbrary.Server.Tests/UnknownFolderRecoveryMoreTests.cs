@@ -11,11 +11,11 @@ public class UnknownFolderRecoveryMoreTests
     [Fact]
     public void Plan_Preserves_Input_Order_Across_Matched_And_Unmatched()
     {
-        var matcher = new AuthorMatcher(new[] { Tracked("Terry Brooks", 1) });
+        var matcher = new AuthorMatcher(new[] { Tracked("Lena Hart", 1) });
 
-        var plan = UnknownFolderRecovery.Plan(new[] { "Unknown", "Terry Brooks", "Another Unknown" }, matcher);
+        var plan = UnknownFolderRecovery.Plan(new[] { "Unknown", "Lena Hart", "Another Unknown" }, matcher);
 
-        Assert.Equal(new[] { "Terry Brooks" }, plan.Matched.Select(x => x.FolderName).ToArray());
+        Assert.Equal(new[] { "Lena Hart" }, plan.Matched.Select(x => x.FolderName).ToArray());
         Assert.Equal(new[] { "Unknown", "Another Unknown" }, plan.Unmatched.ToArray());
     }
 
@@ -24,23 +24,23 @@ public class UnknownFolderRecoveryMoreTests
     {
         var matcher = new AuthorMatcher(new[]
         {
-            Tracked("Terry Brooks", 1, aliases: new[] { "T. Brooks" }),
-            new AuthorIndexEntry("Isaac Asimov", "Isaac Asimov", false, AlternateNames: new[] { "I. Asimov" })
+            Tracked("Lena Hart", 1, aliases: new[] { "L. Hart" }),
+            new AuthorIndexEntry("Ari Mercer", "Ari Mercer", false, AlternateNames: new[] { "A. Mercer" })
         });
 
-        var plan = UnknownFolderRecovery.Plan(new[] { "T. Brooks", "I. Asimov" }, matcher);
+        var plan = UnknownFolderRecovery.Plan(new[] { "L. Hart", "A. Mercer" }, matcher);
 
         Assert.Single(plan.Matched);
         Assert.Single(plan.Unmatched);
-        Assert.Equal("I. Asimov", plan.Unmatched[0]);
+        Assert.Equal("A. Mercer", plan.Unmatched[0]);
     }
 
     [Fact]
     public void Plan_Treats_Case_Variants_As_Matches()
     {
-        var matcher = new AuthorMatcher(new[] { Tracked("Terry Brooks", 1) });
+        var matcher = new AuthorMatcher(new[] { Tracked("Lena Hart", 1) });
 
-        var plan = UnknownFolderRecovery.Plan(new[] { "terry brooks", "TERRY BROOKS" }, matcher);
+        var plan = UnknownFolderRecovery.Plan(new[] { "lena hart", "LENA HART" }, matcher);
 
         Assert.Equal(2, plan.Matched.Count);
     }
@@ -48,7 +48,7 @@ public class UnknownFolderRecoveryMoreTests
     [Fact]
     public void Plan_Handles_Empty_Input()
     {
-        var matcher = new AuthorMatcher(new[] { Tracked("Terry Brooks", 1) });
+        var matcher = new AuthorMatcher(new[] { Tracked("Lena Hart", 1) });
 
         var plan = UnknownFolderRecovery.Plan(Array.Empty<string>(), matcher);
 

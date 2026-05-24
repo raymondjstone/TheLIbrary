@@ -8,17 +8,17 @@ public class SeriesOrganizerServiceLogicTests
     [Fact]
     public void ResolveSeriesNameForTests_Cleans_Stored_TitleFolder_Like_Value()
     {
-        var result = SeriesOrganizerService.ResolveSeriesNameForTests("Midkemia 02 - The King's Buccaneer", 12, "ignored");
+        var result = SeriesOrganizerService.ResolveSeriesNameForTests("Iron March 02 - The Broken Skiff", 12, "ignored");
 
-        Assert.Equal("Midkemia", result);
+        Assert.Equal("Iron March", result);
     }
 
     [Fact]
     public void ResolveSeriesNameForTests_Parses_From_Filename_When_No_Series_Is_Set()
     {
-        var result = SeriesOrganizerService.ResolveSeriesNameForTests(null, null, "Midkemia 02 - The King's Buccaneer");
+        var result = SeriesOrganizerService.ResolveSeriesNameForTests(null, null, "Iron March 02 - The Broken Skiff");
 
-        Assert.Equal("Midkemia", result);
+        Assert.Equal("Iron March", result);
     }
 
     [Fact]

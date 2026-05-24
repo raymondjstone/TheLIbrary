@@ -11,7 +11,7 @@ public class SeriesPositionParserTests
     // ── Comma-separated variants ─────────────────────────────────────────────
 
     [Theory]
-    [InlineData("Pawn of Prophecy (The Belgariad, #1)", "1")]
+    [InlineData("First Oath (The Ember Cycle, #1)", "1")]
     [InlineData("Title (Series, Book 3)", "3")]
     [InlineData("Title (Series, Book #3)", "3")]
     [InlineData("Title (Series, 3)", "3")]
@@ -28,7 +28,7 @@ public class SeriesPositionParserTests
     [Theory]
     [InlineData("Title (Series Book 3)", "3")]
     [InlineData("Title (Series #3)", "3")]
-    [InlineData("Demon Lord of Karanda (The Malloreon, Book 3)", "3")]
+    [InlineData("Stormwarden of Helor (The Ashen March, Book 3)", "3")]
     public void SpaceVariants(string title, string expected) =>
         Assert.Equal(expected, Parse(title));
 
@@ -57,7 +57,7 @@ public class SeriesPositionParserTests
     [Fact]
     public void PositionAtEndOfLongTitle()
     {
-        var title = "The Ruby Knight (The Elenium, Book 2)";
+        var title = "The Glass Courier (The Lantern Road, Book 2)";
         Assert.Equal("2", Parse(title));
     }
 
@@ -76,8 +76,8 @@ public class SeriesInfoFromTitleTests
     // ── Comma-separated — name and position both extracted ───────────────────
 
     [Theory]
-    [InlineData("Demon Lord of Karanda (The Malloreon, Book 3)", "The Malloreon", "3")]
-    [InlineData("Pawn of Prophecy (The Belgariad, #1)",          "The Belgariad", "1")]
+    [InlineData("Stormwarden of Helor (The Ashen March, Book 3)", "The Ashen March", "3")]
+    [InlineData("First Oath (The Ember Cycle, #1)",               "The Ember Cycle", "1")]
     [InlineData("Title (My Series, 2)",                          "My Series",     "2")]
     [InlineData("Title (My Series, Part 4)",                     "My Series",     "4")]
     [InlineData("Title (My Series, Vol. 5)",                     "My Series",     "5")]

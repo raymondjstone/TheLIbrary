@@ -4,18 +4,18 @@ using Xunit;
 namespace TheLibrary.Server.Tests;
 
 // Covers TitleNormalizer.TryParseSeriesFilename across every filename pattern
-// observed in the live LocalBookFiles table. Each section pins one shape and
+// observed in representative inventory samples. Each section pins one shape and
 // uses the production parser end-to-end so behaviour and edge cases stay in sync.
 public class TitleNormalizerSeriesTests
 {
     // ── Pattern A: "{Series N} - {Title}" — series first, no author ──────────
 
     [Theory]
-    [InlineData("Heechee 6 - The Boy Who Would Live Forever",       "Heechee", "6", "The Boy Who Would Live Forever")]
-    [InlineData("Chaoswar Saga 03 - Magician's End",                "Chaoswar Saga", "3", "Magician's End")]
-    [InlineData("Midkemia 16 - Legends of The Ri",                  "Midkemia", "16", "Legends of The Ri")]
-    [InlineData("Sharpe 21 - Sharpe's Waterloo",                    "Sharpe", "21", "Sharpe's Waterloo")]
-    [InlineData("Halliday 13",                                      null, null, null)]
+    [InlineData("Deep Range 6 - The Last Beacon",                   "Deep Range", "6", "The Last Beacon")]
+    [InlineData("Ashfall Cycle 03 - Ember's End",                  "Ashfall Cycle", "3", "Ember's End")]
+    [InlineData("Iron March 16 - Echoes of Glass",                 "Iron March", "16", "Echoes of Glass")]
+    [InlineData("Harbor Watch 21 - Winter Signal",                 "Harbor Watch", "21", "Winter Signal")]
+    [InlineData("Marchlight 13",                                   null, null, null)]
     public void SeriesFirst_NoAuthor(string stem, string? series, string? pos, string? title)
     {
         var (s, p, t, a) = TitleNormalizer.TryParseSeriesFilename(stem);
@@ -28,14 +28,14 @@ public class TitleNormalizerSeriesTests
     // ── Pattern B: "{Series N} - {Title} - {Author}" — author last ───────────
 
     [Theory]
-    [InlineData("Wheel of Time 10 - Crossroads of Twilight - Robert Jordan",
-                "Wheel of Time", "10", "Crossroads of Twilight", "Robert Jordan")]
-    [InlineData("Xanth 21 - Faun & Games - Piers Anthony",
-                "Xanth", "21", "Faun & Games", "Piers Anthony")]
-    [InlineData("The Destroyer 058 - Total Recall - Warren Murphy",
-                "The Destroyer", "58", "Total Recall", "Warren Murphy")]
-    [InlineData("Sherlock Holmes 01 - The Breath - Guy Adams",
-                "Sherlock Holmes", "1", "The Breath", "Guy Adams")]
+    [InlineData("River of Crowns 10 - Twilight Crossing - Rowan Hale",
+                "River of Crowns", "10", "Twilight Crossing", "Rowan Hale")]
+    [InlineData("Glass Garden 21 - Fawn & Flame - Mara Voss",
+                "Glass Garden", "21", "Fawn & Flame", "Mara Voss")]
+    [InlineData("The Resolver 058 - Full Recall - Dorian Pike",
+                "The Resolver", "58", "Full Recall", "Dorian Pike")]
+    [InlineData("Midnight Ledger 01 - First Breath - S. L. Mercer",
+                "Midnight Ledger", "1", "First Breath", "S. L. Mercer")]
     public void SeriesFirst_WithAuthor(string stem, string series, string pos, string title, string author)
     {
         var (s, p, t, a) = TitleNormalizer.TryParseSeriesFilename(stem);
@@ -48,18 +48,18 @@ public class TitleNormalizerSeriesTests
     // ── Pattern C: "{Author} - {Series N} - {Title}" — author first ──────────
 
     [Theory]
-    [InlineData("Pohl, Frederik - Heechee 6 - The Boy Who Would Live Forever",
-                "Heechee", "6", "The Boy Who Would Live Forever", "Pohl, Frederik")]
-    [InlineData("Foster, Alan Dean - Catechist 1 - Carnivores of Light and Darkness",
-                "Catechist", "1", "Carnivores of Light and Darkness", "Foster, Alan Dean")]
-    [InlineData("Feehan, Christine - Dark 07 - Dark Dream",
-                "Dark", "7", "Dark Dream", "Feehan, Christine")]
-    [InlineData("Feehan, Christine - Dark 00 - The Scarletti Curse",
-                "Dark", "0", "The Scarletti Curse", "Feehan, Christine")]
-    [InlineData("Bujold, Lois McMaster - Vorkosigan 02 - Barrayar",
-                "Vorkosigan", "2", "Barrayar", "Bujold, Lois McMaster")]
-    [InlineData("K. A. Applegate - Everworld 07 - Gateway To The Gods",
-                "Everworld", "7", "Gateway To The Gods", "K. A. Applegate")]
+    [InlineData("Vale, Mira - Deep Range 6 - The Last Beacon",
+                "Deep Range", "6", "The Last Beacon", "Vale, Mira")]
+    [InlineData("Rowe, Adrian - Lantern Rite 1 - Cities of Salt and Rain",
+                "Lantern Rite", "1", "Cities of Salt and Rain", "Rowe, Adrian")]
+    [InlineData("Voss, Mara - Night 07 - Silent Dream",
+                "Night", "7", "Silent Dream", "Voss, Mara")]
+    [InlineData("Voss, Mara - Night 00 - The Scarlet Thread",
+                "Night", "0", "The Scarlet Thread", "Voss, Mara")]
+    [InlineData("Kestrel, Iona - Meridian 02 - Emberfall",
+                "Meridian", "2", "Emberfall", "Kestrel, Iona")]
+    [InlineData("Arden Pike - Hollow Worlds 07 - Gate of Ash",
+                "Hollow Worlds", "7", "Gate of Ash", "Arden Pike")]
     public void AuthorFirst_SeriesMiddle(string stem, string series, string pos, string title, string author)
     {
         var (s, p, t, a) = TitleNormalizer.TryParseSeriesFilename(stem);
@@ -71,9 +71,9 @@ public class TitleNormalizerSeriesTests
 
     // Author with trailing dot/underscore noise is cleaned.
     [Theory]
-    [InlineData("Crozier, J.L.; - Some Series 3 - Title",            "Crozier, J.L.;")]
-    [InlineData("Wakefield, Trevor. - Series 1 - Title",             "Wakefield, Trevor")]
-    [InlineData("Feist, Raymond E_ - Chaoswar Saga 03 - Magician's End", "Feist, Raymond E")]
+    [InlineData("Vale, J.L.; - Some Series 3 - Title",               "Vale, J.L.;")]
+    [InlineData("Harrow, Trevor. - Series 1 - Title",                "Harrow, Trevor")]
+    [InlineData("Pike, Rowan E_ - Ashfall Cycle 03 - Ember's End",   "Pike, Rowan E")]
     public void AuthorTrailingPunctuationStripped(string stem, string expectedAuthor)
     {
         var (_, _, _, a) = TitleNormalizer.TryParseSeriesFilename(stem);
@@ -83,14 +83,14 @@ public class TitleNormalizerSeriesTests
     // ── Pattern D: Position lives in its own " - " segment ───────────────────
 
     [Theory]
-    [InlineData("Star Trek_ The Next Generation - 069 - Insurrection",
-                "Star Trek_ The Next Generation", "69", "Insurrection", null)]
-    [InlineData("Star Trek_ The Original Series - 072 - The Starship Trap",
-                "Star Trek_ The Original Series", "72", "The Starship Trap", null)]
-    [InlineData("Star Trek_ I.K.S. Gorkon - 003 - Keith R. A. Decandido",
-                "Star Trek_ I.K.S. Gorkon", "3", "Keith R. A. Decandido", null)]
-    [InlineData("Star Wars - 008 - Lost Tribe of - John Jackson Miller",
-                "Star Wars", "8", "Lost Tribe of", "John Jackson Miller")]
+    [InlineData("Galaxy Patrol_ North Wing - 069 - Ember Protocol",
+                "Galaxy Patrol_ North Wing", "69", "Ember Protocol", null)]
+    [InlineData("Solar Fleet_ First Signal - 072 - The Vessel Trap",
+                "Solar Fleet_ First Signal", "72", "The Vessel Trap", null)]
+    [InlineData("Void Armada_ Iron Banner - 003 - K. R. Darrington",
+                "Void Armada_ Iron Banner", "3", "K. R. Darrington", null)]
+    [InlineData("Empire Cycle - 008 - Lost Chorus - Jonah Vale",
+                "Empire Cycle", "8", "Lost Chorus", "Jonah Vale")]
     public void PositionAsOwnSegment(string stem, string series, string pos, string title, string? author)
     {
         var (s, p, t, a) = TitleNormalizer.TryParseSeriesFilename(stem);
@@ -106,22 +106,22 @@ public class TitleNormalizerSeriesTests
     public void NestedSeries_DeeperAnchorWins()
     {
         var (s, p, t, a) = TitleNormalizer.TryParseSeriesFilename(
-            "Star Wars - 311 - Fate of the Jedi 03 - Abyss");
-        Assert.Equal("Fate of the Jedi", s);
+            "Empire Cycle - 311 - Ashen Banner 03 - Hollow Sky");
+        Assert.Equal("Ashen Banner", s);
         Assert.Equal("3", p);
-        Assert.Equal("Abyss", t);
+        Assert.Equal("Hollow Sky", t);
         Assert.Null(a);
     }
 
     // ── Pattern E: Bracket-prefixed series in first segment ──────────────────
 
     [Theory]
-    [InlineData("[Lorien Legacies 06.0] The Fate - Pittacus Lore",
-                "Lorien Legacies", "6", "The Fate", "Pittacus Lore")]
-    [InlineData("[Blood Angels 01]Deus Encarmine",
+    [InlineData("[Iron Lanterns 06.0] Final Signal - Arden Pike",
+                "Iron Lanterns", "6", "Final Signal", "Arden Pike")]
+    [InlineData("[Silver Talons 01]Crimson Echo",
                 null, null, null, null)]  // no space after ] and no " - " → 1 part total
-    [InlineData("[Dorothy Parker 04] - Death Rid - Agata Stanford",
-                "Dorothy Parker", "4", "Death Rid", "Agata Stanford")]
+    [InlineData("[North Station 04] - Last Watch - Ada Wren",
+                "North Station", "4", "Last Watch", "Ada Wren")]
     public void BracketedSeriesPrefix(string stem, string? series, string? pos, string? title, string? author)
     {
         var (s, p, t, a) = TitleNormalizer.TryParseSeriesFilename(stem);
@@ -134,14 +134,14 @@ public class TitleNormalizerSeriesTests
     // ── Pattern F: "{Author} - [{Series N}] - {Title}" — bracketed middle ────
 
     [Theory]
-    [InlineData("Marta Perry - [Watcher in the Dark 05] - When Secrets Strike",
-                "Watcher in the Dark", "5", "When Secrets Strike", "Marta Perry")]
-    [InlineData("Rob Kidd - [Jack Sparrow 02] - The Siren Song",
-                "Jack Sparrow", "2", "The Siren Song", "Rob Kidd")]
-    [InlineData("David Gemmell - [Drenai Saga 05] - In the Realm of the Wolf",
-                "Drenai Saga", "5", "In the Realm of the Wolf", "David Gemmell")]
-    [InlineData("Robert Adams - [Horseclans 02] - Swords of the Horseclans",
-                "Horseclans", "2", "Swords of the Horseclans", "Robert Adams")]
+    [InlineData("Tessa Rowan - [Midnight Archive 05] - Silent Fracture",
+                "Midnight Archive", "5", "Silent Fracture", "Tessa Rowan")]
+    [InlineData("Nico Ward - [Harbor Ghosts 02] - The Siren Map",
+                "Harbor Ghosts", "2", "The Siren Map", "Nico Ward")]
+    [InlineData("Elias Marr - [Ashen Crown 05] - In the Wolf Realm",
+                "Ashen Crown", "5", "In the Wolf Realm", "Elias Marr")]
+    [InlineData("Jonah Pike - [Stone Riders 02] - Blades of the Riders",
+                "Stone Riders", "2", "Blades of the Riders", "Jonah Pike")]
     public void BracketedSeriesMiddle(string stem, string series, string pos, string title, string author)
     {
         var (s, p, t, a) = TitleNormalizer.TryParseSeriesFilename(stem);
@@ -159,14 +159,14 @@ public class TitleNormalizerSeriesTests
     // separate title and author (3+ parts) split cleanly.
 
     [Theory]
-    [InlineData("Hank_ Texas Kings MC, Book 11 - Cee Bowerman",
-                "Hank_ Texas Kings MC", "11", "Cee Bowerman", null)]
-    [InlineData("Holmes of Kyoto_ Volume 6 - Mai Mochizuki",
-                "Holmes of Kyoto_", "6", "Mai Mochizuki", null)]
-    [InlineData("Spice and Wolf 10 - Isuna Hasekura",
-                "Spice and Wolf", "10", "Isuna Hasekura", null)]
-    [InlineData("Discworld 11 - Reaper Man - Pratchett, Terry",
-                "Discworld", "11", "Reaper Man", "Pratchett, Terry")]
+    [InlineData("Raven_ North Street Crew, Book 11 - Cold Mercy",
+                "Raven_ North Street Crew", "11", "Cold Mercy", null)]
+    [InlineData("Clockwork Bureau_ Volume 6 - Nina Sato",
+                "Clockwork Bureau_", "6", "Nina Sato", null)]
+    [InlineData("Salt and Ember 10 - Lena Voss",
+                "Salt and Ember", "10", "Lena Voss", null)]
+    [InlineData("Night Ledger 11 - Hollow Man - Mercer, Talia",
+                "Night Ledger", "11", "Hollow Man", "Mercer, Talia")]
     public void KeywordInsideSeriesSegment(string stem, string series, string pos, string title, string? author)
     {
         var (s, p, t, a) = TitleNormalizer.TryParseSeriesFilename(stem);
@@ -219,10 +219,10 @@ public class TitleNormalizerSeriesTests
     // ── Calibre/tool suffixes stripped from the title ────────────────────────
 
     [Theory]
-    [InlineData("Heechee 6 - The Boy_2",                 "The Boy")]
-    [InlineData("Heechee 6 - The Boy_3",                 "The Boy")]
-    [InlineData("Heechee 6 - The Boy (123)",             "The Boy")]
-    [InlineData("Heechee 6 - The Boy",                   "The Boy")]
+    [InlineData("Deep Range 6 - Last Beacon_2",          "Last Beacon")]
+    [InlineData("Deep Range 6 - Last Beacon_3",          "Last Beacon")]
+    [InlineData("Deep Range 6 - Last Beacon (123)",      "Last Beacon")]
+    [InlineData("Deep Range 6 - Last Beacon",            "Last Beacon")]
     public void CalibreSuffixStrippedFromTitle(string stem, string expectedTitle)
     {
         var (_, _, t, _) = TitleNormalizer.TryParseSeriesFilename(stem);
@@ -233,7 +233,7 @@ public class TitleNormalizerSeriesTests
 
     [Theory]
     [InlineData("The Bracelet")]
-    [InlineData("Heinous - Yolanda Olson")]
+    [InlineData("Sharp Hollow - Nina Rowan")]
     [InlineData("01 - Star of Erengrad")]       // bare-number first, no series name
     [InlineData("Just a Title")]
     [InlineData("")]
@@ -252,7 +252,7 @@ public class TitleNormalizerSeriesTests
     [Fact]
     public void BareNumber_DoesNotMatchAsSeries()
     {
-        var (s, _, _, _) = TitleNormalizer.TryParseSeriesFilename("1984 - George Orwell");
+        var (s, _, _, _) = TitleNormalizer.TryParseSeriesFilename("1984 - Rowan Vale");
         Assert.Null(s);  // "1984" is a title, not a "Series 1984"
     }
 

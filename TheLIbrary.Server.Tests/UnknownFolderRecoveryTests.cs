@@ -20,31 +20,31 @@ public class UnknownFolderRecoveryTests
     [Fact]
     public void Matches_folder_with_same_normalized_name()
     {
-        var matcher = BuildMatcher(Tracked("Terry Brooks", id: 1));
-        var plan = UnknownFolderRecovery.Plan(new[] { "Terry Brooks" }, matcher);
+        var matcher = BuildMatcher(Tracked("Lena Hart", id: 1));
+        var plan = UnknownFolderRecovery.Plan(new[] { "Lena Hart" }, matcher);
 
         Assert.Single(plan.Matched);
         Assert.Empty(plan.Unmatched);
-        Assert.Equal("Terry Brooks", plan.Matched[0].Match?.DisplayName);
+        Assert.Equal("Lena Hart", plan.Matched[0].Match?.DisplayName);
     }
 
     [Fact]
     public void Matches_calibre_folder_form_last_comma_first()
     {
-        // NormalizeAuthor flips comma form, so "Brooks, Terry" → "terry brooks"
-        var matcher = BuildMatcher(Tracked("Terry Brooks", id: 1));
-        var plan = UnknownFolderRecovery.Plan(new[] { "Brooks, Terry" }, matcher);
+        // NormalizeAuthor flips comma form, so "Hart, Lena" → "lena hart"
+        var matcher = BuildMatcher(Tracked("Lena Hart", id: 1));
+        var plan = UnknownFolderRecovery.Plan(new[] { "Hart, Lena" }, matcher);
 
         Assert.Single(plan.Matched);
-        Assert.Equal("Brooks, Terry", plan.Matched[0].FolderName);
+        Assert.Equal("Hart, Lena", plan.Matched[0].FolderName);
     }
 
     [Fact]
     public void Matches_via_surname_first_rotation()
     {
-        // ExpandNameVariants emits "brooks terry" alongside "terry brooks"
-        var matcher = BuildMatcher(Tracked("Terry Brooks", id: 1));
-        var plan = UnknownFolderRecovery.Plan(new[] { "Brooks Terry" }, matcher);
+        // ExpandNameVariants emits "hart lena" alongside "lena hart"
+        var matcher = BuildMatcher(Tracked("Lena Hart", id: 1));
+        var plan = UnknownFolderRecovery.Plan(new[] { "Hart Lena" }, matcher);
 
         Assert.Single(plan.Matched);
     }
@@ -55,11 +55,11 @@ public class UnknownFolderRecoveryTests
     public void Matches_alternate_name_from_index_entry()
     {
         var matcher = BuildMatcher(Tracked(
-            "Terry Brooks", id: 1,
-            alternates: new[] { "T. Brooks", "Terence Brooks" }));
+            "Lena Hart", id: 1,
+            alternates: new[] { "L. Hart", "Lenora Hart" }));
 
         var plan = UnknownFolderRecovery.Plan(
-            new[] { "T. Brooks", "Terence Brooks", "Terry Brooks" }, matcher);
+            new[] { "L. Hart", "Lenora Hart", "Lena Hart" }, matcher);
 
         Assert.Equal(3, plan.Matched.Count);
         Assert.Empty(plan.Unmatched);
@@ -71,9 +71,9 @@ public class UnknownFolderRecoveryTests
     {
         var matcher = BuildMatcher(Tracked(
             "Stanislaw Lem", id: 1,
-            alternates: new[] { "Stanisław Lem" }));   // Polish ł
+            alternates: new[] { "Yséa Morel" }));
 
-        var plan = UnknownFolderRecovery.Plan(new[] { "Stanislaw Lem" }, matcher);
+        var plan = UnknownFolderRecovery.Plan(new[] { "Ysea Morel" }, matcher);
         Assert.Single(plan.Matched);
     }
 
@@ -82,9 +82,9 @@ public class UnknownFolderRecoveryTests
     [Fact]
     public void Unknown_author_lands_in_unmatched()
     {
-        var matcher = BuildMatcher(Tracked("Terry Brooks", id: 1));
+        var matcher = BuildMatcher(Tracked("Lena Hart", id: 1));
         var plan = UnknownFolderRecovery.Plan(
-            new[] { "Asimov, Isaac", "Unknown Author" }, matcher);
+            new[] { "Mercer, Ari", "Unknown Author" }, matcher);
 
         Assert.Empty(plan.Matched);
         Assert.Equal(2, plan.Unmatched.Count);
@@ -93,8 +93,8 @@ public class UnknownFolderRecoveryTests
     [Fact]
     public void Whitespace_and_empty_folder_names_are_skipped_entirely()
     {
-        var matcher = BuildMatcher(Tracked("Terry Brooks", id: 1));
-        var plan = UnknownFolderRecovery.Plan(new[] { "", "   ", "Terry Brooks" }, matcher);
+        var matcher = BuildMatcher(Tracked("Lena Hart", id: 1));
+        var plan = UnknownFolderRecovery.Plan(new[] { "", "   ", "Lena Hart" }, matcher);
 
         // Empty/whitespace inputs aren't counted as unmatched either — they
         // are dropped silently because they could never be legitimate folder
@@ -112,9 +112,9 @@ public class UnknownFolderRecoveryTests
         // OL-only catalog hits are not tracked, so they should fall through.
         var matcher = new AuthorMatcher(new[]
         {
-            new AuthorIndexEntry("Terry Brooks", "Terry Brooks", IsTracked: false)
+            new AuthorIndexEntry("Lena Hart", "Lena Hart", IsTracked: false)
         });
-        var plan = UnknownFolderRecovery.Plan(new[] { "Terry Brooks" }, matcher);
+        var plan = UnknownFolderRecovery.Plan(new[] { "Lena Hart" }, matcher);
 
         Assert.Empty(plan.Matched);
         Assert.Single(plan.Unmatched);
@@ -127,10 +127,10 @@ public class UnknownFolderRecoveryTests
     {
         var matcher = new AuthorMatcher(new[]
         {
-            new AuthorIndexEntry("Terry Brooks", "Terry Brooks", IsTracked: false),       // OL stub
-            Tracked("Terry Brooks", folder: "Brooks-Terry", id: 7),                       // tracked
+            new AuthorIndexEntry("Lena Hart", "Lena Hart", IsTracked: false),       // OL stub
+            Tracked("Lena Hart", folder: "Hart-Lena", id: 7),                       // tracked
         });
-        var plan = UnknownFolderRecovery.Plan(new[] { "Terry Brooks" }, matcher);
+        var plan = UnknownFolderRecovery.Plan(new[] { "Lena Hart" }, matcher);
 
         Assert.Single(plan.Matched);
         Assert.True(plan.Matched[0].Match?.IsTracked);

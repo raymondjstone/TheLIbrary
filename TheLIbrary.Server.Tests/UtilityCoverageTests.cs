@@ -77,7 +77,7 @@ public class UtilityCoverageTests
     [Fact]
     public void AuthorMatcher_TryGet_Returns_Null_For_Blank_Input()
     {
-        var matcher = new AuthorMatcher(new[] { new AuthorIndexEntry("Terry Brooks", "Terry Brooks", true) });
+        var matcher = new AuthorMatcher(new[] { new AuthorIndexEntry("Lena Hart", "Lena Hart", true) });
 
         Assert.Null(matcher.TryGet(null));
         Assert.Null(matcher.TryGet("   "));
@@ -86,7 +86,7 @@ public class UtilityCoverageTests
     [Fact]
     public void AuthorMatcher_ResolveFolderAncestor_Stops_At_SourceRoot()
     {
-        var matcher = new AuthorMatcher(new[] { new AuthorIndexEntry("Arthur C. Clarke", "Arthur C. Clarke", true) });
+        var matcher = new AuthorMatcher(new[] { new AuthorIndexEntry("Mira C. Rowan", "Mira C. Rowan", true) });
 
         var hit = matcher.ResolveFolderAncestor(
             folderPath: @"X:\drop",
@@ -98,10 +98,10 @@ public class UtilityCoverageTests
     [Fact]
     public void AuthorMatcher_ResolveFolderAncestor_Finds_Tracked_Author_Above_Title_Folder()
     {
-        var matcher = new AuthorMatcher(new[] { new AuthorIndexEntry("Arthur C. Clarke", "Arthur C. Clarke", true, 1) });
+        var matcher = new AuthorMatcher(new[] { new AuthorIndexEntry("Mira C. Rowan", "Mira C. Rowan", true, 1) });
 
         var hit = matcher.ResolveFolderAncestor(
-            folderPath: @"X:\drop\Arthur C. Clarke\Rendezvous with Rama\formats",
+            folderPath: @"X:\drop\Mira C. Rowan\Signal over Haven\formats",
             sourceRoot: @"X:\drop");
 
         Assert.NotNull(hit);
@@ -114,11 +114,11 @@ public class UtilityCoverageTests
         var matcher = new AuthorMatcher(new[]
         {
             new AuthorIndexEntry("__unknown", "__unknown", true, 1),
-            new AuthorIndexEntry("Arthur C. Clarke", "Arthur C. Clarke", true, 2),
+            new AuthorIndexEntry("Mira C. Rowan", "Mira C. Rowan", true, 2),
         });
 
         var hit = matcher.ResolveFolderAncestor(
-            folderPath: @"X:\drop\__unknown\Arthur C. Clarke\Book",
+            folderPath: @"X:\drop\__unknown\Mira C. Rowan\Book",
             sourceRoot: @"X:\drop");
 
         Assert.NotNull(hit);

@@ -21,11 +21,11 @@ public class AuthorMatcherTests
     // "matches OL" are exercised through the same code path.
     private static AuthorMatcher BuildMatcher() => new(new[]
     {
-        Tracked("Arthur C. Clarke"),
-        Tracked("Piers Anthony", folder: "Anthony, Piers"),
-        Ol("Isaac Asimov"),
-        Ol("Ursula K. Le Guin"),
-        Ol("Jüan García"),
+        Tracked("Mira C. Rowan"),
+        Tracked("Rowan Vale", folder: "Vale, Rowan"),
+        Ol("Ari Mercer"),
+        Ol("Elin Ward"),
+        Ol("Júlia Soria"),
     });
 
     // ---------- forward "Author - Title.ext" filename matching ---------------
@@ -34,11 +34,11 @@ public class AuthorMatcherTests
     public void Matches_tracked_author_from_forward_filename()
     {
         var m = BuildMatcher();
-        var r = m.Resolve(null, null, @"X:\drop\Arthur C. Clarke - Rendezvous with Rama.epub");
+        var r = m.Resolve(null, null, @"X:\drop\Mira C. Rowan - Signal over Haven.epub");
 
         Assert.NotNull(r);
         Assert.True(r!.Entry.IsTracked);
-        Assert.Equal("Arthur C. Clarke", r.Entry.FolderName);
+        Assert.Equal("Mira C. Rowan", r.Entry.FolderName);
         Assert.Null(r.RewrittenTitle);
     }
 
@@ -46,11 +46,11 @@ public class AuthorMatcherTests
     public void Matches_OpenLibrary_author_from_forward_filename()
     {
         var m = BuildMatcher();
-        var r = m.Resolve(null, null, @"X:\drop\Isaac Asimov - Foundation.epub");
+        var r = m.Resolve(null, null, @"X:\drop\Ari Mercer - Cornerstone.epub");
 
         Assert.NotNull(r);
         Assert.False(r!.Entry.IsTracked);
-        Assert.Equal("Isaac Asimov", r.Entry.FolderName);
+        Assert.Equal("Ari Mercer", r.Entry.FolderName);
     }
 
     // ---------- reverse "Title - Author.ext" filename matching ---------------
@@ -59,23 +59,23 @@ public class AuthorMatcherTests
     public void Matches_tracked_author_from_reverse_filename()
     {
         var m = BuildMatcher();
-        var r = m.Resolve(null, null, @"X:\drop\Rendezvous with Rama - Arthur C. Clarke.epub");
+        var r = m.Resolve(null, null, @"X:\drop\Signal over Haven - Mira C. Rowan.epub");
 
         Assert.NotNull(r);
         Assert.True(r!.Entry.IsTracked);
-        Assert.Equal("Rendezvous with Rama", r.RewrittenTitle);
+        Assert.Equal("Signal over Haven", r.RewrittenTitle);
     }
 
     [Fact]
     public void Matches_OpenLibrary_author_from_reverse_filename()
     {
         var m = BuildMatcher();
-        var r = m.Resolve(null, null, @"X:\drop\Foundation - Isaac Asimov.mobi");
+        var r = m.Resolve(null, null, @"X:\drop\Cornerstone - Ari Mercer.mobi");
 
         Assert.NotNull(r);
         Assert.False(r!.Entry.IsTracked);
-        Assert.Equal("Isaac Asimov", r.Entry.FolderName);
-        Assert.Equal("Foundation", r.RewrittenTitle);
+        Assert.Equal("Ari Mercer", r.Entry.FolderName);
+        Assert.Equal("Cornerstone", r.RewrittenTitle);
     }
 
     [Fact]
@@ -83,7 +83,7 @@ public class AuthorMatcherTests
     {
         var m = BuildMatcher();
         // "Book - Part 2 - Author" — the author lives AFTER the last " - ".
-        var r = m.Resolve(null, null, @"X:\drop\Book - Part 2 - Arthur C. Clarke.epub");
+        var r = m.Resolve(null, null, @"X:\drop\Book - Part 2 - Mira C. Rowan.epub");
 
         Assert.NotNull(r);
         Assert.Equal("Book - Part 2", r!.RewrittenTitle);
@@ -95,7 +95,7 @@ public class AuthorMatcherTests
     public void Matches_tracked_author_from_metadata()
     {
         var m = BuildMatcher();
-        var r = m.Resolve("Arthur C. Clarke", null, @"X:\drop\some-opaque-filename.epub");
+        var r = m.Resolve("Mira C. Rowan", null, @"X:\drop\some-opaque-filename.epub");
 
         Assert.NotNull(r);
         Assert.True(r!.Entry.IsTracked);
@@ -105,11 +105,11 @@ public class AuthorMatcherTests
     public void Matches_OpenLibrary_author_from_metadata()
     {
         var m = BuildMatcher();
-        var r = m.Resolve("Ursula K. Le Guin", null, @"X:\drop\some-opaque-filename.epub");
+        var r = m.Resolve("Elin Ward", null, @"X:\drop\some-opaque-filename.epub");
 
         Assert.NotNull(r);
         Assert.False(r!.Entry.IsTracked);
-        Assert.Equal("Ursula K. Le Guin", r.Entry.FolderName);
+        Assert.Equal("Elin Ward", r.Entry.FolderName);
     }
 
     [Fact]
@@ -117,10 +117,10 @@ public class AuthorMatcherTests
     {
         // "Last, First" style — NormalizeAuthor flips these before lookup.
         var m = BuildMatcher();
-        var r = m.Resolve("Clarke, Arthur C.", null, @"X:\drop\book.epub");
+        var r = m.Resolve("Rowan, Mira C.", null, @"X:\drop\book.epub");
 
         Assert.NotNull(r);
-        Assert.Equal("Arthur C. Clarke", r!.Entry.DisplayName);
+        Assert.Equal("Mira C. Rowan", r!.Entry.DisplayName);
     }
 
     [Fact]
@@ -129,18 +129,18 @@ public class AuthorMatcherTests
         // Kindle files sometimes fill author as display form AND author_sort
         // as "Last, First" separately — both should land on the same entry.
         var m = BuildMatcher();
-        var r = m.Resolve(null, "Clarke, Arthur C.", @"X:\drop\book.epub");
+        var r = m.Resolve(null, "Rowan, Mira C.", @"X:\drop\book.epub");
 
         Assert.NotNull(r);
-        Assert.Equal("Arthur C. Clarke", r!.Entry.DisplayName);
+        Assert.Equal("Mira C. Rowan", r!.Entry.DisplayName);
     }
 
     [Fact]
     public void Diacritics_are_stripped_so_accented_names_still_match()
     {
         var m = BuildMatcher();
-        var r1 = m.Resolve("Juan Garcia", null, @"X:\drop\book.epub");
-        var r2 = m.Resolve("Jüan García", null, @"X:\drop\book.epub");
+        var r1 = m.Resolve("Julia Soria", null, @"X:\drop\book.epub");
+        var r2 = m.Resolve("Júlia Soria", null, @"X:\drop\book.epub");
 
         Assert.NotNull(r1);
         Assert.NotNull(r2);
@@ -152,31 +152,31 @@ public class AuthorMatcherTests
     [Fact]
     public void Space_form_surname_first_matches_forename_first_entry()
     {
-        // Index has "Arthur C. Clarke"; probe "Clarke Arthur C" (Last + rest).
+        // Index has "Mira C. Rowan"; probe "Rowan Mira C" (Last + rest).
         var m = BuildMatcher();
-        var r = m.Resolve("Clarke Arthur C", null, @"X:\drop\book.epub");
+        var r = m.Resolve("Rowan Mira C", null, @"X:\drop\book.epub");
 
         Assert.NotNull(r);
-        Assert.Equal("Arthur C. Clarke", r!.Entry.DisplayName);
+        Assert.Equal("Mira C. Rowan", r!.Entry.DisplayName);
     }
 
     [Fact]
     public void ExpandNameVariants_emits_original_and_both_rotations_for_three_tokens()
     {
-        var variants = AuthorMatcher.ExpandNameVariants("arthur c clarke").ToList();
+        var variants = AuthorMatcher.ExpandNameVariants("mira c rowan").ToList();
 
-        Assert.Contains("arthur c clarke", variants);
-        Assert.Contains("clarke arthur c", variants);   // last + rest
-        Assert.Contains("c clarke arthur", variants);   // rest + first
+        Assert.Contains("mira c rowan", variants);
+        Assert.Contains("rowan mira c", variants);   // last + rest
+        Assert.Contains("c rowan mira", variants);   // rest + first
     }
 
     [Fact]
     public void ExpandNameVariants_collapses_rotations_for_two_token_names()
     {
-        var variants = AuthorMatcher.ExpandNameVariants("arthur clarke").ToList();
+        var variants = AuthorMatcher.ExpandNameVariants("mira rowan").ToList();
 
-        Assert.Contains("arthur clarke", variants);
-        Assert.Contains("clarke arthur", variants);
+        Assert.Contains("mira rowan", variants);
+        Assert.Contains("rowan mira", variants);
         // The "rest + first" rotation collapses to the same string and isn't
         // re-emitted; two distinct variants is all we expect.
         Assert.Equal(2, variants.Count);
@@ -184,13 +184,13 @@ public class AuthorMatcherTests
 
     // Physical-books import / rematch uses ExpandNameVariants on both the input
     // author and the candidate Book's author so any rotation matches. These
-    // pairings cover the three real shapes inventories arrive in.
+    // pairings cover the common inventory shapes this matcher must tolerate.
     [Theory]
-    [InlineData("Terry Brooks", "Brooks, Terry")]    // comma flip
-    [InlineData("Terry Brooks", "Brooks Terry")]     // comma-less surname-first
-    [InlineData("Brooks, Terry", "Brooks Terry")]    // mixed
-    [InlineData("Arthur C. Clarke", "Clarke, Arthur C.")]
-    [InlineData("Arthur C. Clarke", "Clarke Arthur C")]
+    [InlineData("Lena Hart", "Hart, Lena")]    // comma flip
+    [InlineData("Lena Hart", "Hart Lena")]     // comma-less surname-first
+    [InlineData("Hart, Lena", "Hart Lena")]    // mixed
+    [InlineData("Mira C. Rowan", "Rowan, Mira C.")]
+    [InlineData("Mira C. Rowan", "Rowan Mira C")]
     public void Variant_sets_overlap_for_real_inventory_pairs(string a, string b)
     {
         var ax = AuthorMatcher.ExpandNameVariants(
@@ -202,8 +202,8 @@ public class AuthorMatcherTests
     }
 
     [Theory]
-    [InlineData("Terry Brooks", "Isaac Asimov")]      // genuinely different people
-    [InlineData("Brooks, Terry", "Brooks, Sandra")]   // same surname, different forename
+    [InlineData("Lena Hart", "Ari Mercer")]      // genuinely different people
+    [InlineData("Hart, Lena", "Hart, Serena")]   // same surname, different forename
     public void Variant_sets_do_NOT_overlap_for_different_authors(string a, string b)
     {
         var ax = AuthorMatcher.ExpandNameVariants(
@@ -221,14 +221,14 @@ public class AuthorMatcherTests
     {
         var m = new AuthorMatcher(new[]
         {
-            Ol("Arthur C. Clarke"),                  // OL-catalog version
-            Tracked("Arthur C. Clarke", folder: "Clarke-Arthur"),
+            Ol("Mira C. Rowan"),                  // OL-catalog version
+            Tracked("Mira C. Rowan", folder: "Rowan-Mira"),
         });
-        var r = m.Resolve("Arthur C. Clarke", null, @"X:\drop\book.epub");
+        var r = m.Resolve("Mira C. Rowan", null, @"X:\drop\book.epub");
 
         Assert.NotNull(r);
         Assert.True(r!.Entry.IsTracked);
-        Assert.Equal("Clarke-Arthur", r.Entry.FolderName);
+        Assert.Equal("Rowan-Mira", r.Entry.FolderName);
     }
 
     // ---------- total miss ---------------------------------------------------
@@ -308,12 +308,12 @@ public class AuthorMatcherTests
     {
         var m = BuildMatcher();
         var (entry, title) = m.ResolveFolderLayout(
-            folderPath: @"X:\drop\Arthur C. Clarke\Rendezvous with Rama",
+            folderPath: @"X:\drop\Mira C. Rowan\Signal over Haven",
             sourceRoot: @"X:\drop");
 
         Assert.NotNull(entry);
         Assert.True(entry!.IsTracked);
-        Assert.Equal("Rendezvous with Rama", title);
+        Assert.Equal("Signal over Haven", title);
     }
 
     [Fact]
@@ -321,12 +321,12 @@ public class AuthorMatcherTests
     {
         var m = BuildMatcher();
         var (entry, title) = m.ResolveFolderLayout(
-            folderPath: @"X:\drop\Isaac Asimov\Foundation",
+            folderPath: @"X:\drop\Ari Mercer\Cornerstone",
             sourceRoot: @"X:\drop");
 
         Assert.NotNull(entry);
         Assert.False(entry!.IsTracked);
-        Assert.Equal("Foundation", title);
+        Assert.Equal("Cornerstone", title);
     }
 
     [Fact]

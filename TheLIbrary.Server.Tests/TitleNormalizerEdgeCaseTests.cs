@@ -27,8 +27,8 @@ public class TitleNormalizerEdgeCaseTests
     }
 
     [Theory]
-    [InlineData("The Book by Isaac Asimov", new[] { "book by isaac asimov", "book" })]
-    [InlineData("The Book (Isaac Asimov) by Someone Else", new[] { "book isaac asimov by someone else", "book isaac asimov" })]
+    [InlineData("The Book by Rowan Vale", new[] { "book by rowan vale", "book" })]
+    [InlineData("The Book (Rowan Vale) by Someone Else", new[] { "book rowan vale by someone else", "book rowan vale" })]
     [InlineData("Standalone", new[] { "standalone" })]
     public void FolderTitleCandidates_Returns_Expected_Candidate_Order(string folder, string[] expected)
     {
