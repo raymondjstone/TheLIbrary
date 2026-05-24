@@ -50,6 +50,7 @@ builder.Services.AddSingleton<OpenLibraryRateLimiter>();
 builder.Services.AddHttpClient<OpenLibraryClient>();
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<IFileSystem, SystemFileSystem>();
+builder.Services.AddSingleton<OpenLibraryMetadataCacheService>();
 builder.Services.AddSingleton<IProcessRunner, SystemProcessRunner>();
 builder.Services.AddScoped<CalibreScanner>();
 builder.Services.AddScoped<AuthorDumpSeeder>();

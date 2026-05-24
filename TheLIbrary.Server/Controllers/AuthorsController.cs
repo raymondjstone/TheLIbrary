@@ -5,6 +5,7 @@ using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.Incoming;
+using TheLibrary.Server.Services.IO;
 using TheLibrary.Server.Services.OpenLibrary;
 using TheLibrary.Server.Services.Scheduling;
 using TheLibrary.Server.Services.Sync;
@@ -19,6 +20,7 @@ public class AuthorsController : ControllerBase
     private readonly OpenLibraryClient _ol;
     private readonly AuthorRefresher _refresher;
     private readonly ManualBookService _manualBooks;
+    private readonly IFileSystem _fs;
     private readonly ILogger<AuthorsController> _log;
 
     public AuthorsController(
@@ -26,12 +28,14 @@ public class AuthorsController : ControllerBase
         OpenLibraryClient ol,
         AuthorRefresher refresher,
         ManualBookService manualBooks,
+        IFileSystem fs,
         ILogger<AuthorsController> log)
     {
         _db = db;
         _ol = ol;
         _refresher = refresher;
         _manualBooks = manualBooks;
+        _fs = fs;
         _log = log;
     }
 
@@ -251,6 +255,9 @@ public class AuthorsController : ControllerBase
         string? Authors,
         string? PrimaryAuthorKey,
         string? PrimaryAuthorName);
+
+    public sealed record BulkMatchOpenLibraryFileRequest(IReadOnlyList<int> FileIds);
+    public sealed record BulkMatchOpenLibraryFileResult(int Matched, IReadOnlyList<string> Errors);
 
     // Extensions we recognize as ebook files in the incoming pipeline. Any
     // other file in the title folder (cover.jpg, metadata.opf, …) is ignored

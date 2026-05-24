@@ -80,3 +80,10 @@ public sealed class AuthorMergeData
     // "/authors/OL5678A" keys that were redirected into master.
     [JsonPropertyName("duplicates")] public List<string>? Duplicates { get; set; }
 }
+
+public sealed class WorkDetailResponse
+{
+    [JsonPropertyName("key")] public string? Key { get; set; }
+    [JsonPropertyName("subjects")] public List<string>? Subjects { get; set; }
+    [JsonPropertyName("covers")] public List<int>? Covers { get; set; }
+}

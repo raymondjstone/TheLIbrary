@@ -8,6 +8,7 @@ const labels = {
     'reprocess-unknown': 'Reprocess __unknown folder',
     'same-name-authors': 'Add same-name OpenLibrary authors',
     'star-physical-authors': 'Give 1 star to physical-book authors',
+    'cache-openlibrary-metadata': 'Cache OpenLibrary covers and subjects',
 }
 
 const fmtNextRun = (iso) => {

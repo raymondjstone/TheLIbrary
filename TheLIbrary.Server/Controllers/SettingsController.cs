@@ -67,6 +67,7 @@ public class SettingsController : ControllerBase
 
     public sealed record RefreshLimitsDto(int MaxAuthorsPerRun, int MaxEarlyWhenNoneDue);
     public sealed record RefreshCadenceDto(int RecentDays, int MidDays, int DormantDays, int OldOrEmptyDays);
+    public sealed record DuplicateFormatPreferenceDto(string[] Formats);
 
     // Limits for the refresh-due-works job: how many authors it refreshes per
     // run (0 = no limit), and how many to refresh early when none are due.
@@ -131,8 +132,46 @@ public class SettingsController : ControllerBase
         return new RefreshCadenceDto(body.RecentDays, body.MidDays, body.DormantDays, body.OldOrEmptyDays);
     }
 
+    [HttpGet("duplicate-format-preference")]
+    public async Task<DuplicateFormatPreferenceDto> GetDuplicateFormatPreference(CancellationToken ct)
+    {
+        var row = await _db.AppSettings
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Key == AppSettingKeys.DuplicateFormatPreference, ct);
+        var formats = ParseFormats(row?.Value);
+        return new DuplicateFormatPreferenceDto(formats.Length > 0 ? formats : BooksController.DefaultFormatPreference);
+    }
+
+    [HttpPut("duplicate-format-preference")]
+    public async Task<ActionResult<DuplicateFormatPreferenceDto>> SetDuplicateFormatPreference(
+        [FromBody] DuplicateFormatPreferenceDto body,
+        CancellationToken ct)
+    {
+        var cleaned = (body.Formats ?? Array.Empty<string>())
+            .Select(f => f?.Trim().TrimStart('.').ToLowerInvariant())
+            .Where(f => !string.IsNullOrWhiteSpace(f))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (cleaned.Length == 0)
+            return BadRequest(new { error = "At least one format is required." });
+
+        await UpsertSettingAsync(AppSettingKeys.DuplicateFormatPreference, string.Join(';', cleaned), ct);
+        await _db.SaveChangesAsync(ct);
+        return new DuplicateFormatPreferenceDto(cleaned);
+    }
+
     private static int ReadInt(IReadOnlyDictionary<string, string> rows, string key, int fallback)
         => rows.TryGetValue(key, out var v) && int.TryParse(v, out var n) && n >= 0 ? n : fallback;
+
+    private static string[] ParseFormats(string? raw)
+        => string.IsNullOrWhiteSpace(raw)
+            ? Array.Empty<string>()
+            : raw.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(f => f.TrimStart('.').ToLowerInvariant())
+                .Where(f => f.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
 
     private async Task UpsertSettingAsync(string key, string value, CancellationToken ct)
     {

@@ -258,6 +258,15 @@ layers that compound rather than override each other:
    "Confirm N high-confidence matches" button that batches every ≥0.9
    suggestion through `POST /api/authors/{id}/unmatched/bulk-match`.
 
+If none of the local suggestions are high-confidence, the same unmatched-files
+toolbar can fall back to **filename-based OpenLibrary matching**. That path
+searches OpenLibrary using each selected file's filename/title folder and sends
+the accepted result through
+`POST /api/authors/{id}/unmatched/openlibrary-bulk-match`. If OpenLibrary says
+the work belongs to a different author than the page you started from, the app
+auto-creates or reuses that author, links the file to the fetched work, and
+physically relocates the on-disk file into the target author's folder.
+
 The same prefix/series/fuzzy pipeline is also used by the sync's automatic
 matcher so what you see in the UI mirrors how a sync pass would have evaluated
 each file.
@@ -435,6 +444,17 @@ refresh limits**, stored in the database — govern the rest:
 - **Pull early when none are due** — when no author is actually due, this many
   of the soonest-due authors are refreshed early so the run still does useful
   work (default `200`; `0` disables early pulls).
+
+The Settings page also exposes **Duplicate format preference** — a
+semicolon-separated priority list such as `epub;pdf;azw3;mobi`. The Duplicate
+Files page uses that order to decide which format is the recommended copy to
+keep when the same work has multiple local files.
+
+Finally, a scheduled **OpenLibrary metadata cache** job can backfill missing
+subjects and locally cache large cover images for existing works. Cached covers
+are written under `wwwroot/cached-covers/` and the corresponding `Book.CoverUrl`
+is pointed at that local file so the UI can keep rendering covers even when the
+remote OpenLibrary cover endpoint is slow or temporarily unavailable.
 
 ## Incoming pipeline
 
@@ -773,11 +793,18 @@ on every startup.
 | `disambiguate-folders` | `0 11 * * *` | Split shared-name author folders into per-OL-key folders; route files by title match |
 | `same-name-authors` | `0 */6 * * *` | Add OpenLibrary authors that share a name with one you already track — a pure DB lookup against the seeded `OpenLibraryAuthor` catalogue, no API calls |
 | `star-physical-authors` | `0 10 * * *` | Give 1 star to any author with at least one manually-owned physical book whose current star rating is 0 |
+| `cache-openlibrary-metadata` | `30 10 * * *` | Backfill missing subjects and cache large OpenLibrary covers for existing books |
 
 Hangfire runs with `WorkerCount=1`, and all background work also passes through
 a single `BackgroundTaskCoordinator`, so a manual UI run and a cron tick can't
 clash — scheduled jobs wait up to two hours for the coordinator rather than
 failing fast on contention. The dashboard is exposed at `/hangfire`.
+
+The same-name author folder disambiguator also supports a **dry run**. Calling
+`POST /api/authors/disambiguate-folders?dryRun=true` returns the proposed file
+moves, target folders, rename count, and orphan-fallback cases without touching
+the disk or database. The normal `POST /api/authors/disambiguate-folders`
+endpoint still performs the real move/rename pass.
 
 ## Prerequisites
 
@@ -1087,10 +1114,12 @@ deployment without re-syncing.
 | POST   | `/api/authors/{id}/unmatched/{fileId}/return-to-incoming` | Move the file's folder back to incoming |
 | GET    | `/api/authors/{id}/unmatched/suggestions` | Returns top-N fuzzy-scored book candidates per unmatched file (default top=3) |
 | POST   | `/api/authors/{id}/unmatched/bulk-match` | Apply a batch of `(fileId, bookId)` pairs in one call (used by the "Confirm" button) |
+| POST   | `/api/authors/{id}/unmatched/{fileId}/openlibrary-match` | Match one unmatched local file to an OpenLibrary work; may auto-create/select a different target author and relocate the file on disk |
+| POST   | `/api/authors/{id}/unmatched/openlibrary-bulk-match` | Batch filename-based OpenLibrary matching for unmatched local files |
 | PUT    | `/api/authors/{id}/unmatched/{fileId}/additional-books` | Attach extra book ids to a file representing multiple works (omnibus / boxed set) |
 | PUT    | `/api/authors/{id}/link` | Link this author to a canonical (body: `{ canonicalAuthorId, isPenName }`). Duplicates physically move files; pen names don't. |
 | DELETE | `/api/authors/{id}/link` | Remove the link (does not move files back) |
-| POST   | `/api/authors/disambiguate-folders` | Run the same-name author folder disambiguator now (also scheduled at 11:00 daily) |
+| POST   | `/api/authors/disambiguate-folders` | Run the same-name author folder disambiguator now; `?dryRun=true` returns a preview only |
 | GET    | `/api/authors/disambiguate-folders/status` | Polling endpoint for the running state + last summary |
 
 ### Books
@@ -1105,6 +1134,7 @@ deployment without re-syncing.
 | GET    | `/api/books/recent-releases` | Works published in the last 5 years (starred authors) |
 | GET    | `/api/books/recent-releases/all` | Works published in the last 5 years (all authors) |
 | GET    | `/api/books/duplicates` | Books matched to more than one local file folder |
+| POST   | `/api/books/duplicates/actions` | Archive or delete selected duplicate files from disk |
 | GET    | `/api/books/genres` | All distinct subject tags sorted by frequency |
 | GET    | `/api/books/series` | All series with book lists, owned counts, and primary author |
 | PUT    | `/api/books/{id}/series` | Set or clear a book's series name and position |
@@ -1167,6 +1197,10 @@ deployment without re-syncing.
 | PUT    | `/api/settings/openlibrary` | Update the OpenLibrary app name + contact email (stored in the DB) |
 | GET    | `/api/settings/refresh-limits` | Read the refresh-due-works limits (max authors per run, pull-early count) |
 | PUT    | `/api/settings/refresh-limits` | Update the refresh-due-works limits |
+| GET    | `/api/settings/refresh-cadence` | Read the four default refresh cadence buckets |
+| PUT    | `/api/settings/refresh-cadence` | Update the four default refresh cadence buckets |
+| GET    | `/api/settings/duplicate-format-preference` | Read the duplicate-file format priority list |
+| PUT    | `/api/settings/duplicate-format-preference` | Update the duplicate-file format priority list |
 | GET    | `/api/ignored-folders` | Folder names excluded from every scan |
 | POST   | `/api/ignored-folders` | Add an ignored folder |
 | DELETE | `/api/ignored-folders/{id}` | Remove an ignored folder |

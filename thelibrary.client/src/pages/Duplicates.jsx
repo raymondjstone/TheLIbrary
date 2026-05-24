@@ -6,6 +6,9 @@ export default function Duplicates() {
     const authorIdFromQuery = params.get('author')
     const [data, setData] = useState(null)
     const [error, setError] = useState(null)
+    const [selected, setSelected] = useState({})
+    const [archiveFolder, setArchiveFolder] = useState('__archive')
+    const [busyAction, setBusyAction] = useState(null)
 
     const load = () => {
         setError(null)
@@ -20,6 +23,36 @@ export default function Duplicates() {
 
     useEffect(load, [authorIdFromQuery])
 
+    const toggle = (id) => setSelected(prev => ({ ...prev, [id]: !prev[id] }))
+
+    const selectedIds = Object.entries(selected).filter(([, on]) => on).map(([id]) => Number(id))
+
+    const applyAction = async (action) => {
+        if (selectedIds.length === 0) {
+            setError('Select at least one duplicate file first.')
+            return
+        }
+        if (action === 'delete' && !window.confirm(`Delete ${selectedIds.length} selected file(s) from disk?`)) return
+        setBusyAction(action)
+        setError(null)
+        try {
+            const r = await fetch('/api/books/duplicates/actions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fileIds: selectedIds, action, archiveFolderName: archiveFolder || '__archive' })
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            if (body.warnings?.length) setError(body.warnings.join('\n'))
+            setSelected({})
+            load()
+        } catch (e) {
+            setError(String(e.message || e))
+        } finally {
+            setBusyAction(null)
+        }
+    }
+
     return (
         <section>
             <div className="toolbar">
@@ -33,6 +66,20 @@ export default function Duplicates() {
                 {authorIdFromQuery && (
                     <Link to="/duplicates" className="btn-ghost">Clear filter</Link>
                 )}
+            </div>
+            <div className="toolbar" style={{ marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+                <span className="subtle">{selectedIds.length} selected</span>
+                <input
+                    value={archiveFolder}
+                    onChange={e => setArchiveFolder(e.target.value)}
+                    placeholder="Archive folder"
+                    style={{ minWidth: '12rem' }} />
+                <button onClick={() => applyAction('archive')} disabled={busyAction !== null || selectedIds.length === 0}>
+                    {busyAction === 'archive' ? 'Archiving…' : 'Archive selected'}
+                </button>
+                <button className="btn-danger" onClick={() => applyAction('delete')} disabled={busyAction !== null || selectedIds.length === 0}>
+                    {busyAction === 'delete' ? 'Deleting…' : 'Delete selected'}
+                </button>
             </div>
             <p className="subtle" style={{ marginBottom: '1rem' }}>
                 Books where more than one local file is matched to the same work.
@@ -51,6 +98,7 @@ export default function Duplicates() {
                 <table className="grid">
                     <thead>
                         <tr>
+                            <th></th>
                             <th>Author</th>
                             <th>Title</th>
                             <th>Files</th>
@@ -59,6 +107,13 @@ export default function Duplicates() {
                     <tbody>
                         {data.map(g => (
                             <tr key={g.bookId}>
+                                <td style={{ verticalAlign: 'top' }}>
+                                    {(g.files ?? []).map(f => (
+                                        <div key={f.id}>
+                                            <input type="checkbox" checked={!!selected[f.id]} onChange={() => toggle(f.id)} />
+                                        </div>
+                                    ))}
+                                </td>
                                 <td><Link to={`/authors/${g.authorId}`}>{g.authorName}</Link></td>
                                 <td>
                                     {g.title}

@@ -196,4 +196,32 @@ public class SettingsControllerIntegrationTests
             new SettingsController.RefreshCadenceDto(0, 14, 28, 60));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
+
+    [Fact]
+    public async Task GetDuplicateFormatPreference_Returns_Defaults_On_Fresh_Db()
+    {
+        using var factory = new LibraryApiFactory();
+        using var client = factory.CreateClient();
+
+        var dto = await client.GetFromJsonAsync<SettingsController.DuplicateFormatPreferenceDto>(
+            "/api/settings/duplicate-format-preference");
+
+        Assert.Equal(BooksController.DefaultFormatPreference, dto!.Formats);
+    }
+
+    [Fact]
+    public async Task PutDuplicateFormatPreference_Persists_Cleaned_Order()
+    {
+        using var factory = new LibraryApiFactory();
+        using var client = factory.CreateClient();
+
+        var put = await client.PutAsJsonAsync("/api/settings/duplicate-format-preference",
+            new SettingsController.DuplicateFormatPreferenceDto([" pdf ", ".epub", "pdf", "cbz"]));
+
+        Assert.Equal(HttpStatusCode.OK, put.StatusCode);
+
+        var fresh = await client.GetFromJsonAsync<SettingsController.DuplicateFormatPreferenceDto>(
+            "/api/settings/duplicate-format-preference");
+        Assert.Equal(["pdf", "epub", "cbz"], fresh!.Formats);
+    }
 }

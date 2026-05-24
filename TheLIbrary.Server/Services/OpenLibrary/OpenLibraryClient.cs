@@ -59,6 +59,22 @@ public sealed class OpenLibraryClient
     public Task<AuthorDetailResponse?> FetchAuthorAsync(string key, CancellationToken ct)
         => GetJsonAsync<AuthorDetailResponse>($"authors/{HttpUtility.UrlEncode(key)}.json", ct);
 
+    public Task<WorkDetailResponse?> FetchWorkAsync(string key, CancellationToken ct)
+    {
+        var clean = key.Trim();
+        if (clean.StartsWith("/works/", StringComparison.OrdinalIgnoreCase)) clean = clean[("/works/".Length)..];
+        return GetJsonAsync<WorkDetailResponse>($"works/{HttpUtility.UrlEncode(clean)}.json", ct);
+    }
+
+    public async Task<byte[]?> DownloadCoverBytesAsync(int coverId, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"https://covers.openlibrary.org/b/id/{coverId}-L.jpg");
+        request.Headers.TryAddWithoutValidation("User-Agent", _settings.UserAgent);
+        using var resp = await _http.SendAsync(request, ct);
+        if (!resp.IsSuccessStatusCode) return null;
+        return await resp.Content.ReadAsByteArrayAsync(ct);
+    }
+
     // Fetches the day's merge-authors changelog. Each entry has a surviving
     // master author key plus the duplicate keys that were folded into it;
     // callers use this to rewrite local OpenLibraryKey pointers that still

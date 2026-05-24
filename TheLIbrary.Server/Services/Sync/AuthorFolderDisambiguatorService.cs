@@ -13,6 +13,23 @@ public sealed record AuthorDisambiguationSummary(
     int FilesOrphaned,
     IReadOnlyList<string> Warnings);
 
+public sealed record AuthorDisambiguationPreviewItem(
+    int FileId,
+    int CurrentAuthorId,
+    string CurrentFolder,
+    int TargetAuthorId,
+    string TargetFolder,
+    string FullPath,
+    bool OrphanFallback);
+
+public sealed record AuthorDisambiguationPreview(
+    int GroupsProcessed,
+    int AuthorsRenamed,
+    int FilesToMove,
+    int FilesOrphaned,
+    IReadOnlyList<AuthorDisambiguationPreviewItem> Moves,
+    IReadOnlyList<string> Warnings);
+
 // Scans the watchlist for groups of unlinked authors sharing a normalised
 // name AND for which every member has an OpenLibrary key. For each such group:
 //
@@ -53,6 +70,13 @@ public sealed class AuthorFolderDisambiguatorService
     public bool IsRunning => _isRunning;
     public AuthorDisambiguationSummary? LastResult => _lastResult;
 
+    public async Task<AuthorDisambiguationPreview> Preview(CancellationToken ct)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        return await BuildPreviewAsync(db, ct);
+    }
+
     internal static IReadOnlyList<IReadOnlyList<Author>> FindGroupsForTests(IReadOnlyList<Author> allAuthors)
     {
         var seenRepresentatives = new HashSet<int>();
@@ -81,7 +105,8 @@ public sealed class AuthorFolderDisambiguatorService
         string newFolder,
         IReadOnlyList<string> locations,
         List<string> warnings)
-        => MoveFileToFolder(file, owner, newFolder, locations, warnings);
+        => MoveFileToFolderAsync(file, owner, newFolder, locations, warnings, CancellationToken.None)
+            .GetAwaiter().GetResult();
 
     public bool TryStart(CancellationToken hostCt, out string? error)
     {
@@ -108,86 +133,27 @@ public sealed class AuthorFolderDisambiguatorService
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
 
-        var locations = await db.LibraryLocations
-            .Where(l => l.Enabled)
-            .Select(l => l.Path)
-            .ToListAsync(ct);
+        var preview = await BuildPreviewAsync(db, ct);
 
-        var allAuthors = await db.Authors.ToListAsync(ct);
+        int authorsRenamed = 0, filesMoved = 0;
+        var warnings = new List<string>(preview.Warnings);
 
-        // Build collision groups: every author with another unlinked author of
-        // the same normalised name. Sets are de-duplicated by representative
-        // (the lowest-id member), so each group is processed exactly once.
-        var groups = FindGroupsForTests(allAuthors);
-
-        int authorsRenamed = 0, filesMoved = 0, filesOrphaned = 0;
-        var warnings = new List<string>();
-
-        foreach (var group in groups)
+        foreach (var move in preview.Moves)
         {
             ct.ThrowIfCancellationRequested();
+            var file = await db.LocalBookFiles.FirstOrDefaultAsync(f => f.Id == move.FileId, ct);
+            if (file is null) continue;
+            var owner = await db.Authors.FirstAsync(a => a.Id == move.TargetAuthorId, ct);
+            await MoveFileToFolderAsync(file, owner, move.TargetFolder, preview.Moves.Select(m => m.FullPath).ToList(), warnings, ct);
+            filesMoved++;
+        }
 
-            var sortedByLowestId = group.OrderBy(a => a.Id).ToList();
-            var fallback = sortedByLowestId[0];
-
-            // Pre-compute the new folder name for every member.
-            var targetByAuthorId = sortedByLowestId.ToDictionary(
-                a => a.Id,
-                a => AuthorFolderNameResolver.Resolve(a, allAuthors));
-
-            // Build a NormalizedTitle → AuthorId lookup so a file's stored
-            // NormalizedTitle picks the right owner. Multiple authors might
-            // share a NormalizedTitle (rare); the first wins by lowest id.
-            var memberIds = sortedByLowestId.Select(a => a.Id).ToList();
-            var books = await db.Books.AsNoTracking()
-                .Where(b => memberIds.Contains(b.AuthorId) && b.NormalizedTitle != null)
-                .Select(b => new { b.AuthorId, b.NormalizedTitle })
-                .ToListAsync(ct);
-            var ownerByTitle = new Dictionary<string, int>(StringComparer.Ordinal);
-            foreach (var b in books.OrderBy(x => x.AuthorId))
-            {
-                var key = b.NormalizedTitle!;
-                if (!ownerByTitle.ContainsKey(key)) ownerByTitle[key] = b.AuthorId;
-            }
-
-            // Find every LocalBookFile that currently belongs to any group
-            // member, no matter which folder leaf the row stores.
-            var files = await db.LocalBookFiles
-                .Where(f => f.AuthorId != null && memberIds.Contains(f.AuthorId.Value))
-                .ToListAsync(ct);
-
-            // Also collect orphan rows whose AuthorFolder matches any candidate
-            // folder name for the group — these are pre-merge files that never
-            // got an AuthorId assigned.
-            var folderCandidates = sortedByLowestId
-                .SelectMany(a => new[] { a.Name, a.CalibreFolderName })
-                .Where(s => !string.IsNullOrWhiteSpace(s))
-                .Select(s => s!)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            var orphans = await db.LocalBookFiles
-                .Where(f => f.AuthorId == null && folderCandidates.Contains(f.AuthorFolder))
-                .ToListAsync(ct);
-            files.AddRange(orphans);
-
-            foreach (var file in files)
-            {
-                ct.ThrowIfCancellationRequested();
-
-                var owner = ResolveOwner(file, ownerByTitle, fallback);
-                if (owner.Id == fallback.Id &&
-                    (string.IsNullOrEmpty(file.NormalizedTitle) ||
-                     !ownerByTitle.ContainsKey(file.NormalizedTitle)))
-                {
-                    filesOrphaned++;
-                }
-
-                var newFolder = targetByAuthorId[owner.Id];
-                MoveFileToFolder(file, owner, newFolder, locations, warnings);
-                filesMoved++;
-            }
-
-            foreach (var member in sortedByLowestId)
+        var allAuthors = await db.Authors.ToListAsync(ct);
+        var groups = FindGroupsForTests(allAuthors);
+        foreach (var group in groups)
+        {
+            var targetByAuthorId = group.ToDictionary(a => a.Id, a => AuthorFolderNameResolver.Resolve(a, allAuthors));
+            foreach (var member in group)
             {
                 var target = targetByAuthorId[member.Id];
                 if (!string.Equals(member.CalibreFolderName, target, StringComparison.Ordinal))
@@ -196,29 +162,31 @@ public sealed class AuthorFolderDisambiguatorService
                     authorsRenamed++;
                 }
             }
+        }
 
-            await db.SaveChangesAsync(ct);
+        await db.SaveChangesAsync(ct);
 
-            // Best-effort: prune the now-empty merged source folder if it still
-            // exists under any library root. The new folders live alongside.
-            foreach (var libRoot in locations)
-                foreach (var legacy in folderCandidates.Distinct(StringComparer.OrdinalIgnoreCase))
-                {
-                    var path = Path.Combine(libRoot.TrimEnd('\\', '/'), legacy);
-                    try
-                    {
-                        if (Directory.Exists(path) && !Directory.EnumerateFileSystemEntries(path).Any())
-                            Directory.Delete(path);
-                    }
-                    catch { /* best effort */ }
-                }
+        var enabledLocations = await db.LibraryLocations
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+        foreach (var group in groups)
+        {
+            var folderCandidates = group
+                .SelectMany(a => new[] { a.Name, a.CalibreFolderName })
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Select(s => s!)
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+            foreach (var libRoot in enabledLocations)
+                foreach (var legacy in folderCandidates)
+                    await TryDeleteEmptyDirectoryAsync(Path.Combine(libRoot.TrimEnd('\\', '/'), legacy), ct);
         }
 
         _log.LogInformation(
             "Author folder disambiguator done. Groups={Groups} Renamed={Renamed} Moved={Moved} Orphaned={Orphaned} Warnings={W}",
-            groups.Count, authorsRenamed, filesMoved, filesOrphaned, warnings.Count);
+            groups.Count, authorsRenamed, filesMoved, preview.FilesOrphaned, warnings.Count);
 
-        return new AuthorDisambiguationSummary(groups.Count, authorsRenamed, filesMoved, filesOrphaned, warnings);
+        return new AuthorDisambiguationSummary(groups.Count, authorsRenamed, filesMoved, preview.FilesOrphaned, warnings);
     }
 
     // Returns the group member whose books contain the file's NormalizedTitle,
@@ -238,12 +206,13 @@ public sealed class AuthorFolderDisambiguatorService
     // contains its source path. The on-disk move is best-effort — if the file
     // isn't where the DB thinks it is, we still update the metadata so a
     // subsequent sync converges from the actual on-disk state.
-    private void MoveFileToFolder(
+    private async Task MoveFileToFolderAsync(
         LocalBookFile file,
         Author owner,
         string newFolder,
         IReadOnlyList<string> locations,
-        List<string> warnings)
+        List<string> warnings,
+        CancellationToken ct)
     {
         file.AuthorId = owner.Id;
         var oldFolder = file.AuthorFolder;
@@ -265,17 +234,17 @@ public sealed class AuthorFolderDisambiguatorService
 
         try
         {
-            if (destDir is not null) _fs.CreateDirectory(destDir);
-            if (_fs.FileExists(file.FullPath))
+            if (destDir is not null) await _fs.CreateDirectoryAsync(destDir, ct);
+            if (await _fs.FileExistsAsync(file.FullPath, ct))
             {
-                var final = UniqueFile(destPath);
-                _fs.MoveFile(file.FullPath, final, overwrite: false);
+                var final = await UniqueFileAsync(destPath, ct);
+                await _fs.MoveFileAsync(file.FullPath, final, overwrite: false, ct);
                 file.FullPath = final;
             }
-            else if (_fs.DirectoryExists(file.FullPath))
+            else if (await _fs.DirectoryExistsAsync(file.FullPath, ct))
             {
-                var final = UniqueDirectory(Path.GetDirectoryName(destPath)!, Path.GetFileName(destPath));
-                _fs.MoveDirectory(file.FullPath, final);
+                var final = await UniqueDirectoryAsync(Path.GetDirectoryName(destPath)!, Path.GetFileName(destPath), ct);
+                await _fs.MoveDirectoryAsync(file.FullPath, final, ct);
                 file.FullPath = final;
             }
             else
@@ -289,29 +258,112 @@ public sealed class AuthorFolderDisambiguatorService
         }
     }
 
-    private string UniqueFile(string desired)
+    private async Task<string> UniqueFileAsync(string desired, CancellationToken ct)
     {
-        if (!_fs.FileExists(desired) && !_fs.DirectoryExists(desired)) return desired;
+        if (!await _fs.FileExistsAsync(desired, ct) && !await _fs.DirectoryExistsAsync(desired, ct)) return desired;
         var dir = Path.GetDirectoryName(desired) ?? "";
         var stem = Path.GetFileNameWithoutExtension(desired);
         var ext  = Path.GetExtension(desired);
         for (var i = 2; i < 1000; i++)
         {
             var next = Path.Combine(dir, $"{stem}_{i}{ext}");
-            if (!_fs.FileExists(next) && !_fs.DirectoryExists(next)) return next;
+            if (!await _fs.FileExistsAsync(next, ct) && !await _fs.DirectoryExistsAsync(next, ct)) return next;
         }
         return Path.Combine(dir, $"{stem}_{DateTime.UtcNow:yyyyMMddHHmmss}{ext}");
     }
 
-    private string UniqueDirectory(string parent, string leaf)
+    private async Task<string> UniqueDirectoryAsync(string parent, string leaf, CancellationToken ct)
     {
         var candidate = Path.Combine(parent, leaf);
-        if (!_fs.DirectoryExists(candidate) && !_fs.FileExists(candidate)) return candidate;
+        if (!await _fs.DirectoryExistsAsync(candidate, ct) && !await _fs.FileExistsAsync(candidate, ct)) return candidate;
         for (var i = 2; i < 1000; i++)
         {
             var next = Path.Combine(parent, $"{leaf} ({i})");
-            if (!_fs.DirectoryExists(next) && !_fs.FileExists(next)) return next;
+            if (!await _fs.DirectoryExistsAsync(next, ct) && !await _fs.FileExistsAsync(next, ct)) return next;
         }
         return Path.Combine(parent, $"{leaf} ({DateTime.UtcNow:yyyyMMddHHmmss})");
+    }
+
+    private async Task<AuthorDisambiguationPreview> BuildPreviewAsync(LibraryDbContext db, CancellationToken ct)
+    {
+        var locations = await db.LibraryLocations
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+
+        var allAuthors = await db.Authors.ToListAsync(ct);
+        var groups = FindGroupsForTests(allAuthors);
+        var moves = new List<AuthorDisambiguationPreviewItem>();
+        var warnings = new List<string>();
+        var authorsRenamed = 0;
+        var filesOrphaned = 0;
+
+        foreach (var group in groups)
+        {
+            ct.ThrowIfCancellationRequested();
+            var sortedByLowestId = group.OrderBy(a => a.Id).ToList();
+            var fallback = sortedByLowestId[0];
+            var targetByAuthorId = sortedByLowestId.ToDictionary(a => a.Id, a => AuthorFolderNameResolver.Resolve(a, allAuthors));
+            var memberIds = sortedByLowestId.Select(a => a.Id).ToList();
+            var books = await db.Books.AsNoTracking()
+                .Where(b => memberIds.Contains(b.AuthorId) && b.NormalizedTitle != null)
+                .Select(b => new { b.AuthorId, b.NormalizedTitle })
+                .ToListAsync(ct);
+            var ownerByTitle = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var b in books.OrderBy(x => x.AuthorId))
+                if (!ownerByTitle.ContainsKey(b.NormalizedTitle!)) ownerByTitle[b.NormalizedTitle!] = b.AuthorId;
+
+            var files = await db.LocalBookFiles.AsNoTracking()
+                .Where(f => f.AuthorId != null && memberIds.Contains(f.AuthorId.Value))
+                .ToListAsync(ct);
+
+            var folderCandidates = sortedByLowestId
+                .SelectMany(a => new[] { a.Name, a.CalibreFolderName })
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Select(s => s!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var orphans = await db.LocalBookFiles.AsNoTracking()
+                .Where(f => f.AuthorId == null && folderCandidates.Contains(f.AuthorFolder))
+                .ToListAsync(ct);
+            files.AddRange(orphans);
+
+            foreach (var file in files)
+            {
+                var owner = ResolveOwner(file, ownerByTitle, fallback);
+                var orphanFallback = owner.Id == fallback.Id &&
+                    (string.IsNullOrEmpty(file.NormalizedTitle) || !ownerByTitle.ContainsKey(file.NormalizedTitle));
+                if (orphanFallback) filesOrphaned++;
+
+                moves.Add(new AuthorDisambiguationPreviewItem(
+                    file.Id,
+                    file.AuthorId ?? 0,
+                    file.AuthorFolder,
+                    owner.Id,
+                    targetByAuthorId[owner.Id],
+                    file.FullPath,
+                    orphanFallback));
+            }
+
+            foreach (var member in sortedByLowestId)
+                if (!string.Equals(member.CalibreFolderName, targetByAuthorId[member.Id], StringComparison.Ordinal))
+                    authorsRenamed++;
+        }
+
+        return new AuthorDisambiguationPreview(groups.Count, authorsRenamed, moves.Count, filesOrphaned, moves, warnings);
+    }
+
+    private async Task TryDeleteEmptyDirectoryAsync(string path, CancellationToken ct)
+    {
+        if (!await _fs.DirectoryExistsAsync(path, ct)) return;
+        if (_fs.EnumerateFileSystemEntries(path).Any()) return;
+        try
+        {
+            await _fs.DeleteDirectoryAsync(path, recursive: false, ct);
+        }
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+        {
+            _log.LogWarning(ex, "Best-effort cleanup could not delete empty directory '{Path}'", path);
+        }
     }
 }

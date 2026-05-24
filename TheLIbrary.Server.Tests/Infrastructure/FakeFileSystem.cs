@@ -12,6 +12,10 @@ internal sealed class FakeFileSystem : IFileSystem
 
     public bool DirectoryExists(string path) => ExistingDirectories.Contains(path);
     public bool FileExists(string path) => ExistingFiles.Contains(path);
+    public Task<bool> DirectoryExistsAsync(string path, CancellationToken cancellationToken = default)
+        => Task.FromResult(DirectoryExists(path));
+    public Task<bool> FileExistsAsync(string path, CancellationToken cancellationToken = default)
+        => Task.FromResult(FileExists(path));
     public void CreateDirectory(string path)
     {
         ExistingDirectories.Add(path);
@@ -22,6 +26,11 @@ internal sealed class FakeFileSystem : IFileSystem
             AddUnique(DirectoriesByDirectory, parent, path);
         }
     }
+    public Task CreateDirectoryAsync(string path, CancellationToken cancellationToken = default)
+    {
+        CreateDirectory(path);
+        return Task.CompletedTask;
+    }
     public void DeleteFile(string path)
     {
         ExistingFiles.Remove(path);
@@ -29,12 +38,23 @@ internal sealed class FakeFileSystem : IFileSystem
         if (!string.IsNullOrWhiteSpace(parent) && FilesByDirectory.TryGetValue(parent, out var files))
             files.RemoveAll(f => string.Equals(f, path, StringComparison.OrdinalIgnoreCase));
     }
+    public Task DeleteFileAsync(string path, CancellationToken cancellationToken = default)
+    {
+        DeleteFile(path);
+        return Task.CompletedTask;
+    }
     public void DeleteDirectory(string path)
     {
         ExistingDirectories.Remove(path);
         var parent = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(parent) && DirectoriesByDirectory.TryGetValue(parent, out var dirs))
             dirs.RemoveAll(d => string.Equals(d, path, StringComparison.OrdinalIgnoreCase));
+    }
+    public void DeleteDirectory(string path, bool recursive) => DeleteDirectory(path);
+    public Task DeleteDirectoryAsync(string path, bool recursive, CancellationToken cancellationToken = default)
+    {
+        DeleteDirectory(path, recursive);
+        return Task.CompletedTask;
     }
     public void MoveFile(string sourcePath, string destinationPath, bool overwrite)
     {
@@ -53,11 +73,21 @@ internal sealed class FakeFileSystem : IFileSystem
             AddUnique(FilesByDirectory, destParent, destinationPath);
         }
     }
+    public Task MoveFileAsync(string sourcePath, string destinationPath, bool overwrite, CancellationToken cancellationToken = default)
+    {
+        MoveFile(sourcePath, destinationPath, overwrite);
+        return Task.CompletedTask;
+    }
     public void MoveDirectory(string sourcePath, string destinationPath)
     {
         if (!ExistingDirectories.Remove(sourcePath)) throw new DirectoryNotFoundException(sourcePath);
         CreateDirectory(destinationPath);
         DeleteDirectory(sourcePath);
+    }
+    public Task MoveDirectoryAsync(string sourcePath, string destinationPath, CancellationToken cancellationToken = default)
+    {
+        MoveDirectory(sourcePath, destinationPath);
+        return Task.CompletedTask;
     }
     public IEnumerable<string> EnumerateFiles(string path) => FilesByDirectory.TryGetValue(path, out var files) ? files : Enumerable.Empty<string>();
     public IEnumerable<string> EnumerateFiles(string path, string searchPattern, EnumerationOptions options) => EnumerateFiles(path);

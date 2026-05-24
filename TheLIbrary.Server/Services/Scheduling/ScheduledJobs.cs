@@ -1,5 +1,6 @@
 using Hangfire;
 using TheLibrary.Server.Services.Incoming;
+using TheLibrary.Server.Services.OpenLibrary;
 using TheLibrary.Server.Services.Sync;
 
 namespace TheLibrary.Server.Services.Scheduling;
@@ -23,6 +24,7 @@ public sealed class ScheduledJobs
     private readonly AuthorFolderDisambiguatorService _disambiguator;
     private readonly SameNameAuthorService _sameNames;
     private readonly PhysicalAuthorStarService _physicalStars;
+    private readonly OpenLibraryMetadataCacheService _metadataCache;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -35,12 +37,13 @@ public sealed class ScheduledJobs
         AuthorFolderDisambiguatorService disambiguator,
         SameNameAuthorService sameNames,
         PhysicalAuthorStarService physicalStars,
+        OpenLibraryMetadataCacheService metadataCache,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
     {
         _sync = sync; _incoming = incoming; _organizer = organizer; _unzip = unzip;
-        _disambiguator = disambiguator; _sameNames = sameNames; _physicalStars = physicalStars;
+        _disambiguator = disambiguator; _sameNames = sameNames; _physicalStars = physicalStars; _metadataCache = metadataCache;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -109,6 +112,12 @@ public sealed class ScheduledJobs
         ScheduleJobIds.StarPhysicalAuthors, manualTrigger,
         ct => _physicalStars.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _physicalStars.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunCacheOpenLibraryMetadata(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.CacheOpenLibraryMetadata, manualTrigger,
+        ct => _metadataCache.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _metadataCache.IsRunning);
 
     internal Task RunWithPollingForTests(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,

@@ -141,17 +141,20 @@ function UnmatchedFilesSection({
         <>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: '1rem', flexWrap: 'wrap' }}>
                 <h3 style={{ margin: 0 }}>Local files with no matching work</h3>
-                {highConfidenceCount > 0 && (
+                {unmatchedLocal.length > 0 && (
                     <button onClick={onBulkMatch} disabled={bulkBusy}
-                            title="Auto-match every file whose top suggestion scored ≥ 0.9">
-                        {bulkBusy ? 'Matching…' : `✓ Confirm ${highConfidenceCount} high-confidence match${highConfidenceCount === 1 ? '' : 'es'}`}
+                            title="Run OpenLibrary matching for the currently listed unmatched files">
+                        {bulkBusy ? 'Matching…' : highConfidenceCount > 0
+                            ? `✓ Confirm ${highConfidenceCount} high-confidence match${highConfidenceCount === 1 ? '' : 'es'}`
+                            : `Match all ${unmatchedLocal.length} unmatched file${unmatchedLocal.length === 1 ? '' : 's'} via OpenLibrary`}
                     </button>
                 )}
             </div>
             <p className="subtle">
                 Pick the work each file should count toward, or click a suggestion below
                 to pre-fill the dropdown. Suggestions score from 0.5–1.0 (1.0 = exact match);
-                anything ≥ 0.9 is included in the "Confirm" bulk button.
+                anything ≥ 0.9 is included in the quick-confirm bulk action; otherwise
+                the bulk button uses filename-based OpenLibrary lookup for the full set.
             </p>
             {matchError && <p className="error">Match failed: {matchError}</p>}
             <table className="grid">
@@ -449,7 +452,29 @@ export default function AuthorDetail() {
             if (best && best.score >= 0.9) items.push({ fileId: item.fileId, bookId: best.bookId })
         }
         if (items.length === 0) {
-            alert('No high-confidence matches available (score ≥ 0.9).')
+            const fileIds = (data?.unmatchedLocal ?? []).map(f => f.id)
+            if (fileIds.length === 0) {
+                alert('No unmatched files are available.')
+                return
+            }
+            if (!confirm(`Search OpenLibrary and auto-match ${fileIds.length} unmatched file(s) by filename?`)) return
+            setBulkBusy(true)
+            try {
+                const r = await fetch(`/api/authors/${id}/unmatched/openlibrary-bulk-match`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ fileIds }),
+                })
+                const body = await r.json().catch(() => ({}))
+                if (!r.ok) throw new Error(body.error || r.statusText)
+                if (body.errors?.length) console.warn('openlibrary-bulk-match errors:', body.errors)
+                const refreshed = await fetch(`/api/authors/${id}`).then(x => x.ok ? x.json() : null)
+                if (refreshed) setData(refreshed)
+            } catch (e) {
+                alert(`Bulk OpenLibrary match failed: ${e.message}`)
+            } finally {
+                setBulkBusy(false)
+            }
             return
         }
         if (!confirm(`Confirm ${items.length} high-confidence match(es)?`)) return

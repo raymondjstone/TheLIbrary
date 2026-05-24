@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.IO;
 using TheLibrary.Server.Services.Sync;
 
 namespace TheLibrary.Server.Controllers;
@@ -13,11 +14,13 @@ public class BooksController : ControllerBase
 {
     private readonly LibraryDbContext _db;
     private readonly IHttpClientFactory _httpFactory;
+    private readonly IFileSystem _fs;
 
-    public BooksController(LibraryDbContext db, IHttpClientFactory httpFactory)
+    public BooksController(LibraryDbContext db, IHttpClientFactory httpFactory, IFileSystem fs)
     {
         _db = db;
         _httpFactory = httpFactory;
+        _fs = fs;
     }
 
     public sealed record UpdateBookRequest(string? Title, int? FirstPublishYear, int? AuthorId);
@@ -387,8 +390,8 @@ public class BooksController : ControllerBase
 
     // Preference order — earlier = better. Matched against
     // Path.GetExtension(...).TrimStart('.').ToLowerInvariant().
-    private static readonly string[] FormatPreference =
-        new[] { "epub", "pdf", "azw3", "mobi", "azw", "fb2", "lit", "cbz", "docx", "odt", "prc", "pdb" };
+    public static readonly string[] DefaultFormatPreference =
+        ["epub", "pdf", "azw3", "mobi", "azw", "fb2", "lit", "cbz", "docx", "odt", "prc", "pdb"];
 
     // Books where more than one LocalBookFile row is linked to the same Book.Id.
     // When `authorId` is provided, only that author's books are returned (used
@@ -397,6 +400,7 @@ public class BooksController : ControllerBase
     public async Task<IReadOnlyList<DuplicateGroup>> Duplicates(
         CancellationToken ct, [FromQuery] int? authorId = null)
     {
+        var preference = await GetFormatPreferenceAsync(ct);
         var query = _db.LocalBookFiles
             .AsNoTracking()
             .Where(f => f.BookId != null);
@@ -429,7 +433,7 @@ public class BooksController : ControllerBase
                 var recommended = formatted
                     .Select(f => f.Format)
                     .Where(f => f is not null)
-                    .OrderBy(f => Array.IndexOf(FormatPreference, f))
+                    .OrderBy(f => PreferenceRank(f, preference))
                     .FirstOrDefault();
                 return new DuplicateGroup(
                     g.BookId,
@@ -444,11 +448,170 @@ public class BooksController : ControllerBase
             .ToList();
     }
 
+    public sealed record DuplicateActionRequest(IReadOnlyList<int> FileIds, string Action, string? ArchiveFolderName);
+    public sealed record DuplicateActionResult(int Deleted, int Archived, IReadOnlyList<string> Warnings);
+
+    [HttpPost("duplicates/actions")]
+    public async Task<ActionResult<DuplicateActionResult>> ApplyDuplicateAction(
+        [FromBody] DuplicateActionRequest body,
+        CancellationToken ct)
+    {
+        if (body.FileIds is null || body.FileIds.Count == 0)
+            return BadRequest(new { error = "At least one file id is required." });
+
+        var action = body.Action?.Trim().ToLowerInvariant();
+        if (action is not ("delete" or "archive"))
+            return BadRequest(new { error = "Action must be 'delete' or 'archive'." });
+
+        var files = await _db.LocalBookFiles
+            .Where(f => body.FileIds.Contains(f.Id))
+            .ToListAsync(ct);
+        if (files.Count == 0) return NotFound(new { error = "No matching files found." });
+
+        var warnings = new List<string>();
+        var locations = await _db.LibraryLocations.AsNoTracking()
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+        var archiveLeaf = string.IsNullOrWhiteSpace(body.ArchiveFolderName) ? "__archive" : body.ArchiveFolderName.Trim();
+        var deleted = 0;
+        var archived = 0;
+
+        foreach (var file in files)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(file.FullPath))
+            {
+                warnings.Add($"#{file.Id}: no path recorded.");
+                continue;
+            }
+
+            if (action == "delete")
+            {
+                try
+                {
+                    if (await _fs.FileExistsAsync(file.FullPath, ct))
+                    {
+                        await _fs.DeleteFileAsync(file.FullPath, ct);
+                        deleted++;
+                    }
+                    else if (await _fs.DirectoryExistsAsync(file.FullPath, ct))
+                    {
+                        await _fs.DeleteDirectoryAsync(file.FullPath, recursive: true, ct);
+                        deleted++;
+                    }
+                    else warnings.Add($"#{file.Id}: path no longer exists on disk.");
+                    _db.LocalBookFiles.Remove(file);
+                }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                {
+                    warnings.Add($"#{file.Id}: {ex.Message}");
+                }
+                continue;
+            }
+
+            var location = locations.FirstOrDefault(l =>
+                file.FullPath.StartsWith(l.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase));
+            if (location is null)
+            {
+                warnings.Add($"#{file.Id}: file is outside enabled library roots.");
+                continue;
+            }
+
+            var libRoot = location.TrimEnd('\\', '/');
+            var relative = file.FullPath[libRoot.Length..].TrimStart('\\', '/');
+            var destPath = Path.Combine(libRoot, archiveLeaf, relative);
+            var destDir = Path.GetDirectoryName(destPath);
+
+            try
+            {
+                if (destDir is not null) await _fs.CreateDirectoryAsync(destDir, ct);
+                if (await _fs.FileExistsAsync(file.FullPath, ct))
+                {
+                    var final = await UniqueFileAsync(destPath, ct);
+                    await _fs.MoveFileAsync(file.FullPath, final, overwrite: false, ct);
+                    file.FullPath = final;
+                    archived++;
+                }
+                else if (await _fs.DirectoryExistsAsync(file.FullPath, ct))
+                {
+                    var final = await UniqueDirectoryAsync(Path.GetDirectoryName(destPath)!, Path.GetFileName(destPath), ct);
+                    await _fs.MoveDirectoryAsync(file.FullPath, final, ct);
+                    file.FullPath = final;
+                    archived++;
+                }
+                else warnings.Add($"#{file.Id}: path no longer exists on disk.");
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                warnings.Add($"#{file.Id}: {ex.Message}");
+            }
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new DuplicateActionResult(deleted, archived, warnings));
+    }
+
     private static string? FormatOf(string fullPath)
     {
         if (string.IsNullOrWhiteSpace(fullPath)) return null;
         var ext = Path.GetExtension(fullPath).TrimStart('.').ToLowerInvariant();
         return string.IsNullOrEmpty(ext) ? null : ext;
+    }
+
+    private async Task<string[]> GetFormatPreferenceAsync(CancellationToken ct)
+    {
+        var raw = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.DuplicateFormatPreference)
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync(ct);
+        var parsed = string.IsNullOrWhiteSpace(raw)
+            ? Array.Empty<string>()
+            : raw.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(f => f.TrimStart('.').ToLowerInvariant())
+                .Where(f => f.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        return parsed.Length > 0 ? parsed : DefaultFormatPreference;
+    }
+
+    private static int PreferenceRank(string? format, IReadOnlyList<string> preference)
+    {
+        if (string.IsNullOrWhiteSpace(format)) return int.MaxValue;
+        var i = -1;
+        for (var idx = 0; idx < preference.Count; idx++)
+        {
+            if (!string.Equals(preference[idx], format, StringComparison.OrdinalIgnoreCase)) continue;
+            i = idx;
+            break;
+        }
+        return i >= 0 ? i : preference.Count + 100;
+    }
+
+    private async Task<string> UniqueFileAsync(string desired, CancellationToken ct)
+    {
+        if (!await _fs.FileExistsAsync(desired, ct) && !await _fs.DirectoryExistsAsync(desired, ct)) return desired;
+        var dir = Path.GetDirectoryName(desired) ?? "";
+        var stem = Path.GetFileNameWithoutExtension(desired);
+        var ext = Path.GetExtension(desired);
+        for (var i = 2; i < 1000; i++)
+        {
+            var next = Path.Combine(dir, $"{stem}_{i}{ext}");
+            if (!await _fs.FileExistsAsync(next, ct) && !await _fs.DirectoryExistsAsync(next, ct)) return next;
+        }
+        return Path.Combine(dir, $"{stem}_{DateTime.UtcNow:yyyyMMddHHmmss}{ext}");
+    }
+
+    private async Task<string> UniqueDirectoryAsync(string parent, string leaf, CancellationToken ct)
+    {
+        var candidate = Path.Combine(parent, leaf);
+        if (!await _fs.DirectoryExistsAsync(candidate, ct) && !await _fs.FileExistsAsync(candidate, ct)) return candidate;
+        for (var i = 2; i < 1000; i++)
+        {
+            var next = Path.Combine(parent, $"{leaf} ({i})");
+            if (!await _fs.DirectoryExistsAsync(next, ct) && !await _fs.FileExistsAsync(next, ct)) return next;
+        }
+        return Path.Combine(parent, $"{leaf} ({DateTime.UtcNow:yyyyMMddHHmmss})");
     }
 
     // All distinct genre-like subjects across the library, sorted by frequency.

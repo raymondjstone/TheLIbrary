@@ -85,6 +85,7 @@ public sealed class ScheduleService
             ScheduleJobIds.DisambiguateFolders => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunDisambiguateFolders(true)),
             ScheduleJobIds.SameNameAuthors => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunSameNameAuthors(true)),
             ScheduleJobIds.StarPhysicalAuthors => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunStarPhysicalAuthors(true)),
+            ScheduleJobIds.CacheOpenLibraryMetadata => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunCacheOpenLibraryMetadata(true)),
             _ => throw new ArgumentException($"Unknown job id '{jobId}'", nameof(jobId)),
         };
     }
@@ -147,6 +148,9 @@ public sealed class ScheduleService
                     break;
                 case ScheduleJobIds.StarPhysicalAuthors:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunStarPhysicalAuthors(), entry.Cron);
+                    break;
+                case ScheduleJobIds.CacheOpenLibraryMetadata:
+                    _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunCacheOpenLibraryMetadata(), entry.Cron);
                     break;
             }
             _log.LogInformation("Schedule {Job}: enabled with cron '{Cron}'", jobId, entry.Cron);

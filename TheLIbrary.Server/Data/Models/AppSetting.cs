@@ -47,4 +47,8 @@ public static class AppSettingKeys
     public const string RefreshCadenceMidDays = "RefreshCadenceMidDays";
     public const string RefreshCadenceDormantDays = "RefreshCadenceDormantDays";
     public const string RefreshCadenceOldOrEmptyDays = "RefreshCadenceOldOrEmptyDays";
+
+    // Semicolon-separated format preference order for duplicate-file triage.
+    // Earlier entries are recommended over later ones on the duplicates page.
+    public const string DuplicateFormatPreference = "DuplicateFormatPreference";
 }

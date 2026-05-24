@@ -36,6 +36,9 @@ export default function Settings() {
     const [refreshCadence, setRefreshCadence] = useState(null)
     const [refreshCadenceEdit, setRefreshCadenceEdit] = useState({ recentDays: 2, midDays: 14, dormantDays: 28, oldOrEmptyDays: 60 })
     const [refreshCadenceSaving, setRefreshCadenceSaving] = useState(false)
+    const [duplicateFormatPreference, setDuplicateFormatPreference] = useState(null)
+    const [duplicateFormatEdit, setDuplicateFormatEdit] = useState('epub;pdf;azw3;mobi;azw;fb2;lit;cbz;docx;odt;prc;pdb')
+    const [duplicateFormatSaving, setDuplicateFormatSaving] = useState(false)
 
     const load = async () => {
         // Independent loads — a failing endpoint (e.g. pending migration) must
@@ -115,6 +118,14 @@ export default function Settings() {
                 dormantDays: body.dormantDays,
                 oldOrEmptyDays: body.oldOrEmptyDays,
             })
+        } catch (e) { setError(prev => prev ?? String(e)) }
+
+        try {
+            const r = await fetch('/api/settings/duplicate-format-preference')
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setDuplicateFormatPreference(body)
+            setDuplicateFormatEdit((body.formats ?? []).join(';'))
         } catch (e) { setError(prev => prev ?? String(e)) }
     }
 
@@ -238,6 +249,27 @@ export default function Settings() {
             setRmError(String(e.message ?? e))
         } finally {
             setRmBusy(false)
+        }
+    }
+
+    const saveDuplicateFormatPreference = async () => {
+        setError(null)
+        setDuplicateFormatSaving(true)
+        try {
+            const formats = duplicateFormatEdit.split(';').map(s => s.trim()).filter(Boolean)
+            const r = await fetch('/api/settings/duplicate-format-preference', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ formats }),
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setDuplicateFormatPreference(body)
+            setDuplicateFormatEdit((body.formats ?? []).join(';'))
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setDuplicateFormatSaving(false)
         }
     }
 
@@ -571,6 +603,25 @@ export default function Settings() {
                         active: {refreshCadence.recentDays}/{refreshCadence.midDays}/{refreshCadence.dormantDays}/{refreshCadence.oldOrEmptyDays} days
                     </span>
                 )}
+            </div>
+
+            <h2 style={{ marginTop: '1.5rem' }}>Duplicate format preference</h2>
+            <p className="subtle">
+                Ordered semicolon-separated list used to choose the recommended
+                format on the Duplicate Files page.
+            </p>
+            <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+                <input
+                    style={{ minWidth: 420 }}
+                    value={duplicateFormatEdit}
+                    onChange={e => setDuplicateFormatEdit(e.target.value)}
+                    placeholder="epub;pdf;azw3;mobi" />
+                <button onClick={saveDuplicateFormatPreference} disabled={duplicateFormatSaving}>
+                    {duplicateFormatSaving ? 'Saving…' : 'Save'}
+                </button>
+                <span className="subtle">
+                    {(duplicateFormatPreference?.formats ?? []).join(' > ') || 'using defaults'}
+                </span>
             </div>
 
             <h2 style={{ marginTop: '1.5rem' }}>reMarkable sync</h2>
