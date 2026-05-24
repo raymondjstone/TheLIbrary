@@ -294,25 +294,27 @@ above steps.
 `TryParseSeriesFilename` recognises a range of common naming conventions used
 by libgen, Calibre downloads, and various ebook tools so the series organiser
 can shelve a file under the right series folder even when the DB has no series
-metadata yet. Recognised shapes (case-insensitive, position-aware):
+metadata yet. The examples below are intentionally synthetic / anonymised, but
+they preserve the exact filename shapes the parser understands
+(case-insensitive, position-aware):
 
 | Filename | Series | Position | Title | Author |
 |----------|--------|----------|-------|--------|
-| `Heechee 6 - The Boy Who Would Live Forever` | Heechee | 6 | The Boy Who Would Live Forever | — |
-| `Wheel of Time 10 - Crossroads of Twilight - Robert Jordan` | Wheel of Time | 10 | Crossroads of Twilight | Robert Jordan |
-| `Pohl, Frederik - Heechee 6 - The Boy…` | Heechee | 6 | The Boy… | Pohl, Frederik |
-| `Star Trek_ TNG - 069 - Insurrection` | Star Trek_ TNG | 69 | Insurrection | — |
-| `Star Wars - 311 - Fate of the Jedi 03 - Abyss` | Fate of the Jedi | 3 | Abyss | — |
-| `[Lorien Legacies 06.0] The Fate - Pittacus Lore` | Lorien Legacies | 6 | The Fate | Pittacus Lore |
-| `Marta Perry - [Watcher in the Dark 05] - When Secrets Strike` | Watcher in the Dark | 5 | When Secrets Strike | Marta Perry |
-| `Hank_ Texas Kings MC, Book 11 - Cee Bowerman` | Hank_ Texas Kings MC | 11 | Cee Bowerman | — |
-| `Holmes of Kyoto_ Volume 6 - Mai Mochizuki` | Holmes of Kyoto_ | 6 | Mai Mochizuki | — |
+| `Deep Range 6 - The Last Beacon` | Deep Range | 6 | The Last Beacon | — |
+| `River of Crowns 10 - Twilight Crossing - Rowan Hale` | River of Crowns | 10 | Twilight Crossing | Rowan Hale |
+| `Vale, Mira - Deep Range 6 - The Last Beacon` | Deep Range | 6 | The Last Beacon | Vale, Mira |
+| `Galaxy Patrol_ North Wing - 069 - Ember Protocol` | Galaxy Patrol_ North Wing | 69 | Ember Protocol | — |
+| `Empire Cycle - 311 - Ashen Banner 03 - Hollow Sky` | Ashen Banner | 3 | Hollow Sky | — |
+| `[Iron Lanterns 06.0] Final Signal - Arden Pike` | Iron Lanterns | 6 | Final Signal | Arden Pike |
+| `Tessa Rowan - [Midnight Archive 05] - Silent Fracture` | Midnight Archive | 5 | Silent Fracture | Tessa Rowan |
+| `Raven_ North Street Crew, Book 11 - Cold Mercy` | Raven_ North Street Crew | 11 | Cold Mercy | — |
+| `Clockwork Bureau_ Volume 6 - Nina Sato` | Clockwork Bureau_ | 6 | Nina Sato | — |
 
 Positions are normalised — leading zeros are stripped (`069` → `69`), `.0`
 suffixes dropped (`3.0` → `3`), and fractionals preserved (`1.5`, `06.5`).
 Calibre `(123)` duplicate-ids and tool-added `_2` / `_3` suffixes are stripped
 from the recovered title. Nested series resolve to the deepest unambiguous
-match — `Star Wars - 311 - Fate of the Jedi 03 - Abyss` picks the inner
+match — `Empire Cycle - 311 - Ashen Banner 03 - Hollow Sky` picks the inner
 subseries because it's more specific than the outer index. Bare parent indices
 that look like authors (`311`, `008`) are explicitly rejected as author names.
 

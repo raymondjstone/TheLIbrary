@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import StarRating from '../components/StarRating.jsx'
 import LinkAuthorDialog from './LinkAuthorDialog.jsx'
 import BookPreview from '../components/BookPreview.jsx'
@@ -350,6 +350,7 @@ function FileRow({ file, rmConnected, sendBusyIds, onSend, onUnmatch, onPreview 
 
 export default function AuthorDetail() {
     const { id } = useParams()
+    const navigate = useNavigate()
     const [data, setData] = useState(null)
     const [ownedOnly, setOwnedOnly] = useState(false)
     const [busyIds, setBusyIds] = useState(() => new Set())
@@ -913,9 +914,18 @@ export default function AuthorDetail() {
         return ''
     }
 
+    const goBack = () => {
+        if (window.history.length > 1) navigate(-1)
+        else navigate('/authors')
+    }
+
     return (
         <section>
-            <p><Link to="/authors">&larr; All authors</Link></p>
+            <p>
+                <button type="button" className="btn-ghost" onClick={goBack}>
+                    &larr; Back
+                </button>
+            </p>
             <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                 <span>{data.name}</span>
                 <StarRating
