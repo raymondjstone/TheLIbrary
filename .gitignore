@@ -64,3 +64,5 @@ Thumbs.db
 .claude/settings.local.json
 /.claude/settings.local.json
 /TestResults
+/.github/copilot-instructions.md
+/TheLIbrary.Server.Tests/TestResults/dca60d92-97ab-4702-b2a0-fbe8e15e9bb1
