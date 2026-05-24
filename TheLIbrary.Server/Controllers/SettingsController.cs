@@ -66,6 +66,7 @@ public class SettingsController : ControllerBase
     }
 
     public sealed record RefreshLimitsDto(int MaxAuthorsPerRun, int MaxEarlyWhenNoneDue);
+    public sealed record RefreshCadenceDto(int RecentDays, int MidDays, int DormantDays, int OldOrEmptyDays);
 
     // Limits for the refresh-due-works job: how many authors it refreshes per
     // run (0 = no limit), and how many to refresh early when none are due.
@@ -94,6 +95,40 @@ public class SettingsController : ControllerBase
             body.MaxEarlyWhenNoneDue.ToString(), ct);
         await _db.SaveChangesAsync(ct);
         return new RefreshLimitsDto(body.MaxAuthorsPerRun, body.MaxEarlyWhenNoneDue);
+    }
+
+    [HttpGet("refresh-cadence")]
+    public async Task<RefreshCadenceDto> GetRefreshCadence(CancellationToken ct)
+    {
+        var rows = await _db.AppSettings
+            .Where(s => s.Key == AppSettingKeys.RefreshCadenceRecentDays
+                     || s.Key == AppSettingKeys.RefreshCadenceMidDays
+                     || s.Key == AppSettingKeys.RefreshCadenceDormantDays
+                     || s.Key == AppSettingKeys.RefreshCadenceOldOrEmptyDays)
+            .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
+
+        var defaults = TheLibrary.Server.Services.Sync.AuthorRefresher.RefreshCadenceSettings.Defaults;
+        return new RefreshCadenceDto(
+            ReadInt(rows, AppSettingKeys.RefreshCadenceRecentDays, defaults.RecentDays),
+            ReadInt(rows, AppSettingKeys.RefreshCadenceMidDays, defaults.MidDays),
+            ReadInt(rows, AppSettingKeys.RefreshCadenceDormantDays, defaults.DormantDays),
+            ReadInt(rows, AppSettingKeys.RefreshCadenceOldOrEmptyDays, defaults.OldOrEmptyDays));
+    }
+
+    [HttpPut("refresh-cadence")]
+    public async Task<ActionResult<RefreshCadenceDto>> SetRefreshCadence(
+        [FromBody] RefreshCadenceDto body, CancellationToken ct)
+    {
+        if (body.RecentDays <= 0 || body.MidDays <= 0 || body.DormantDays <= 0 || body.OldOrEmptyDays <= 0)
+            return BadRequest(new { error = "Cadence values must be greater than zero." });
+
+        await UpsertSettingAsync(AppSettingKeys.RefreshCadenceRecentDays, body.RecentDays.ToString(), ct);
+        await UpsertSettingAsync(AppSettingKeys.RefreshCadenceMidDays, body.MidDays.ToString(), ct);
+        await UpsertSettingAsync(AppSettingKeys.RefreshCadenceDormantDays, body.DormantDays.ToString(), ct);
+        await UpsertSettingAsync(AppSettingKeys.RefreshCadenceOldOrEmptyDays, body.OldOrEmptyDays.ToString(), ct);
+        await _db.SaveChangesAsync(ct);
+
+        return new RefreshCadenceDto(body.RecentDays, body.MidDays, body.DormantDays, body.OldOrEmptyDays);
     }
 
     private static int ReadInt(IReadOnlyDictionary<string, string> rows, string key, int fallback)

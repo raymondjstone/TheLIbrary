@@ -7,6 +7,7 @@ const labels = {
     'incoming': 'Process incoming folder',
     'reprocess-unknown': 'Reprocess __unknown folder',
     'same-name-authors': 'Add same-name OpenLibrary authors',
+    'star-physical-authors': 'Give 1 star to physical-book authors',
 }
 
 const fmtNextRun = (iso) => {

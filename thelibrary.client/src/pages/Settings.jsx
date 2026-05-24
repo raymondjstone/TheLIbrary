@@ -33,6 +33,9 @@ export default function Settings() {
     const [refreshLimits, setRefreshLimits] = useState(null)
     const [refreshLimitsEdit, setRefreshLimitsEdit] = useState({ maxAuthorsPerRun: 0, maxEarlyWhenNoneDue: 200 })
     const [refreshLimitsSaving, setRefreshLimitsSaving] = useState(false)
+    const [refreshCadence, setRefreshCadence] = useState(null)
+    const [refreshCadenceEdit, setRefreshCadenceEdit] = useState({ recentDays: 2, midDays: 14, dormantDays: 28, oldOrEmptyDays: 60 })
+    const [refreshCadenceSaving, setRefreshCadenceSaving] = useState(false)
 
     const load = async () => {
         // Independent loads — a failing endpoint (e.g. pending migration) must
@@ -98,6 +101,19 @@ export default function Settings() {
             setRefreshLimitsEdit({
                 maxAuthorsPerRun: body.maxAuthorsPerRun,
                 maxEarlyWhenNoneDue: body.maxEarlyWhenNoneDue,
+            })
+        } catch (e) { setError(prev => prev ?? String(e)) }
+
+        try {
+            const r = await fetch('/api/settings/refresh-cadence')
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setRefreshCadence(body)
+            setRefreshCadenceEdit({
+                recentDays: body.recentDays,
+                midDays: body.midDays,
+                dormantDays: body.dormantDays,
+                oldOrEmptyDays: body.oldOrEmptyDays,
             })
         } catch (e) { setError(prev => prev ?? String(e)) }
     }
@@ -302,6 +318,36 @@ export default function Settings() {
         }
     }
 
+    const saveRefreshCadence = async () => {
+        setError(null)
+        setRefreshCadenceSaving(true)
+        try {
+            const r = await fetch('/api/settings/refresh-cadence', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    recentDays: Number(refreshCadenceEdit.recentDays) || 0,
+                    midDays: Number(refreshCadenceEdit.midDays) || 0,
+                    dormantDays: Number(refreshCadenceEdit.dormantDays) || 0,
+                    oldOrEmptyDays: Number(refreshCadenceEdit.oldOrEmptyDays) || 0,
+                }),
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setRefreshCadence(body)
+            setRefreshCadenceEdit({
+                recentDays: body.recentDays,
+                midDays: body.midDays,
+                dormantDays: body.dormantDays,
+                oldOrEmptyDays: body.oldOrEmptyDays,
+            })
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setRefreshCadenceSaving(false)
+        }
+    }
+
     const updateRow = (id, patch) => {
         setLocations(locations.map(l => l.id === id ? { ...l, ...patch } : l))
     }
@@ -486,6 +532,43 @@ export default function Settings() {
                     <span className="subtle">
                         active: {refreshLimits.maxAuthorsPerRun === 0 ? 'no cap' : `${refreshLimits.maxAuthorsPerRun}/run`}
                         {', '}{refreshLimits.maxEarlyWhenNoneDue} early
+                    </span>
+                )}
+            </div>
+
+            <h2 style={{ marginTop: '1.5rem' }}>Works refresh cadence</h2>
+            <p className="subtle">
+                Default cadence buckets used when an author does <strong>not</strong> have
+                a fixed refresh interval set on their detail page. These values are stored
+                in the database and drive the automatic <code>NextFetchAt</code> calculation.
+            </p>
+            <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+                <label>Within last 2 years{' '}
+                    <input type="number" min="1" style={{ width: 90 }}
+                        value={refreshCadenceEdit.recentDays}
+                        onChange={e => setRefreshCadenceEdit(p => ({ ...p, recentDays: e.target.value }))} />
+                </label>
+                <label>3–5 years ago{' '}
+                    <input type="number" min="1" style={{ width: 90 }}
+                        value={refreshCadenceEdit.midDays}
+                        onChange={e => setRefreshCadenceEdit(p => ({ ...p, midDays: e.target.value }))} />
+                </label>
+                <label>6–10 years ago{' '}
+                    <input type="number" min="1" style={{ width: 90 }}
+                        value={refreshCadenceEdit.dormantDays}
+                        onChange={e => setRefreshCadenceEdit(p => ({ ...p, dormantDays: e.target.value }))} />
+                </label>
+                <label>Older / no works{' '}
+                    <input type="number" min="1" style={{ width: 90 }}
+                        value={refreshCadenceEdit.oldOrEmptyDays}
+                        onChange={e => setRefreshCadenceEdit(p => ({ ...p, oldOrEmptyDays: e.target.value }))} />
+                </label>
+                <button onClick={saveRefreshCadence} disabled={refreshCadenceSaving}>
+                    {refreshCadenceSaving ? 'Saving…' : 'Save'}
+                </button>
+                {refreshCadence && (
+                    <span className="subtle">
+                        active: {refreshCadence.recentDays}/{refreshCadence.midDays}/{refreshCadence.dormantDays}/{refreshCadence.oldOrEmptyDays} days
                     </span>
                 )}
             </div>

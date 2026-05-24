@@ -100,6 +100,20 @@ public class ScheduleServiceTests
         Assert.Contains(ScheduleJobIds.Incoming, recurring.RemovedJobIds);
     }
 
+    [Fact]
+    public async Task GetAllAsync_Includes_StarPhysicalAuthors_Default()
+    {
+        var dbName = $"schedule-tests-{Guid.NewGuid():N}";
+        await using var db = CreateDb(dbName);
+        var sut = CreateService(new FakeRecurringJobManager(), dbName);
+
+        var all = await sut.GetAllAsync();
+
+        Assert.True(all.ContainsKey(ScheduleJobIds.StarPhysicalAuthors));
+        Assert.Equal("0 10 * * *", all[ScheduleJobIds.StarPhysicalAuthors].Cron);
+        Assert.True(all[ScheduleJobIds.StarPhysicalAuthors].Enabled);
+    }
+
     private static LibraryDbContext CreateDb(string? name = null)
     {
         var options = new DbContextOptionsBuilder<LibraryDbContext>()

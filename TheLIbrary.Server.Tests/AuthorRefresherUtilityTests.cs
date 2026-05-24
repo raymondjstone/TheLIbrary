@@ -38,6 +38,17 @@ public class AuthorRefresherUtilityTests
     }
 
     [Fact]
+    public void NextFetchInterval_Uses_Configured_Buckets_When_Provided()
+    {
+        var cadence = new AuthorRefresher.RefreshCadenceSettings(3, 15, 29, 61);
+
+        Assert.Equal(TimeSpan.FromDays(3), AuthorRefresher.NextFetchInterval([DateTime.UtcNow.Year], cadence));
+        Assert.Equal(TimeSpan.FromDays(15), AuthorRefresher.NextFetchInterval([DateTime.UtcNow.Year - 3], cadence));
+        Assert.Equal(TimeSpan.FromDays(29), AuthorRefresher.NextFetchInterval([DateTime.UtcNow.Year - 8], cadence));
+        Assert.Equal(TimeSpan.FromDays(61), AuthorRefresher.NextFetchInterval(Array.Empty<int>(), cadence));
+    }
+
+    [Fact]
     public void PickBestAuthor_Returns_Null_When_No_Docs()
     {
         var pick = InvokePickBestAuthor(null, "Terry Brooks");

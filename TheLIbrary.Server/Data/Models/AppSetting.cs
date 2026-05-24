@@ -40,4 +40,11 @@ public static class AppSettingKeys
     //                             soonest-due authors to refresh early.
     public const string RefreshMaxAuthorsPerRun = "RefreshMaxAuthorsPerRun";
     public const string RefreshEarlyWhenNoneDue = "RefreshEarlyWhenNoneDue";
+
+    // Default per-author works-refresh cadence buckets, used when an author
+    // does not have RefreshIntervalDays set explicitly.
+    public const string RefreshCadenceRecentDays = "RefreshCadenceRecentDays";
+    public const string RefreshCadenceMidDays = "RefreshCadenceMidDays";
+    public const string RefreshCadenceDormantDays = "RefreshCadenceDormantDays";
+    public const string RefreshCadenceOldOrEmptyDays = "RefreshCadenceOldOrEmptyDays";
 }

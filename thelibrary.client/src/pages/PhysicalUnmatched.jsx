@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useState } from 'react'
+import OpenLibraryWorkSearch from '../components/OpenLibraryWorkSearch.jsx'
 
 let cachedUnmatched = null
 
@@ -35,6 +36,36 @@ function ResolvePanel({ row, authors, suggestedAuthors, onResolved, onCancel }) 
     const [nbPos, setNbPos] = useState(seed.position)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState(null)
+    const ensureAuthorFromWork = async (work) => {
+        const matchByName = (name) => authors.find(a => a.name?.trim().toLowerCase() === name?.trim().toLowerCase())
+        const preferred = matchByName(work.primaryAuthorName) || matchByName(work.authors)
+        if (preferred) {
+            setAuthorId(String(preferred.id))
+            return preferred.id
+        }
+        if (!work.primaryAuthorKey) return null
+
+        try {
+            const r = await fetch('/api/authors', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    openLibraryKey: work.primaryAuthorKey,
+                    name: work.primaryAuthorName || work.authors || null,
+                }),
+            })
+            if (!r.ok) {
+                const body = await r.json().catch(() => ({}))
+                throw new Error(body.error || r.statusText)
+            }
+            const added = await r.json()
+            if (!authors.some(a => a.id === added.id)) authors.push({ id: added.id, name: added.name })
+            setAuthorId(String(added.id))
+            return added.id
+        } catch (e) {
+            throw new Error(`Could not add the OpenLibrary author automatically: ${String(e.message || e)}`)
+        }
+    }
 
     // Reload book suggestions whenever the chosen author changes.
     useEffect(() => {
@@ -71,6 +102,36 @@ function ResolvePanel({ row, authors, suggestedAuthors, onResolved, onCancel }) 
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ bookId: Number(selectedBookId) }),
+            })
+            if (!r.ok) {
+                const body = await r.json().catch(() => ({}))
+                throw new Error(body.error || r.statusText)
+            }
+            onResolved(row.id)
+        } catch (e) {
+            setError(String(e.message || e))
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    const addOpenLibraryMatch = async (work) => {
+        setBusy(true)
+        setError(null)
+        try {
+            const resolvedAuthorId = authorId || await ensureAuthorFromWork(work)
+            if (!resolvedAuthorId) throw new Error('Pick or add the correct author first.')
+            const r = await fetch(`/api/import/physical-books/unmatched/${row.id}/add-openlibrary-book`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    authorId: Number(resolvedAuthorId),
+                    workKey: work.key,
+                    title: work.title,
+                    firstPublishYear: work.firstPublishYear,
+                    coverId: work.coverId,
+                    authors: work.authors,
+                }),
             })
             if (!r.ok) {
                 const body = await r.json().catch(() => ({}))
@@ -191,10 +252,31 @@ function ResolvePanel({ row, authors, suggestedAuthors, onResolved, onCancel }) 
                     )}
                 </div>
 
+                {/* ── Search OpenLibrary and force a match ─────────────── */}
+                <div>
+                    <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.25rem' }}>
+                        2b · Search OpenLibrary and force a match
+                    </div>
+                    <OpenLibraryWorkSearch
+                        initialQuery={row.title || ''}
+                        autoSearch={!!row.title?.trim()}
+                        introText="Search OpenLibrary by title only so a wrong imported author does not hide the correct work. Once you've identified it, force match will reuse or add the OpenLibrary author for you."
+                        emptyText="No OpenLibrary works found. You can add the book manually below."
+                        resultText="OpenLibrary results for this title. Pick one and force the match to create or reuse that work here."
+                        actionLabel="Force match selected OpenLibrary result"
+                        actionBusyLabel="Matching…"
+                        actionNote={!authorId ? (
+                            <p className="subtle" style={{ margin: '0.35rem 0 0' }}>
+                                If the correct author is not in the list yet, force match will add them from OpenLibrary automatically.
+                            </p>
+                        ) : null}
+                        onUse={addOpenLibraryMatch} />
+                </div>
+
                 {/* ── Add as a new book ────────────────────────────────── */}
                 <div style={{ opacity: authorId ? 1 : 0.5 }}>
                     <div style={{ fontWeight: 600, fontSize: '0.85rem', marginBottom: '0.25rem' }}>
-                        2b · Add as a new book
+                        2c · Add as a new book instead
                     </div>
                     <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
                         <input placeholder="Title" value={nbTitle}
@@ -210,8 +292,7 @@ function ResolvePanel({ row, authors, suggestedAuthors, onResolved, onCancel }) 
                         </button>
                     </div>
                     <p className="subtle" style={{ margin: '0.3rem 0 0', fontSize: '0.8rem' }}>
-                        Created as owned, with a placeholder key — it links to OpenLibrary
-                        automatically if the title turns up on a later refresh.
+                        Use this only when OpenLibrary does not list the work yet.
                     </p>
                 </div>
 

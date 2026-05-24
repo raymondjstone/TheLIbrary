@@ -7,6 +7,7 @@ using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.Import;
 using TheLibrary.Server.Services.Incoming;
+using TheLibrary.Server.Services.OpenLibrary;
 using TheLibrary.Server.Services.Sync;
 
 namespace TheLibrary.Server.Controllers;
@@ -17,11 +18,13 @@ public class ImportController : ControllerBase
 {
     private readonly LibraryDbContext _db;
     private readonly ManualBookService _manualBooks;
+    private readonly OpenLibraryClient _openLibrary;
 
-    public ImportController(LibraryDbContext db, ManualBookService manualBooks)
+    public ImportController(LibraryDbContext db, ManualBookService manualBooks, OpenLibraryClient openLibrary)
     {
         _db = db;
         _manualBooks = manualBooks;
+        _openLibrary = openLibrary;
     }
 
     public sealed record GoodreadsImportResult(
@@ -460,6 +463,18 @@ public class ImportController : ControllerBase
     public sealed record AddUnmatchedBookRequest(
         int AuthorId, string? Title, string? SeriesName, string? SeriesPosition);
 
+    public sealed record OpenLibraryWorkCandidate(
+        string Key, string Title, int? FirstPublishYear, int? CoverId, string? Authors,
+        string? PrimaryAuthorKey, string? PrimaryAuthorName);
+
+    public sealed record AddUnmatchedOpenLibraryBookRequest(
+        int AuthorId,
+        string WorkKey,
+        string? Title,
+        int? FirstPublishYear,
+        int? CoverId,
+        string? Authors);
+
     // Resolve an unmatched physical row by creating a brand-new book for the
     // chosen author. The book is owned (a physical copy is on the shelf) and
     // gets a synthetic "XX" work key so a later OL refresh can promote it.
@@ -483,6 +498,107 @@ public class ImportController : ControllerBase
         _db.PhysicalBookUnmatched.Remove(row);
         await _db.SaveChangesAsync(ct);
         return Ok(new { createdBookId = result.Book!.Id, result.Book.Title });
+    }
+
+    [HttpGet("physical-books/unmatched/{id:int}/openlibrary-search")]
+    public async Task<ActionResult<IReadOnlyList<OpenLibraryWorkCandidate>>> SearchOpenLibraryWorks(
+        int id,
+        [FromQuery] string? title,
+        CancellationToken ct)
+    {
+        var row = await _db.PhysicalBookUnmatched.FindAsync([id], ct);
+        if (row is null) return NotFound(new { error = "Unmatched row not found" });
+
+        var queryTitle = string.IsNullOrWhiteSpace(title) ? row.Title : title.Trim();
+        if (string.IsNullOrWhiteSpace(queryTitle)) return Ok(Array.Empty<OpenLibraryWorkCandidate>());
+
+        WorkSearchResponse? resp;
+        try
+        {
+            // For the unmatched physical-book flow the OpenLibrary lookup is
+            // used to identify the right work and author, so it must never be
+            // narrowed by the possibly-wrong imported author string.
+            resp = await _openLibrary.SearchWorksAsync(queryTitle, author: null, ct);
+        }
+        catch (OpenLibraryRequestFailedException ex)
+        {
+            return Problem(
+                title: "OpenLibrary request failed",
+                detail: ex.Message,
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        var results = resp?.Docs?
+            .Where(d => !string.IsNullOrWhiteSpace(d.Key) && !string.IsNullOrWhiteSpace(d.Title))
+            .Select(d => new OpenLibraryWorkCandidate(
+                d.Key!,
+                d.Title!,
+                d.FirstPublishYear,
+                d.CoverId,
+                d.AuthorNames is { Count: > 0 } ? string.Join(", ", d.AuthorNames.Where(n => !string.IsNullOrWhiteSpace(n))) : null,
+                d.AuthorKeys?.FirstOrDefault(k => !string.IsNullOrWhiteSpace(k)),
+                d.AuthorNames?.FirstOrDefault(n => !string.IsNullOrWhiteSpace(n))))
+            .ToList()
+            ?? new List<OpenLibraryWorkCandidate>();
+
+        return Ok(results);
+    }
+
+    [HttpPost("physical-books/unmatched/{id:int}/add-openlibrary-book")]
+    public async Task<IActionResult> AddUnmatchedOpenLibraryBook(
+        int id,
+        [FromBody] AddUnmatchedOpenLibraryBookRequest body,
+        CancellationToken ct)
+    {
+        var row = await _db.PhysicalBookUnmatched.FindAsync([id], ct);
+        if (row is null) return NotFound(new { error = "Unmatched row not found" });
+
+        var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == body.AuthorId, ct);
+        if (author is null) return BadRequest(new { error = "Author not found" });
+
+        var workKey = body.WorkKey?.Trim();
+        if (string.IsNullOrWhiteSpace(workKey))
+            return BadRequest(new { error = "OpenLibrary work key is required" });
+        if (workKey.StartsWith("/works/", StringComparison.OrdinalIgnoreCase))
+            workKey = workKey[("/works/".Length)..];
+
+        var existing = await _db.Books.FirstOrDefaultAsync(
+            b => b.AuthorId == body.AuthorId && b.OpenLibraryWorkKey == workKey,
+            ct);
+        if (existing is not null)
+        {
+            if (!existing.ManuallyOwned)
+            {
+                existing.ManuallyOwned = true;
+                existing.ManuallyOwnedAt = DateTime.UtcNow;
+            }
+            _db.PhysicalBookUnmatched.Remove(row);
+            await _db.SaveChangesAsync(ct);
+            return Ok(new { createdBookId = existing.Id, existing.Title, existing.OpenLibraryWorkKey });
+        }
+
+        var cleanTitle = string.IsNullOrWhiteSpace(body.Title) ? row.Title.Trim() : body.Title.Trim();
+        if (string.IsNullOrWhiteSpace(cleanTitle))
+            return BadRequest(new { error = "Title is required" });
+
+        var book = new Book
+        {
+            AuthorId = body.AuthorId,
+            OpenLibraryWorkKey = workKey,
+            Title = cleanTitle,
+            NormalizedTitle = TitleNormalizer.Normalize(cleanTitle),
+            FirstPublishYear = body.FirstPublishYear,
+            CoverId = body.CoverId,
+            ManuallyOwned = true,
+            ManuallyOwnedAt = DateTime.UtcNow,
+            Subjects = "",
+            Isbn = row.Isbn,
+        };
+
+        _db.Books.Add(book);
+        _db.PhysicalBookUnmatched.Remove(row);
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { createdBookId = book.Id, book.Title, book.OpenLibraryWorkKey });
     }
 
     public sealed record RematchProposal(

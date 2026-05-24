@@ -91,10 +91,15 @@ author from the UI and add them — the sync then does the rest.
 
 The author detail page also lists unmatched local files (files in the author's
 folder that didn't line up with any tracked work). You can force-match one to
-a work, unmatch an existing link, or return the file's folder to the incoming
-bucket for reprocessing. The force-match accepts books owned by any non-pen-name
-linked child author too, so a canonical's view can claim its duplicates' works
-without re-parenting them in the DB first.
+a work, unmatch an existing link, return the file's folder to the incoming
+bucket for reprocessing, or run an OpenLibrary title search using the local
+**filename** (not the full path). Accepting an OpenLibrary result there is
+treated as a revised link/match of the physical file: the app creates or reuses
+the selected work locally, links the file to it, and if the selected work
+belongs under a different author, moves the file/folder into that author's
+folder before saving the new link. The force-match dropdown still accepts books
+owned by any non-pen-name linked child author too, so a canonical's view can
+claim its duplicates' works without re-parenting them in the DB first.
 
 See [OpenLibrary integration](#openlibrary-integration) for what the app
 calls OpenLibrary for, how it identifies itself, and how calls are rate-limited.
@@ -108,6 +113,7 @@ app talks to these OpenLibrary endpoints:
 | Used for | Endpoint | When it fires |
 |----------|----------|---------------|
 | Author search | `search/authors.json?q=` | Adding an author from the UI, the Untracked page's "Suggest from OL" button, and resolving an unresolved watchlist name |
+| Work/title search | `search.json?title=…` | Resolving unmatched physical-book imports and unmatched local files from the author detail page; these searches intentionally run by title/filename only so a wrong local author guess doesn't hide the right work |
 | Works fetch | `search.json?author_key=…&language=eng` | Every per-author refresh — one row per *work*, carrying `subject` (genre) and `series` |
 | Author detail / bio | `authors/{key}.json` | The first refresh after an author's OL key resolves, to store their bio |
 | Author-merge changelog | OpenLibrary's daily merge-authors change log | The `author-updates` job — rewrites local OL keys when OpenLibrary folds two author records into one |
@@ -404,7 +410,9 @@ Every endpoint that handles "books for this author" honours the merge:
 ## Works refresh cadence
 
 After each refresh, an author's next scheduled fetch is placed in one of four
-buckets based on their most recent publication year:
+buckets based on their most recent publication year. The default bucket lengths
+are editable on the **Settings** page and stored in the database; the built-in
+defaults are:
 
 | Most recent work | Interval |
 |-----------------|----------|
@@ -764,6 +772,7 @@ on every startup.
 | `unzip` | `0 0 * * *` | Extract `.zip`/`.rar` archives to incoming folder |
 | `disambiguate-folders` | `0 11 * * *` | Split shared-name author folders into per-OL-key folders; route files by title match |
 | `same-name-authors` | `0 */6 * * *` | Add OpenLibrary authors that share a name with one you already track — a pure DB lookup against the seeded `OpenLibraryAuthor` catalogue, no API calls |
+| `star-physical-authors` | `0 10 * * *` | Give 1 star to any author with at least one manually-owned physical book whose current star rating is 0 |
 
 Hangfire runs with `WorkerCount=1`, and all background work also passes through
 a single `BackgroundTaskCoordinator`, so a manual UI run and a cron tick can't

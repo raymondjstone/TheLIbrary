@@ -50,6 +50,11 @@ public sealed class AuthorRefresher
     private readonly AuthorRefreshCoordinator _coordinator;
     private readonly ILogger<AuthorRefresher> _log;
 
+    public sealed record RefreshCadenceSettings(int RecentDays, int MidDays, int DormantDays, int OldOrEmptyDays)
+    {
+        public static readonly RefreshCadenceSettings Defaults = new(2, 14, 28, 60);
+    }
+
     public AuthorRefresher(
         LibraryDbContext db,
         OpenLibraryClient ol,
@@ -320,7 +325,7 @@ public sealed class AuthorRefresher
         author.NextFetchAt = author.LastSyncedAt.Value.Add(
             author.RefreshIntervalDays.HasValue
                 ? TimeSpan.FromDays(author.RefreshIntervalDays.Value)
-                : NextFetchInterval(years));
+                : await NextFetchIntervalAsync(years, ct));
 
         // Fetch and store author bio if we don't have one yet.
         if (string.IsNullOrWhiteSpace(author.Bio))
@@ -362,15 +367,39 @@ public sealed class AuthorRefresher
     // Active-today authors get checked daily; long-dormant authors only every
     // four weeks. No years on file behaves like "anything else" (4 weeks).
     public static TimeSpan NextFetchInterval(IReadOnlyList<int> years)
+        => NextFetchInterval(years, RefreshCadenceSettings.Defaults);
+
+    public static TimeSpan NextFetchInterval(IReadOnlyList<int> years, RefreshCadenceSettings cadence)
     {
-        if (years.Count == 0) return TimeSpan.FromDays(60);
+        if (years.Count == 0) return TimeSpan.FromDays(cadence.OldOrEmptyDays);
         var mostRecent = years.Max();
         var age = DateTime.UtcNow.Year - mostRecent;
-        if (age <= 1) return TimeSpan.FromDays(2);
-        if (age <= 5) return TimeSpan.FromDays(14);
-        if (age <= 10) return TimeSpan.FromDays(28);
-        return TimeSpan.FromDays(60);
+        if (age <= 1) return TimeSpan.FromDays(cadence.RecentDays);
+        if (age <= 5) return TimeSpan.FromDays(cadence.MidDays);
+        if (age <= 10) return TimeSpan.FromDays(cadence.DormantDays);
+        return TimeSpan.FromDays(cadence.OldOrEmptyDays);
     }
+
+    private async Task<TimeSpan> NextFetchIntervalAsync(IReadOnlyList<int> years, CancellationToken ct)
+    {
+        var rows = await _db.AppSettings
+            .Where(s => s.Key == AppSettingKeys.RefreshCadenceRecentDays
+                     || s.Key == AppSettingKeys.RefreshCadenceMidDays
+                     || s.Key == AppSettingKeys.RefreshCadenceDormantDays
+                     || s.Key == AppSettingKeys.RefreshCadenceOldOrEmptyDays)
+            .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
+
+        var cadence = new RefreshCadenceSettings(
+            ReadCadence(rows, AppSettingKeys.RefreshCadenceRecentDays, RefreshCadenceSettings.Defaults.RecentDays),
+            ReadCadence(rows, AppSettingKeys.RefreshCadenceMidDays, RefreshCadenceSettings.Defaults.MidDays),
+            ReadCadence(rows, AppSettingKeys.RefreshCadenceDormantDays, RefreshCadenceSettings.Defaults.DormantDays),
+            ReadCadence(rows, AppSettingKeys.RefreshCadenceOldOrEmptyDays, RefreshCadenceSettings.Defaults.OldOrEmptyDays));
+
+        return NextFetchInterval(years, cadence);
+    }
+
+    private static int ReadCadence(IReadOnlyDictionary<string, string> rows, string key, int fallback)
+        => rows.TryGetValue(key, out var v) && int.TryParse(v, out var n) && n > 0 ? n : fallback;
 
     private static AuthorSearchDoc? PickBestAuthor(List<AuthorSearchDoc>? docs, string searchName)
     {

@@ -52,4 +52,28 @@ public class OpenLibraryControllerIntegrationTests
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
     }
+
+    [Fact]
+    public async Task SearchWorks_Maps_Docs_From_OpenLibrary()
+    {
+        using var factory = new LibraryApiFactory((request, _) =>
+        {
+            Assert.Contains("search.json", request.RequestUri!.ToString());
+            return Task.FromResult(TestHttpMessageHandler.Json("""
+                {"docs":[{"key":"/works/OL1W","title":"Magic Kingdom for Sale","first_publish_year":1986,"cover_i":42,"author_name":["Terry Brooks"],"author_key":["OL1A"]}]}
+                """));
+        });
+        using var client = factory.CreateClient();
+
+        var result = await client.GetFromJsonAsync<List<OpenLibraryController.WorkSearchRow>>("/api/openlibrary/search-works?title=Magic%20Kingdom%20for%20Sale&author=Terry%20Brooks");
+
+        var row = Assert.Single(result!);
+        Assert.Equal("/works/OL1W", row.Key);
+        Assert.Equal("Magic Kingdom for Sale", row.Title);
+        Assert.Equal(1986, row.FirstPublishYear);
+        Assert.Equal(42, row.CoverId);
+        Assert.Equal("Terry Brooks", row.Authors);
+        Assert.Equal("OL1A", row.PrimaryAuthorKey);
+        Assert.Equal("Terry Brooks", row.PrimaryAuthorName);
+    }
 }

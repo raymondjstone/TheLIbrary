@@ -27,11 +27,13 @@ public static class ScheduleJobIds
     public const string Unzip = "unzip";
     public const string DisambiguateFolders = "disambiguate-folders";
     public const string SameNameAuthors = "same-name-authors";
+    public const string StarPhysicalAuthors = "star-physical-authors";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
         Sync, Seed, AuthorUpdates, Incoming, ReprocessUnknown, RefreshWorks,
-        OrganizeSeries, Unzip, DisambiguateFolders, SameNameAuthors
+        OrganizeSeries, Unzip, DisambiguateFolders, SameNameAuthors,
+        StarPhysicalAuthors
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -51,5 +53,6 @@ public static class ScheduleJobIds
             [DisambiguateFolders] = new() { Cron = "0 11 * * *", Enabled = true },
             // Every 6 hours (00:00, 06:00, 12:00, 18:00) — four times a day.
             [SameNameAuthors] = new() { Cron = "0 */6 * * *", Enabled = true },
+            [StarPhysicalAuthors] = new() { Cron = "0 10 * * *", Enabled = true },
         };
 }

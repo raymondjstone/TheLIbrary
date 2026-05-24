@@ -5,6 +5,7 @@ import LinkAuthorDialog from './LinkAuthorDialog.jsx'
 import BookPreview from '../components/BookPreview.jsx'
 import AddBookDialog from './AddBookDialog.jsx'
 import BookEditDialog from './BookEditDialog.jsx'
+import OpenLibraryWorkSearch from '../components/OpenLibraryWorkSearch.jsx'
 import { bookCoverSrc } from '../bookCover.js'
 
 // Compact per-book edit / delete controls shown next to the title.
@@ -125,7 +126,8 @@ function UnmatchedFilesSection({
     matchError, matchBusyIds, returnBusyIds,
     matchSel, setMatchSel, matchFilter, setMatchFilter,
     onMatch, onReturn, rmConnected, sendBusyIds, onSend,
-    suggestionsByFile, onBulkMatch, bulkBusy, onPreview
+    suggestionsByFile, onBulkMatch, bulkBusy, onPreview,
+    openLibraryByFile, setOpenLibraryByFile, onAddOpenLibraryBook
 }) {
     if (!unmatchedLocal.length) return null
     const canSend = (formats) => !!formats?.length
@@ -173,8 +175,11 @@ function UnmatchedFilesSection({
                         const sugg = suggestionsByFile?.[u.id]
                         const inferredTitle = sugg?.inferredTitle
                         const showInferred = inferredTitle && inferredTitle !== u.titleFolder
+                        const fileName = (u.fullPath || '').split(/[\\/]/).pop() || u.titleFolder || ''
+                        const searchOpen = !!openLibraryByFile[u.id]
                         return (
-                            <tr key={u.id}>
+                            <React.Fragment key={u.id}>
+                            <tr>
                                 <td>
                                     <code style={{ display: 'block' }}>{u.titleFolder}</code>
                                     {showInferred && (
@@ -265,8 +270,31 @@ function UnmatchedFilesSection({
                                             {sendLabel}
                                           </button>
                                         : <span className="subtle" title="No ebook files found in this folder">—</span>}
+                                    <div style={{ marginTop: '0.35rem' }}>
+                                        <button type="button" className="btn-ghost"
+                                                onClick={() => setOpenLibraryByFile(prev => ({ ...prev, [u.id]: !prev[u.id] }))}>
+                                            {searchOpen ? 'Hide OpenLibrary search' : 'Search OpenLibrary by filename'}
+                                        </button>
+                                    </div>
                                 </td>
                             </tr>
+                            {searchOpen && (
+                                <tr>
+                                    <td colSpan={7} style={{ background: 'var(--card)', padding: '0.75rem 1rem' }}>
+                                        <OpenLibraryWorkSearch
+                                            initialQuery={fileName}
+                                            introText="Search OpenLibrary by filename only when the local file has no matching work yet."
+                                            searchPlaceholder="Search OpenLibrary using filename…"
+                                            readyText="Ready to search OpenLibrary using the filename only."
+                                            emptyText="No OpenLibrary works found for this filename search."
+                                            resultText="OpenLibrary results for this filename. Pick one to match and relink this physical file."
+                                            actionLabel="Match and relink this physical file"
+                                            actionBusyLabel="Matching…"
+                                            onUse={work => onAddOpenLibraryBook(u.id, work)} />
+                                    </td>
+                                </tr>
+                            )}
+                            </React.Fragment>
                         )
                     })}
                 </tbody>
@@ -349,6 +377,7 @@ export default function AuthorDetail() {
     const [suggestionsByFile, setSuggestionsByFile] = useState({})  // { fileId: { inferredTitle, candidates } }
     const [bulkBusy, setBulkBusy] = useState(false)
     const [preview, setPreview] = useState(null)  // { fileId, format, title } | null
+    const [openLibraryByFile, setOpenLibraryByFile] = useState({})
     const openPreview = (fileId, format, title) => setPreview({ fileId, format, title })
 
     const unlinkAuthor = async () => {
@@ -375,6 +404,7 @@ export default function AuthorDetail() {
     useEffect(() => {
         setData(null)
         setSuggestionsByFile({})
+        setOpenLibraryByFile({})
         fetch(`/api/authors/${id}`)
             .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
             .then(setData)
@@ -442,6 +472,29 @@ export default function AuthorDetail() {
         } finally {
             setBulkBusy(false)
         }
+    }
+
+    const addOpenLibraryBook = async (fileId, work) => {
+        const r = await fetch(`/api/authors/${id}/unmatched/${fileId}/openlibrary-match`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                workKey: work.key,
+                title: work.title,
+                firstPublishYear: work.firstPublishYear,
+                coverId: work.coverId,
+                authors: work.authors,
+                primaryAuthorKey: work.primaryAuthorKey,
+                primaryAuthorName: work.primaryAuthorName,
+            })
+        })
+        if (!r.ok) {
+            const body = await r.json().catch(() => ({}))
+            throw new Error(body.error || r.statusText)
+        }
+        const updated = await r.json()
+        setData(updated)
+        setOpenLibraryByFile(prev => ({ ...prev, [fileId]: false }))
     }
 
 
@@ -1331,7 +1384,10 @@ export default function AuthorDetail() {
                 suggestionsByFile={suggestionsByFile}
                 onBulkMatch={bulkMatch}
                 bulkBusy={bulkBusy}
-                onPreview={openPreview} />
+                onPreview={openPreview}
+                openLibraryByFile={openLibraryByFile}
+                setOpenLibraryByFile={setOpenLibraryByFile}
+                onAddOpenLibraryBook={addOpenLibraryBook} />
 
             {preview && (
                 <BookPreview

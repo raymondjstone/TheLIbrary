@@ -43,6 +43,15 @@ public sealed class OpenLibraryClient
         return GetJsonAsync<AuthorSearchResponse>(url, ct);
     }
 
+    public Task<WorkSearchResponse?> SearchWorksAsync(string title, string? author, CancellationToken ct)
+    {
+        var fields = "key,title,first_publish_year,cover_i,author_name,author_key";
+        var url = $"search.json?title={HttpUtility.UrlEncode(title)}&limit=10&fields={fields}";
+        if (!string.IsNullOrWhiteSpace(author))
+            url += $"&author={HttpUtility.UrlEncode(author.Trim())}";
+        return GetJsonAsync<WorkSearchResponse>(url, ct);
+    }
+
     // Fetches a single author record by OL key (e.g. "OL123A"). Returns null on
     // 404 or if the record is a redirect (merged into another key). Upstream
     // failures throw OpenLibraryRequestFailedException so callers can distinguish

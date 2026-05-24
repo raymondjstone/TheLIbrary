@@ -231,6 +231,27 @@ public class AuthorsController : ControllerBase
 
     public sealed record UnmatchedRow(int Id, string TitleFolder, string FullPath, IReadOnlyList<string> Formats);
 
+    public sealed record OpenLibraryWorkCandidate(
+        string Key, string Title, int? FirstPublishYear, int? CoverId, string? Authors,
+        string? PrimaryAuthorKey, string? PrimaryAuthorName);
+
+    public sealed record AddOpenLibraryBookRequest(
+        string WorkKey,
+        string? Title,
+        int? FirstPublishYear,
+        int? CoverId,
+        string? Authors,
+        bool Owned);
+
+    public sealed record MatchOpenLibraryFileRequest(
+        string WorkKey,
+        string? Title,
+        int? FirstPublishYear,
+        int? CoverId,
+        string? Authors,
+        string? PrimaryAuthorKey,
+        string? PrimaryAuthorName);
+
     // Extensions we recognize as ebook files in the incoming pipeline. Any
     // other file in the title folder (cover.jpg, metadata.opf, …) is ignored
     // so the UI doesn't show "jpg" as a sendable format.
@@ -920,6 +941,235 @@ public class AuthorsController : ControllerBase
                 : BadRequest(new { error = result.Error });
 
         return await Get(id, ct);
+    }
+
+    [HttpPost("{id:int}/books/openlibrary")]
+    public async Task<ActionResult<AuthorDetail>> AddOpenLibraryBook(
+        int id, [FromBody] AddOpenLibraryBookRequest body, CancellationToken ct)
+    {
+        var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (author is null) return NotFound(new { error = "Author not found" });
+        var add = await EnsureOpenLibraryBookAsync(
+            id, body.WorkKey, body.Title, body.FirstPublishYear, body.CoverId, body.Owned, ct);
+        if (add.Error is not null) return BadRequest(new { error = add.Error });
+        return await Get(id, ct);
+    }
+
+    [HttpPost("{id:int}/unmatched/{fileId:int}/openlibrary-match")]
+    public async Task<ActionResult<AuthorDetail>> MatchLocalFileToOpenLibraryWork(
+        int id, int fileId, [FromBody] MatchOpenLibraryFileRequest body, CancellationToken ct)
+    {
+        var currentAuthor = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (currentAuthor is null) return NotFound(new { error = "Author not found" });
+
+        var file = await _db.LocalBookFiles.FirstOrDefaultAsync(f => f.Id == fileId, ct);
+        if (file is null) return NotFound(new { error = "Local file not found" });
+        if (!FileBelongsToAuthor(file, currentAuthor))
+            return BadRequest(new { error = "File does not belong to this author" });
+
+        var targetAuthor = await ResolveTargetAuthorAsync(currentAuthor, body.PrimaryAuthorKey, body.PrimaryAuthorName, body.Authors, ct);
+        if (targetAuthor is null) return BadRequest(new { error = "Could not determine the OpenLibrary author for this work" });
+
+        var add = await EnsureOpenLibraryBookAsync(
+            targetAuthor.Id, body.WorkKey, body.Title, body.FirstPublishYear, body.CoverId, owned: false, ct);
+        if (add.Error is not null) return BadRequest(new { error = add.Error });
+
+        if (targetAuthor.Id != currentAuthor.Id)
+            await MoveFileToAuthorFolderAsync(file, targetAuthor, ct);
+        else
+        {
+            file.AuthorId = targetAuthor.Id;
+            if (string.IsNullOrWhiteSpace(file.AuthorFolder))
+                file.AuthorFolder = targetAuthor.CalibreFolderName ?? targetAuthor.Name;
+        }
+
+        file.BookId = add.Book!.Id;
+        file.ManuallyUnmatched = false;
+        await _db.SaveChangesAsync(ct);
+        return await Get(id, ct);
+    }
+
+    private sealed record EnsureOpenLibraryBookResult(Book? Book, string? Error);
+
+    private async Task<EnsureOpenLibraryBookResult> EnsureOpenLibraryBookAsync(
+        int authorId,
+        string? rawWorkKey,
+        string? rawTitle,
+        int? firstPublishYear,
+        int? coverId,
+        bool owned,
+        CancellationToken ct)
+    {
+        var workKey = rawWorkKey?.Trim();
+        if (string.IsNullOrWhiteSpace(workKey))
+            return new EnsureOpenLibraryBookResult(null, "OpenLibrary work key is required");
+        if (workKey.StartsWith("/works/", StringComparison.OrdinalIgnoreCase))
+            workKey = workKey[("/works/".Length)..];
+
+        var existing = await _db.Books.FirstOrDefaultAsync(
+            b => b.AuthorId == authorId && b.OpenLibraryWorkKey == workKey,
+            ct);
+        if (existing is not null)
+        {
+            if (owned && !existing.ManuallyOwned)
+            {
+                existing.ManuallyOwned = true;
+                existing.ManuallyOwnedAt = DateTime.UtcNow;
+            }
+            return new EnsureOpenLibraryBookResult(existing, null);
+        }
+
+        var cleanTitle = rawTitle?.Trim();
+        if (string.IsNullOrWhiteSpace(cleanTitle))
+            return new EnsureOpenLibraryBookResult(null, "Title is required");
+
+        var book = new Book
+        {
+            AuthorId = authorId,
+            OpenLibraryWorkKey = workKey,
+            Title = cleanTitle,
+            NormalizedTitle = TitleNormalizer.Normalize(cleanTitle),
+            FirstPublishYear = firstPublishYear,
+            CoverId = coverId,
+            ManuallyOwned = owned,
+            ManuallyOwnedAt = owned ? DateTime.UtcNow : null,
+            Subjects = "",
+        };
+
+        _db.Books.Add(book);
+        await _db.SaveChangesAsync(ct);
+        return new EnsureOpenLibraryBookResult(book, null);
+    }
+
+    private async Task<Author?> ResolveTargetAuthorAsync(
+        Author currentAuthor,
+        string? primaryAuthorKey,
+        string? primaryAuthorName,
+        string? fallbackAuthors,
+        CancellationToken ct)
+    {
+        var key = primaryAuthorKey?.Trim();
+        if (string.IsNullOrWhiteSpace(key)) return currentAuthor;
+        if (key.StartsWith("/authors/", StringComparison.OrdinalIgnoreCase))
+            key = key[("/authors/".Length)..];
+
+        if (string.Equals(currentAuthor.OpenLibraryKey, key, StringComparison.OrdinalIgnoreCase))
+            return currentAuthor;
+
+        var existing = await _db.Authors.FirstOrDefaultAsync(a => a.OpenLibraryKey == key, ct);
+        if (existing is not null) return existing;
+
+        var name = primaryAuthorName?.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+            name = fallbackAuthors?.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            try
+            {
+                var fetched = await _ol.FetchAuthorAsync(key, ct);
+                name = fetched?.Name?.Trim();
+            }
+            catch (OpenLibraryRequestFailedException)
+            {
+                name = null;
+            }
+        }
+        if (string.IsNullOrWhiteSpace(name)) return null;
+
+        var author = new Author
+        {
+            Name = name,
+            OpenLibraryKey = key,
+            Status = AuthorStatus.Pending,
+        };
+        _db.Authors.Add(author);
+        await _db.SaveChangesAsync(ct);
+        return author;
+    }
+
+    private async Task MoveFileToAuthorFolderAsync(LocalBookFile file, Author targetAuthor, CancellationToken ct)
+    {
+        var targetFolder = SanitizeSegment(targetAuthor.CalibreFolderName ?? targetAuthor.Name);
+        if (string.IsNullOrWhiteSpace(targetAuthor.CalibreFolderName))
+            targetAuthor.CalibreFolderName = targetFolder;
+
+        file.AuthorId = targetAuthor.Id;
+        var oldPath = file.FullPath;
+        file.AuthorFolder = targetFolder;
+
+        if (string.IsNullOrWhiteSpace(oldPath)) return;
+
+        var locations = await _db.LibraryLocations
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+
+        var location = locations.FirstOrDefault(l =>
+            oldPath.StartsWith(l.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase));
+        if (location is null) return;
+
+        var libRoot = location.TrimEnd('\\', '/');
+        var relative = oldPath[libRoot.Length..].TrimStart('\\', '/');
+        var firstSep = relative.IndexOfAny(new[] { '\\', '/' });
+        if (firstSep < 0) return;
+
+        var remainder = relative[(firstSep + 1)..];
+        var destPath = Path.Combine(libRoot, targetFolder, remainder);
+
+        if (System.IO.File.Exists(oldPath))
+        {
+            var destDir = Path.GetDirectoryName(destPath);
+            if (destDir is not null) Directory.CreateDirectory(destDir);
+            var final = UniqueFilePath(destPath);
+            System.IO.File.Move(oldPath, final);
+            file.FullPath = final;
+        }
+        else if (Directory.Exists(oldPath))
+        {
+            var destParent = Path.GetDirectoryName(destPath);
+            if (destParent is not null) Directory.CreateDirectory(destParent);
+            var final = UniqueDirectoryPath(destParent ?? libRoot, Path.GetFileName(destPath));
+            Directory.Move(oldPath, final);
+            file.FullPath = final;
+        }
+        else
+        {
+            file.FullPath = destPath;
+        }
+
+        var oldDir = Directory.Exists(oldPath) ? Path.GetDirectoryName(oldPath) : Path.GetDirectoryName(oldPath);
+        if (!string.IsNullOrWhiteSpace(oldDir)
+            && Directory.Exists(oldDir)
+            && !Directory.EnumerateFileSystemEntries(oldDir).Any())
+        {
+            try { Directory.Delete(oldDir); } catch { }
+        }
+    }
+
+    private static string UniqueFilePath(string desired)
+    {
+        if (!System.IO.File.Exists(desired) && !Directory.Exists(desired)) return desired;
+        var dir = Path.GetDirectoryName(desired) ?? "";
+        var stem = Path.GetFileNameWithoutExtension(desired);
+        var ext = Path.GetExtension(desired);
+        for (var i = 2; i < 1000; i++)
+        {
+            var next = Path.Combine(dir, $"{stem}_{i}{ext}");
+            if (!System.IO.File.Exists(next) && !Directory.Exists(next)) return next;
+        }
+        return Path.Combine(dir, $"{stem}_{DateTime.UtcNow:yyyyMMddHHmmss}{ext}");
+    }
+
+    private static string UniqueDirectoryPath(string parent, string leaf)
+    {
+        var candidate = Path.Combine(parent, leaf);
+        if (!Directory.Exists(candidate) && !System.IO.File.Exists(candidate)) return candidate;
+        for (var i = 2; i < 1000; i++)
+        {
+            var next = Path.Combine(parent, $"{leaf} ({i})");
+            if (!Directory.Exists(next) && !System.IO.File.Exists(next)) return next;
+        }
+        return Path.Combine(parent, $"{leaf} ({DateTime.UtcNow:yyyyMMddHHmmss})");
     }
 
     // Updates CalibreFolderName for every member of `author`'s collision group

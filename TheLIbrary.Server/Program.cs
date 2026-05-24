@@ -70,6 +70,7 @@ builder.Services.AddSingleton<SyncService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.SeriesOrganizerService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.AuthorFolderDisambiguatorService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.SameNameAuthorService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.PhysicalAuthorStarService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnzipService>();
 
 // Hangfire uses the same SQL Server database for its job store so a restart

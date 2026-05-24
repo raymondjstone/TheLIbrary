@@ -85,6 +85,64 @@ public class AuthorsControllerIntegrationTests
     }
 
     [Fact]
+    public async Task AddOpenLibraryBook_Creates_Work_For_Author()
+    {
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db => db.Authors.Add(new Author { Id = 1, Name = "Author" }));
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/authors/1/books/openlibrary",
+            new AuthorsController.AddOpenLibraryBookRequest("/works/OL123W", "Open Work", 1986, 42, "Author", true));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        var book = Assert.Single(db.Books.Where(b => b.AuthorId == 1));
+        Assert.Equal("OL123W", book.OpenLibraryWorkKey);
+        Assert.Equal("Open Work", book.Title);
+        Assert.True(book.ManuallyOwned);
+    }
+
+    [Fact]
+    public async Task MatchLocalFileToOpenLibraryWork_Creates_Book_And_Matches_File()
+    {
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Author", OpenLibraryKey = "OL1A" });
+            db.LocalBookFiles.Add(new LocalBookFile
+            {
+                Id = 10,
+                AuthorId = 1,
+                AuthorFolder = "Author",
+                TitleFolder = "Open Work",
+                FullPath = "C:\\Lib\\Author\\Open Work",
+                ManuallyUnmatched = true,
+            });
+            db.LibraryLocations.Add(new LibraryLocation
+            {
+                Id = 1,
+                Label = "Default",
+                Path = "C:\\Lib",
+                Enabled = true,
+                CreatedAt = DateTime.UtcNow,
+            });
+        });
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/authors/1/unmatched/10/openlibrary-match",
+            new AuthorsController.MatchOpenLibraryFileRequest("/works/OL123W", "Open Work", 1986, 42, "Author", "OL1A", "Author"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        var book = Assert.Single(db.Books);
+        var file = Assert.Single(db.LocalBookFiles);
+        Assert.Equal(book.Id, file.BookId);
+        Assert.False(file.ManuallyUnmatched);
+    }
+
+    [Fact]
     public async Task AddAuthor_Rejects_Blacklisted_Name_When_Name_Is_Provided()
     {
         using var factory = new LibraryApiFactory();
