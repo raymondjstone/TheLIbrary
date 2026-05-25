@@ -82,6 +82,23 @@ public class ScheduledJobsTests
         Assert.True(attempts >= 2);
     }
 
+    [Fact]
+    public async Task RunRefreshDueWorks_Skips_When_Hangfire_Queue_Is_Longer_Than_Three_Items()
+    {
+        ScheduledJobs.HangfireQueueLengthProviderOverride = () => 4;
+        try
+        {
+            var lifetime = new FakeHostLifetime();
+            var jobs = new ScheduledJobs(null!, null!, null!, null!, null!, null!, null!, null!, null!, lifetime, NullLogger<ScheduledJobs>.Instance);
+
+            await jobs.RunRefreshDueWorks();
+        }
+        finally
+        {
+            ScheduledJobs.HangfireQueueLengthProviderOverride = null;
+        }
+    }
+
     private sealed class FakeHostLifetime : IHostApplicationLifetime
     {
         public CancellationToken ApplicationStarted => CancellationToken.None;

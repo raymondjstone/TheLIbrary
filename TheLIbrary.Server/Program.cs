@@ -139,6 +139,7 @@ if (!skipStartupTasks)
     if (!disableHangfire)
     {
         var schedules = scope.ServiceProvider.GetRequiredService<ScheduleService>();
+        await schedules.ClearFailedJobsAsync();
         await schedules.ApplyAllAsync();
     }
 }

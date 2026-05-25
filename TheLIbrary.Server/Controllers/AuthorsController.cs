@@ -1049,7 +1049,7 @@ public class AuthorsController : ControllerBase
     }
 
     private async Task<Author?> ResolveTargetAuthorAsync(
-        Author currentAuthor,
+        Author? currentAuthor,
         string? primaryAuthorKey,
         string? primaryAuthorName,
         string? fallbackAuthors,
@@ -1060,7 +1060,7 @@ public class AuthorsController : ControllerBase
         if (key.StartsWith("/authors/", StringComparison.OrdinalIgnoreCase))
             key = key[("/authors/".Length)..];
 
-        if (string.Equals(currentAuthor.OpenLibraryKey, key, StringComparison.OrdinalIgnoreCase))
+        if (currentAuthor is not null && string.Equals(currentAuthor.OpenLibraryKey, key, StringComparison.OrdinalIgnoreCase))
             return currentAuthor;
 
         var existing = await _db.Authors.FirstOrDefaultAsync(a => a.OpenLibraryKey == key, ct);
@@ -1081,6 +1081,7 @@ public class AuthorsController : ControllerBase
                 name = null;
             }
         }
+
         if (string.IsNullOrWhiteSpace(name)) return null;
 
         var author = new Author
@@ -1092,6 +1093,129 @@ public class AuthorsController : ControllerBase
         _db.Authors.Add(author);
         await _db.SaveChangesAsync(ct);
         return author;
+    }
+
+    private async Task<string> MoveUntrackedPathToAuthorFolderAsync(
+        string sourcePath,
+        string rootPath,
+        string? relativePath,
+        Author targetAuthor,
+        CancellationToken ct)
+    {
+        var targetFolder = SanitizeSegment(targetAuthor.CalibreFolderName ?? targetAuthor.Name);
+        if (string.IsNullOrWhiteSpace(targetAuthor.CalibreFolderName))
+            targetAuthor.CalibreFolderName = targetFolder;
+
+        var root = rootPath.TrimEnd('\\', '/');
+        var relative = NormalizeRelativePath(relativePath);
+        var destPath = string.IsNullOrWhiteSpace(relative)
+            ? Path.Combine(root, targetFolder, Path.GetFileName(sourcePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)))
+            : Path.Combine(root, targetFolder, relative.Replace('/', Path.DirectorySeparatorChar));
+
+        if (System.IO.File.Exists(sourcePath))
+        {
+            var destDir = Path.GetDirectoryName(destPath);
+            if (!string.IsNullOrWhiteSpace(destDir))
+                Directory.CreateDirectory(destDir);
+            var final = UniqueFilePath(destPath);
+            System.IO.File.Move(sourcePath, final);
+            await PruneEmptyParentsAsync(Path.GetDirectoryName(sourcePath), root, ct);
+            return final;
+        }
+
+        if (Directory.Exists(sourcePath))
+        {
+            var destParent = Path.GetDirectoryName(destPath) ?? Path.Combine(root, targetFolder);
+            Directory.CreateDirectory(destParent);
+            var final = UniqueDirectoryPath(destParent, Path.GetFileName(destPath));
+            Directory.Move(sourcePath, final);
+            await PruneEmptyParentsAsync(Path.GetDirectoryName(sourcePath), root, ct);
+            return final;
+        }
+
+        return destPath;
+    }
+
+    private static async Task PruneEmptyParentsAsync(string? startPath, string stopRoot, CancellationToken ct)
+    {
+        var stop = Path.GetFullPath(stopRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var current = startPath;
+        while (!string.IsNullOrWhiteSpace(current))
+        {
+            ct.ThrowIfCancellationRequested();
+            var full = Path.GetFullPath(current).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (!full.StartsWith(stop, StringComparison.OrdinalIgnoreCase) || string.Equals(full, stop, StringComparison.OrdinalIgnoreCase))
+                break;
+            if (Directory.Exists(full) && !Directory.EnumerateFileSystemEntries(full).Any())
+            {
+                try { Directory.Delete(full); }
+                catch { break; }
+                current = Path.GetDirectoryName(full);
+                continue;
+            }
+            break;
+        }
+        await Task.CompletedTask;
+    }
+
+    private async Task<string?> ResolveUntrackedSourcePathAsync(
+        string bucket,
+        string folder,
+        string rootPath,
+        string? relativePath,
+        CancellationToken ct)
+    {
+        var root = (await _db.LibraryLocations
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct))
+            .FirstOrDefault(p => string.Equals(p, rootPath?.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(root)) return null;
+
+        var normalizedBucket = bucket?.Trim().ToLowerInvariant();
+        var normalizedRelative = NormalizeRelativePath(relativePath);
+        var basePath = normalizedBucket switch
+        {
+            "unclaimed" => Path.Combine(root, folder),
+            "unknown" => Path.Combine(root, CalibreScanner.UnknownAuthorFolder, folder),
+            _ => null,
+        };
+        if (string.IsNullOrWhiteSpace(basePath)) return null;
+
+        var combined = string.IsNullOrWhiteSpace(normalizedRelative)
+            ? basePath
+            : Path.Combine(basePath, normalizedRelative.Replace('/', Path.DirectorySeparatorChar));
+        var fullBase = Path.GetFullPath(basePath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var fullCombined = Path.GetFullPath(combined);
+        if (!fullCombined.StartsWith(fullBase, StringComparison.OrdinalIgnoreCase))
+            return null;
+        return fullCombined;
+    }
+
+    private static string? FindLibraryRootForPath(string? fullPath, IReadOnlyList<string> roots)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath)) return null;
+        return roots.FirstOrDefault(root =>
+        {
+            var cleanRoot = root.TrimEnd('\\', '/');
+            return fullPath.StartsWith(cleanRoot, StringComparison.OrdinalIgnoreCase);
+        });
+    }
+
+    private static string NormalizeRelativePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return "";
+        var parts = path.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return string.Join('/', parts.Where(p => p != "." && p != ".."));
+    }
+
+    private static string CombineRelativePath(string? parent, string child)
+    {
+        var cleanParent = NormalizeRelativePath(parent);
+        var cleanChild = NormalizeRelativePath(child);
+        if (string.IsNullOrWhiteSpace(cleanParent)) return cleanChild;
+        if (string.IsNullOrWhiteSpace(cleanChild)) return cleanParent;
+        return $"{cleanParent}/{cleanChild}";
     }
 
     private async Task MoveFileToAuthorFolderAsync(LocalBookFile file, Author targetAuthor, CancellationToken ct)
@@ -1569,19 +1693,159 @@ public class AuthorsController : ControllerBase
         return NoContent();
     }
 
-    public sealed record UnclaimedFolder(string AuthorFolder, int FileCount);
+    public sealed record UnclaimedFolder(string AuthorFolder, int FileCount, IReadOnlyList<string> RootPaths);
+
+    public sealed record UntrackedFolderEntry(
+        string Name,
+        string RelativePath,
+        bool IsDirectory,
+        string SearchQuery);
+
+    public sealed record UntrackedFolderContents(
+        string Bucket,
+        string Folder,
+        string RootPath,
+        string CurrentPath,
+        string? ParentPath,
+        IReadOnlyList<UntrackedFolderEntry> Entries);
+
+    public sealed record MatchUntrackedOpenLibraryRequest(
+        string Bucket,
+        string Folder,
+        string RootPath,
+        string? RelativePath,
+        string? WorkKey,
+        string? Title,
+        int? FirstPublishYear,
+        int? CoverId,
+        string? Authors,
+        string? PrimaryAuthorKey,
+        string? PrimaryAuthorName);
 
     // Calibre author folders that don't match any tracked author.
     [HttpGet("~/api/unclaimed")]
     public async Task<IReadOnlyList<UnclaimedFolder>> Unclaimed(CancellationToken ct)
     {
+        var locations = await _db.LibraryLocations
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+
         var rows = await _db.LocalBookFiles.AsNoTracking()
             .Where(f => f.AuthorId == null)
-            .GroupBy(f => f.AuthorFolder)
-            .Select(g => new { Folder = g.Key, Count = g.Count() })
-            .OrderBy(r => r.Folder)
             .ToListAsync(ct);
-        return rows.Select(r => new UnclaimedFolder(r.Folder, r.Count)).ToList();
+
+        return rows
+            .GroupBy(f => f.AuthorFolder)
+            .OrderBy(g => g.Key)
+            .Select(g => new UnclaimedFolder(
+                g.Key,
+                g.Count(),
+                g.Select(f => FindLibraryRootForPath(f.FullPath, locations))
+                    .Where(p => !string.IsNullOrWhiteSpace(p))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Cast<string>()
+                    .ToList()))
+            .ToList();
+    }
+
+    [HttpGet("~/api/untracked/contents")]
+    public async Task<ActionResult<UntrackedFolderContents>> GetUntrackedContents(
+        [FromQuery] string bucket,
+        [FromQuery] string folder,
+        [FromQuery] string rootPath,
+        [FromQuery] string? path,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(bucket) || string.IsNullOrWhiteSpace(folder) || string.IsNullOrWhiteSpace(rootPath))
+            return BadRequest(new { error = "bucket, folder, and rootPath are required" });
+
+        var sourcePath = await ResolveUntrackedSourcePathAsync(bucket, folder, rootPath, path, ct);
+        if (sourcePath is null)
+            return NotFound(new { error = "Folder not found" });
+        if (!Directory.Exists(sourcePath))
+            return BadRequest(new { error = "Only folders can be drilled into" });
+
+        var relativePath = NormalizeRelativePath(path);
+        var parentPath = string.IsNullOrWhiteSpace(relativePath)
+            ? null
+            : NormalizeRelativePath(Path.GetDirectoryName(relativePath)?.Replace('\\', '/'));
+
+        var entries = Directory.EnumerateFileSystemEntries(sourcePath)
+            .Where(p => Directory.Exists(p)
+                        || CalibreScanner.EbookExtensions.Contains(Path.GetExtension(p))
+                        || CalibreScanner.ArchiveExtensions.Contains(Path.GetExtension(p)))
+            .Select(p => new
+            {
+                Path = p,
+                Name = Path.GetFileName(p),
+                IsDirectory = Directory.Exists(p)
+            })
+            .OrderByDescending(x => x.IsDirectory)
+            .ThenBy(x => x.Name)
+            .Select(x => new UntrackedFolderEntry(
+                x.Name,
+                CombineRelativePath(relativePath, x.Name),
+                x.IsDirectory,
+                x.IsDirectory ? x.Name : Path.GetFileNameWithoutExtension(x.Name)))
+            .ToList();
+
+        return Ok(new UntrackedFolderContents(bucket.Trim(), folder.Trim(), rootPath.Trim(), relativePath, parentPath, entries));
+    }
+
+    [HttpPost("~/api/untracked/match-openlibrary")]
+    public async Task<ActionResult<object>> MatchUntrackedToOpenLibrary(
+        [FromBody] MatchUntrackedOpenLibraryRequest body,
+        CancellationToken ct)
+    {
+        var sourcePath = await ResolveUntrackedSourcePathAsync(body.Bucket, body.Folder, body.RootPath, body.RelativePath, ct);
+        if (sourcePath is null)
+            return NotFound(new { error = "Selected path not found" });
+
+        var targetAuthor = await ResolveTargetAuthorAsync(
+            null,
+            body.PrimaryAuthorKey,
+            body.PrimaryAuthorName,
+            body.Authors,
+            ct);
+        if (targetAuthor is null)
+            return BadRequest(new { error = "Could not determine the OpenLibrary author for this work" });
+
+        var add = await EnsureOpenLibraryBookAsync(
+            targetAuthor.Id,
+            body.WorkKey,
+            body.Title,
+            body.FirstPublishYear,
+            body.CoverId,
+            owned: false,
+            ct);
+        if (add.Error is not null)
+            return BadRequest(new { error = add.Error });
+
+        var existing = await _db.LocalBookFiles.FirstOrDefaultAsync(f => f.FullPath == sourcePath, ct);
+        var file = existing ?? new LocalBookFile();
+        if (existing is null)
+            _db.LocalBookFiles.Add(file);
+
+        var finalPath = await MoveUntrackedPathToAuthorFolderAsync(
+            sourcePath,
+            body.RootPath,
+            NormalizeRelativePath(body.RelativePath),
+            targetAuthor,
+            ct);
+
+        file.AuthorId = targetAuthor.Id;
+        file.BookId = add.Book!.Id;
+        file.ManuallyUnmatched = false;
+        file.AuthorFolder = targetAuthor.CalibreFolderName ?? targetAuthor.Name;
+        file.TitleFolder = Directory.Exists(finalPath)
+            ? Path.GetFileName(finalPath)
+            : Path.GetFileNameWithoutExtension(finalPath);
+        file.FullPath = finalPath;
+        file.NormalizedTitle = TitleNormalizer.Normalize(file.TitleFolder);
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { authorId = targetAuthor.Id, bookId = add.Book.Id, fullPath = finalPath });
     }
 
     // Moves all files for an untracked folder back to incoming, deletes the
@@ -1751,7 +2015,7 @@ public class AuthorsController : ControllerBase
         return NoContent();
     }
 
-    public sealed record UnknownFolder(string AuthorFolder, int FileCount);
+    public sealed record UnknownFolder(string AuthorFolder, int FileCount, IReadOnlyList<string> RootPaths);
 
     // Lists author-level folders that exist inside the __unknown quarantine
     // bucket across all enabled library locations.
@@ -1763,7 +2027,7 @@ public class AuthorsController : ControllerBase
             .Select(l => l.Path)
             .ToListAsync(ct);
 
-        var result = new List<UnknownFolder>();
+        var result = new List<(string Folder, int Count, string RootPath)>();
         foreach (var root in locations)
         {
             var unknownRoot = Path.Combine(root, CalibreScanner.UnknownAuthorFolder);
@@ -1772,11 +2036,18 @@ public class AuthorsController : ControllerBase
             {
                 var fileCount = Directory.GetFiles(dir, "*", SearchOption.AllDirectories).Length;
                 if (fileCount > 0)
-                    result.Add(new UnknownFolder(Path.GetFileName(dir), fileCount));
+                    result.Add((Folder: Path.GetFileName(dir), Count: fileCount, RootPath: root));
             }
         }
 
-        return result.OrderBy(r => r.AuthorFolder).ToList();
+        return result
+            .GroupBy(r => r.Folder)
+            .OrderBy(g => g.Key)
+            .Select(g => new UnknownFolder(
+                g.Key,
+                g.Sum(x => x.Count),
+                g.Select(x => x.RootPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList()))
+            .ToList();
     }
 
     // Moves a single __unknown author folder back to the incoming bucket so it

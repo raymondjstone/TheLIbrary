@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Hangfire;
 using Hangfire.Storage;
+using Hangfire.Storage.Monitoring;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
@@ -13,13 +14,15 @@ namespace TheLibrary.Server.Services.Scheduling;
 public sealed class ScheduleService
 {
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IBackgroundJobClient _backgroundJobs;
     private readonly IRecurringJobManager _recurring;
     private readonly ILogger<ScheduleService> _log;
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web) { WriteIndented = false };
 
-    public ScheduleService(IServiceScopeFactory scopeFactory, IRecurringJobManager recurring, ILogger<ScheduleService> log)
+    public ScheduleService(IServiceScopeFactory scopeFactory, IBackgroundJobClient backgroundJobs, IRecurringJobManager recurring, ILogger<ScheduleService> log)
     {
         _scopeFactory = scopeFactory;
+        _backgroundJobs = backgroundJobs;
         _recurring = recurring;
         _log = log;
     }
@@ -101,6 +104,34 @@ public sealed class ScheduleService
             map[id] = job?.NextExecution;
         }
         return map;
+    }
+
+    public Task<int> ClearFailedJobsAsync(CancellationToken ct = default)
+    {
+        const int pageSize = 1000;
+        int deleted = 0;
+
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var batch = JobStorage.Current.GetMonitoringApi().FailedJobs(0, pageSize);
+            if (batch.Count == 0) break;
+
+            foreach (var jobId in batch.Select(x => x.Key).ToList())
+            {
+                ct.ThrowIfCancellationRequested();
+                if (_backgroundJobs.Delete(jobId))
+                    deleted++;
+            }
+
+            if (batch.Count < pageSize) break;
+        }
+
+        if (deleted > 0)
+            _log.LogInformation("Removed {Count} failed Hangfire job(s) during startup cleanup", deleted);
+
+        return Task.FromResult(deleted);
     }
 
     private void ApplyOne(string jobId, ScheduleEntry entry)

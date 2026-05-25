@@ -18,7 +18,7 @@ public sealed class OpenLibraryRateLimiter
 
     private readonly OpenLibrarySettings _settings;
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private DateTime _lastCallUtc = DateTime.MinValue;
+    private DateTime _nextAllowedStartUtc = DateTime.MinValue;
     private volatile bool _demoted;
 
     public OpenLibraryRateLimiter(OpenLibrarySettings settings)
@@ -35,6 +35,7 @@ public sealed class OpenLibraryRateLimiter
 
     public async Task<T> RunAsync<T>(Func<Task<T>> action, CancellationToken ct)
     {
+        TimeSpan wait;
         await _gate.WaitAsync(ct);
         try
         {
@@ -42,22 +43,19 @@ public sealed class OpenLibraryRateLimiter
                 ? IdentifiedInterval
                 : AnonymousInterval;
 
-            var wait = interval - (DateTime.UtcNow - _lastCallUtc);
-            if (wait > TimeSpan.Zero)
-                await Task.Delay(wait, ct);
-
-            try
-            {
-                return await action();
-            }
-            finally
-            {
-                _lastCallUtc = DateTime.UtcNow;
-            }
+            var now = DateTime.UtcNow;
+            var startAt = _nextAllowedStartUtc > now ? _nextAllowedStartUtc : now;
+            wait = startAt - now;
+            _nextAllowedStartUtc = startAt + interval;
         }
         finally
         {
             _gate.Release();
         }
+
+        if (wait > TimeSpan.Zero)
+            await Task.Delay(wait, ct);
+
+        return await action();
     }
 }

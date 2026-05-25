@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using TheLibrary.Server.Controllers;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Tests.Infrastructure;
 using Xunit;
 
@@ -140,6 +141,86 @@ public class AuthorsControllerIntegrationTests
         var file = Assert.Single(db.LocalBookFiles);
         Assert.Equal(book.Id, file.BookId);
         Assert.False(file.ManuallyUnmatched);
+    }
+
+    [Fact]
+    public async Task GetUntrackedContents_Lists_Nested_Files_For_Unclaimed_Folder()
+    {
+        using var factory = new LibraryApiFactory();
+        var root = Path.Combine(Path.GetTempPath(), $"thelibrary-untracked-{Guid.NewGuid():N}");
+        var authorDir = Path.Combine(root, "Loose Author");
+        var nestedDir = Path.Combine(authorDir, "Series Shelf");
+        Directory.CreateDirectory(nestedDir);
+        await File.WriteAllTextAsync(Path.Combine(nestedDir, "Loose Match.epub"), "test");
+
+        try
+        {
+            await SeedAsync(factory, db =>
+            {
+                db.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "Default", Path = root, Enabled = true, CreatedAt = DateTime.UtcNow });
+                db.LocalBookFiles.Add(new LocalBookFile { Id = 1, AuthorFolder = "Loose Author", TitleFolder = "Series Shelf", FullPath = Path.Combine(authorDir, "Series Shelf") });
+            });
+            using var client = factory.CreateClient();
+
+            var res = await client.GetFromJsonAsync<AuthorsController.UntrackedFolderContents>($"/api/untracked/contents?bucket=unclaimed&folder={Uri.EscapeDataString("Loose Author")}&rootPath={Uri.EscapeDataString(root)}&path={Uri.EscapeDataString("Series Shelf")}");
+
+            Assert.NotNull(res);
+            Assert.Equal("Series Shelf", res!.CurrentPath);
+            Assert.Contains(res.Entries, e => e.RelativePath == "Series Shelf/Loose Match.epub" && !e.IsDirectory);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task MatchUntrackedToOpenLibrary_Moves_File_And_Creates_Book()
+    {
+        using var factory = new LibraryApiFactory();
+        var root = Path.Combine(Path.GetTempPath(), $"thelibrary-untracked-{Guid.NewGuid():N}");
+        var sourceDir = Path.Combine(root, CalibreScanner.UnknownAuthorFolder, "Loose Author", "Series Shelf");
+        Directory.CreateDirectory(sourceDir);
+        var sourceFile = Path.Combine(sourceDir, "Loose Match.epub");
+        await File.WriteAllTextAsync(sourceFile, "test");
+
+        try
+        {
+            await SeedAsync(factory, db =>
+            {
+                db.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "Default", Path = root, Enabled = true, CreatedAt = DateTime.UtcNow });
+            });
+            using var client = factory.CreateClient();
+
+            var response = await client.PostAsJsonAsync("/api/untracked/match-openlibrary",
+                new AuthorsController.MatchUntrackedOpenLibraryRequest(
+                    "unknown",
+                    "Loose Author",
+                    root,
+                    "Series Shelf/Loose Match.epub",
+                    "/works/OL999W",
+                    "Loose Match",
+                    2001,
+                    42,
+                    "Target Author",
+                    "OL123A",
+                    "Target Author"));
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var scope = factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+            var author = Assert.Single(db.Authors);
+            var book = Assert.Single(db.Books);
+            var file = Assert.Single(db.LocalBookFiles);
+            Assert.Equal(author.Id, file.AuthorId);
+            Assert.Equal(book.Id, file.BookId);
+            Assert.DoesNotContain($"{Path.DirectorySeparatorChar}__unknown{Path.DirectorySeparatorChar}", file.FullPath, StringComparison.OrdinalIgnoreCase);
+            Assert.True(File.Exists(file.FullPath));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]

@@ -17,6 +17,8 @@ namespace TheLibrary.Server.Services.Scheduling;
 // instance that fires after the schedule is disabled is silently discarded.
 public sealed class ScheduledJobs
 {
+    internal static Func<int>? HangfireQueueLengthProviderOverride;
+
     private readonly SyncService _sync;
     private readonly IncomingService _incoming;
     private readonly SeriesOrganizerService _organizer;
@@ -78,10 +80,21 @@ public sealed class ScheduledJobs
         () => _incoming.IsRunning);
 
     [AutomaticRetry(Attempts = 0)]
-    public Task RunRefreshDueWorks(bool manualTrigger = false) => RunWithPolling(
-        ScheduleJobIds.RefreshWorks, manualTrigger,
-        ct => _sync.TryStartRefreshDueWorks(ct, out var err) ? (true, err) : (false, err),
-        () => _sync.IsRunning);
+    public Task RunRefreshDueWorks(bool manualTrigger = false)
+    {
+        if (!manualTrigger && GetTotalHangfireQueueLength() > 3)
+        {
+            _log.LogInformation(
+                "Scheduled job {Job} skipped because the Hangfire queue length is above the threshold",
+                ScheduleJobIds.RefreshWorks);
+            return Task.CompletedTask;
+        }
+
+        return RunWithPolling(
+            ScheduleJobIds.RefreshWorks, manualTrigger,
+            ct => _sync.TryStartRefreshDueWorks(ct, out var err) ? (true, err) : (false, err),
+            () => _sync.IsRunning);
+    }
 
     [AutomaticRetry(Attempts = 0)]
     public Task RunOrganizeSeries(bool manualTrigger = false) => RunWithPolling(
@@ -204,5 +217,21 @@ public sealed class ScheduledJobs
         }
 
         _log.LogInformation("Scheduled job {Job} finished", jobId);
+    }
+
+    private static int GetTotalHangfireQueueLength()
+    {
+        try
+        {
+            if (HangfireQueueLengthProviderOverride is not null)
+                return HangfireQueueLengthProviderOverride();
+
+            var queues = JobStorage.Current.GetMonitoringApi().Queues();
+            return (int)Math.Min(int.MaxValue, queues.Sum(q => Math.Max(0L, q.Length)));
+        }
+        catch
+        {
+            return 0;
+        }
     }
 }

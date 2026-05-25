@@ -5,6 +5,13 @@ const inputStyle = {
     borderRadius: '4px', fontSize: '0.85rem',
 }
 
+const panelStyle = {
+    border: '1px solid var(--border)',
+    borderRadius: '8px',
+    padding: '0.75rem',
+    background: 'var(--bg, transparent)',
+}
+
 function openLibraryCoverSrc(coverId, size = 'S') {
     return coverId ? `https://covers.openlibrary.org/b/id/${coverId}-${size}.jpg` : null
 }
@@ -109,15 +116,20 @@ export default function OpenLibraryWorkSearch({
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
             {introText && <p className="subtle" style={{ margin: 0 }}>{introText}</p>}
-            <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                <input
-                    placeholder={searchPlaceholder}
-                    value={query}
-                    onChange={e => setQuery(e.target.value)}
-                    style={{ ...inputStyle, minWidth: '16rem' }} />
-                <button type="button" disabled={busy || actionBusy} onClick={() => search(query)}>
-                    {busy ? 'Searching…' : 'Search again'}
-                </button>
+            <div style={panelStyle}>
+                <label style={{ display: 'grid', gap: '0.45rem' }}>
+                    <span style={{ fontWeight: 600 }}>Book title search</span>
+                    <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                        <input
+                            placeholder={searchPlaceholder}
+                            value={query}
+                            onChange={e => setQuery(e.target.value)}
+                            style={{ ...inputStyle, minWidth: '18rem', flex: '1 1 16rem' }} />
+                        <button type="button" disabled={busy || actionBusy} onClick={() => search(query)}>
+                            {busy ? 'Searching…' : 'Search OpenLibrary'}
+                        </button>
+                    </div>
+                </label>
             </div>
             {status && <p className="subtle" style={{ margin: 0 }}>{status}</p>}
             {error && <p className="error" style={{ margin: 0 }}>{error}</p>}
@@ -126,7 +138,10 @@ export default function OpenLibraryWorkSearch({
             )}
             {results?.length > 0 && (
                 <>
-                    <p className="subtle" style={{ margin: 0 }}>{resultText}</p>
+                    <div style={panelStyle}>
+                        <p className="subtle" style={{ margin: 0 }}>{resultText}</p>
+                        <p className="subtle" style={{ margin: '0.35rem 0 0' }}>Choose one result below, then use the selected OpenLibrary match.</p>
+                    </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
                         {results.map(work => (
                             <button key={work.key} type="button"
@@ -150,6 +165,11 @@ export default function OpenLibraryWorkSearch({
                     </div>
                     {onUse && (
                         <div>
+                            {selectedWork && (
+                                <p className="subtle" style={{ margin: '0 0 0.45rem' }}>
+                                    Selected match: <strong>{selectedWork.title}</strong> {selectedWork.firstPublishYear ? `(${selectedWork.firstPublishYear})` : ''}
+                                </p>
+                            )}
                             <button type="button" disabled={busy || actionBusy || !selectedWork} onClick={useSelected}>
                                 {actionBusy ? actionBusyLabel : actionLabel}
                             </button>
