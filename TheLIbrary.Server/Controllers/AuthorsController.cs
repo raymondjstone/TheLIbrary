@@ -1848,6 +1848,49 @@ public class AuthorsController : ControllerBase
         return Ok(new { authorId = targetAuthor.Id, bookId = add.Book.Id, fullPath = finalPath });
     }
 
+    [HttpDelete("~/api/untracked")]
+    public async Task<IActionResult> DeleteUntrackedPath(
+        [FromQuery] string bucket,
+        [FromQuery] string folder,
+        [FromQuery] string rootPath,
+        [FromQuery] string? path,
+        CancellationToken ct)
+    {
+        var sourcePath = await ResolveUntrackedSourcePathAsync(bucket, folder, rootPath, path, ct);
+        if (sourcePath is null)
+            return NotFound(new { error = "Selected path not found" });
+
+        var isDirectory = _fs.DirectoryExists(sourcePath);
+        var isFile = _fs.FileExists(sourcePath);
+        if (!isDirectory && !isFile)
+            return NotFound(new { error = "Selected path no longer exists on disk" });
+
+        if (isDirectory)
+            _fs.DeleteDirectory(sourcePath, recursive: true);
+        else
+            _fs.DeleteFile(sourcePath);
+
+        var normalizedSource = sourcePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var directParent = Path.GetDirectoryName(normalizedSource);
+        var prefix1 = normalizedSource + Path.DirectorySeparatorChar;
+        var prefix2 = normalizedSource + Path.AltDirectorySeparatorChar;
+
+        var staleRows = await _db.LocalBookFiles
+            .Where(f => f.FullPath == normalizedSource
+                     || (isDirectory && (f.FullPath.StartsWith(prefix1) || f.FullPath.StartsWith(prefix2)))
+                     || (!isDirectory && directParent != null && f.FullPath == directParent))
+            .ToListAsync(ct);
+        if (staleRows.Count > 0)
+            _db.LocalBookFiles.RemoveRange(staleRows);
+
+        var bucketRoot = await ResolveUntrackedSourcePathAsync(bucket, folder, rootPath, null, ct);
+        if (!string.IsNullOrWhiteSpace(bucketRoot))
+            await PruneEmptyParentsAsync(Path.GetDirectoryName(normalizedSource), bucketRoot, ct);
+
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
     // Moves all files for an untracked folder back to incoming, deletes the
     // (now-empty) author folder from the library, and removes the DB rows.
     [HttpDelete("~/api/unclaimed")]

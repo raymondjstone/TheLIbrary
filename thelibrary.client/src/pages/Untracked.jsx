@@ -115,6 +115,8 @@ export default function Untracked() {
     const useOpenLibraryMatch = async (work) => {
         if (!folderBrowser) return
         setMatchingPath(folderBrowser.currentPath || `${folderBrowser.bucket}:${folderBrowser.folder}`)
+        const { bucket, folder, rootPath, currentPath } = folderBrowser
+        const hadMultipleEntries = (folderBrowser.entries?.length ?? 0) > 1
         try {
             const r = await fetch('/api/untracked/match-openlibrary', {
                 method: 'POST',
@@ -134,7 +136,11 @@ export default function Untracked() {
                 }),
             })
             if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText)
-            setFolderBrowser(null)
+            if (hadMultipleEntries) {
+                await browseFolder(bucket, folder, rootPath, currentPath)
+            } else {
+                setFolderBrowser(null)
+            }
             await load()
         } finally {
             setMatchingPath(null)
@@ -205,6 +211,60 @@ export default function Untracked() {
     const [disambigStatus, setDisambigStatus] = useState(null)
     const [suggestionsByFolder, setSuggestionsByFolder] = useState({})  // folder -> { loading, items, error }
     const [quickAddBusy, setQuickAddBusy] = useState(null)
+    const [deletingFolder, setDeletingFolder] = useState(null)
+    const [deletingEntry, setDeletingEntry] = useState(null)
+
+    const deleteUntrackedPath = async ({ bucket, folder, rootPath, path, label }) => {
+        const confirmMsg = path
+            ? `Permanently delete "${label || path}" from disk?\n\nThis cannot be undone.`
+            : `Permanently delete the entire folder "${folder}" from disk?\n\nThis removes every file inside and cannot be undone.`
+        if (!window.confirm(confirmMsg)) return false
+        const qs = new URLSearchParams({ bucket, folder, rootPath })
+        if (path) qs.set('path', path)
+        const r = await fetch(`/api/untracked?${qs.toString()}`, { method: 'DELETE' })
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText)
+        return true
+    }
+
+    const deleteTopLevelFolder = async (bucket, u) => {
+        const rootPath = u.rootPaths?.[0]
+        if (!rootPath) {
+            setError(`Cannot delete "${u.authorFolder}" — no root path available.`)
+            return
+        }
+        setDeletingFolder(`${bucket}:${u.authorFolder}`)
+        setError(null)
+        try {
+            const ok = await deleteUntrackedPath({ bucket, folder: u.authorFolder, rootPath })
+            if (ok) await load()
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setDeletingFolder(null) }
+    }
+
+    const deleteBrowserEntry = async (entry) => {
+        if (!folderBrowser) return
+        setDeletingEntry(entry.relativePath)
+        setError(null)
+        try {
+            const ok = await deleteUntrackedPath({
+                bucket: folderBrowser.bucket,
+                folder: folderBrowser.folder,
+                rootPath: folderBrowser.rootPath,
+                path: entry.relativePath,
+                label: entry.name,
+            })
+            if (!ok) return
+            // Refresh either the current folder, or close if we just deleted it.
+            if (entry.relativePath === folderBrowser.currentPath) {
+                setFolderBrowser(null)
+                await load()
+            } else {
+                await browseFolder(folderBrowser.bucket, folderBrowser.folder, folderBrowser.rootPath, folderBrowser.currentPath)
+                await load()
+            }
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setDeletingEntry(null) }
+    }
 
     const fetchSuggestions = async (folder) => {
         setSuggestionsByFolder(prev => ({ ...prev, [folder]: { loading: true } }))
@@ -392,6 +452,14 @@ export default function Untracked() {
                                 >
                                     {busyUnclaimed === u.authorFolder ? 'Moving…' : '↩ Return to Incoming'}
                                 </button>
+                                <button
+                                    className="btn-ghost btn-danger"
+                                    disabled={deletingFolder === `unclaimed:${u.authorFolder}` || !u.rootPaths?.[0]}
+                                    title="Permanently delete this folder and all files inside"
+                                    onClick={() => deleteTopLevelFolder('unclaimed', u)}
+                                >
+                                    {deletingFolder === `unclaimed:${u.authorFolder}` ? 'Deleting…' : '🗑 Delete'}
+                                </button>
                             </li>
                         ))}
                     </ul>
@@ -457,6 +525,14 @@ export default function Untracked() {
                                 >
                                     {busyUnknownFolder === u.authorFolder ? 'Moving…' : '↩ Return to Incoming'}
                                 </button>
+                                <button
+                                    className="btn-ghost btn-danger"
+                                    disabled={deletingFolder === `unknown:${u.authorFolder}` || !u.rootPaths?.[0]}
+                                    title="Permanently delete this folder and all files inside"
+                                    onClick={() => deleteTopLevelFolder('unknown', u)}
+                                >
+                                    {deletingFolder === `unknown:${u.authorFolder}` ? 'Deleting…' : '🗑 Delete'}
+                                </button>
                             </li>
                         ))}
                     </ul>
@@ -510,7 +586,7 @@ export default function Untracked() {
                             {folderBrowser.loadError && <p className="error" style={{ marginTop: 0 }}>{folderBrowser.loadError}</p>}
                                 {folderBrowser.entries.map(entry => (
                                     <div key={entry.relativePath}
-                                         style={{ display: 'grid', gridTemplateColumns: 'minmax(12rem, 1fr) auto auto', gap: '0.5rem', alignItems: 'center', padding: '0.45rem 0.55rem', border: entry.relativePath === folderBrowser.selectedRelativePath ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: '6px', background: entry.relativePath === folderBrowser.selectedRelativePath ? 'var(--accent-bg, rgba(59,130,246,0.08))' : 'transparent', marginBottom: '0.45rem' }}>
+                                         style={{ display: 'grid', gridTemplateColumns: 'minmax(12rem, 1fr) auto auto auto', gap: '0.5rem', alignItems: 'center', padding: '0.45rem 0.55rem', border: entry.relativePath === folderBrowser.selectedRelativePath ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: '6px', background: entry.relativePath === folderBrowser.selectedRelativePath ? 'var(--accent-bg, rgba(59,130,246,0.08))' : 'transparent', marginBottom: '0.45rem' }}>
                                         <div>
                                             <div><code>{entry.name}</code> <span className="subtle">({entry.isDirectory ? 'folder' : 'file'})</span></div>
                                             <div className="subtle">OpenLibrary search title: {entry.searchQuery}</div>
@@ -532,6 +608,12 @@ export default function Untracked() {
                                                 } : prev)}
                                                 disabled={folderBrowserBusy || !!matchingPath}>
                                             {entry.isDirectory ? 'Choose folder' : 'Choose file'}
+                                        </button>
+                                        <button className="btn-ghost btn-danger"
+                                                title={`Permanently delete this ${entry.isDirectory ? 'folder' : 'file'}`}
+                                                onClick={() => deleteBrowserEntry(entry)}
+                                                disabled={folderBrowserBusy || !!matchingPath || deletingEntry === entry.relativePath}>
+                                            {deletingEntry === entry.relativePath ? 'Deleting…' : '🗑'}
                                         </button>
                                     </div>
                                 ))}

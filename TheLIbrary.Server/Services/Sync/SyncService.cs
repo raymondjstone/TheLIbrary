@@ -1073,21 +1073,30 @@ public sealed class SyncService
                 int maxPerRun = ReadIntSetting(limits, AppSettingKeys.RefreshMaxAuthorsPerRun, 0);
                 int maxEarly  = ReadIntSetting(limits, AppSettingKeys.RefreshEarlyWhenNoneDue, 200);
 
-                // Authors actually due (NextFetchAt null or past), oldest first.
+                // Authors actually due, oldest first. Pending authors always
+                // count as due — Status=Pending means the row has never been
+                // successfully refreshed, so an out-of-band NextFetchAt (e.g.
+                // a linked/collision deferral) must not hide them from the run.
                 var authorIds = await db.Authors
-                    .Where(a => a.NextFetchAt == null || a.NextFetchAt <= now)
-                    .OrderBy(a => a.NextFetchAt.HasValue) // false (null) first
+                    .Where(a => a.Status == AuthorStatus.Pending
+                             || a.NextFetchAt == null
+                             || a.NextFetchAt <= now)
+                    .OrderByDescending(a => a.Status == AuthorStatus.Pending) // Pending first
+                    .ThenBy(a => a.NextFetchAt.HasValue) // then nulls
                     .ThenBy(a => a.NextFetchAt)
                     .Select(a => a.Id)
                     .ToListAsync(hostCt);
 
-                // Nothing due → pull up to `maxEarly` of the soonest-due authors
-                // forward so the run still does useful work.
+                // Nothing due (and no Pending rows waiting) → pull up to
+                // `maxEarly` of the soonest-due authors forward so the run
+                // still does useful work. The Pending filter above ensures
+                // we never fall into the early branch while pending items
+                // are still unprocessed.
                 int earlyCount = 0;
                 if (authorIds.Count == 0 && maxEarly > 0)
                 {
                     authorIds = await db.Authors
-                        .Where(a => a.NextFetchAt > now)
+                        .Where(a => a.NextFetchAt > now && a.Status != AuthorStatus.Pending)
                         .OrderBy(a => a.NextFetchAt)
                         .Select(a => a.Id)
                         .Take(maxEarly)
