@@ -2,7 +2,9 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.OpenLibrary;
+using TheLibrary.Server.Services.Pushover;
 
 namespace TheLibrary.Server.Controllers;
 
@@ -39,6 +41,218 @@ public class SettingsController : ControllerBase
         await _db.SaveChangesAsync(ct);
         return new IncomingDto(string.IsNullOrWhiteSpace(path) ? null : path,
             !string.IsNullOrWhiteSpace(path) && Directory.Exists(path));
+    }
+
+    public sealed record UnknownFolderDto(string? Path, bool Exists, string DefaultDescription);
+    public sealed record UpdateUnknownFolder(string? Path);
+    public sealed record UnknownFolderMigrationDto(string? Path, bool Exists, string DefaultDescription, int FoldersMoved, int FilesMoved, int DbRowsUpdated, IReadOnlyList<string> Warnings);
+
+    [HttpGet("unknown-folder")]
+    public async Task<UnknownFolderDto> GetUnknownFolder(CancellationToken ct)
+    {
+        var path = await UnknownFolderResolver.GetCustomPathAsync(_db, ct);
+        return new UnknownFolderDto(
+            path,
+            path is not null && Directory.Exists(path),
+            "default: <library-location>/__unknown");
+    }
+
+    // Updating the custom __unknown path. When the value changes, every existing
+    // author folder in the OLD location (custom path or per-library default) is
+    // moved into the NEW location and matching LocalBookFiles rows are rewritten
+    // so on-disk and in-DB state stay aligned.
+    [HttpPut("unknown-folder")]
+    public async Task<ActionResult<UnknownFolderMigrationDto>> SetUnknownFolder(
+        [FromBody] UpdateUnknownFolder body,
+        CancellationToken ct)
+    {
+        var newPath = body.Path?.Trim() ?? "";
+        var oldCustomPath = await UnknownFolderResolver.GetCustomPathAsync(_db, ct);
+
+        if (newPath.Length > 0)
+        {
+            try { Directory.CreateDirectory(newPath); }
+            catch (Exception ex) { return BadRequest(new { error = $"Cannot create destination: {ex.Message}" }); }
+        }
+
+        var locations = await _db.LibraryLocations
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+
+        // Resolve OLD source roots (where contents currently live).
+        var oldRoots = oldCustomPath is not null
+            ? new[] { oldCustomPath }
+            : locations.Select(l => Path.Combine(l, CalibreScanner.UnknownAuthorFolder)).ToArray();
+
+        // Destination: the new custom path, or the primary library location's
+        // default __unknown if the setting is being cleared.
+        string newRoot;
+        if (newPath.Length > 0)
+        {
+            newRoot = newPath;
+        }
+        else
+        {
+            var primary = await _db.LibraryLocations
+                .Where(l => l.Enabled && l.IsPrimary)
+                .Select(l => l.Path)
+                .FirstOrDefaultAsync(ct)
+                ?? locations.FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(primary))
+                return BadRequest(new { error = "No primary library location is set." });
+            newRoot = Path.Combine(primary, CalibreScanner.UnknownAuthorFolder);
+        }
+
+        int foldersMoved = 0, filesMoved = 0, dbRowsUpdated = 0;
+        var warnings = new List<string>();
+        var pathRewrites = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var oldRoot in oldRoots)
+        {
+            if (!Directory.Exists(oldRoot)) continue;
+            if (string.Equals(
+                    Path.GetFullPath(oldRoot).TrimEnd(Path.DirectorySeparatorChar),
+                    Path.GetFullPath(newRoot).TrimEnd(Path.DirectorySeparatorChar),
+                    StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            Directory.CreateDirectory(newRoot);
+
+            foreach (var authorDir in Directory.GetDirectories(oldRoot))
+            {
+                var folderName = Path.GetFileName(authorDir);
+                var dest = UniqueDirectory(newRoot, folderName);
+                try
+                {
+                    foreach (var file in Directory.EnumerateFiles(authorDir, "*", SearchOption.AllDirectories))
+                    {
+                        pathRewrites[file] = Path.Combine(dest, Path.GetRelativePath(authorDir, file));
+                    }
+                    Directory.Move(authorDir, dest);
+                    foldersMoved++;
+                    filesMoved += Directory.EnumerateFiles(dest, "*", SearchOption.AllDirectories).Count();
+                }
+                catch (Exception ex)
+                {
+                    foreach (var k in pathRewrites.Keys.Where(k => k.StartsWith(authorDir, StringComparison.OrdinalIgnoreCase)).ToList())
+                        pathRewrites.Remove(k);
+                    warnings.Add($"{folderName}: {ex.Message}");
+                }
+            }
+
+            try
+            {
+                if (Directory.Exists(oldRoot) && !Directory.EnumerateFileSystemEntries(oldRoot).Any())
+                    Directory.Delete(oldRoot);
+            }
+            catch { /* best effort */ }
+        }
+
+        if (pathRewrites.Count > 0)
+        {
+            var oldFullPaths = pathRewrites.Keys.ToList();
+            var affected = await _db.LocalBookFiles
+                .Where(f => oldFullPaths.Contains(f.FullPath))
+                .ToListAsync(ct);
+            foreach (var row in affected)
+            {
+                if (pathRewrites.TryGetValue(row.FullPath, out var newFullPath))
+                {
+                    row.FullPath = newFullPath;
+                    dbRowsUpdated++;
+                }
+            }
+        }
+
+        var settingRow = await _db.AppSettings
+            .FirstOrDefaultAsync(s => s.Key == AppSettingKeys.UnknownFolder, ct);
+        if (settingRow is null)
+            _db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.UnknownFolder, Value = newPath });
+        else
+            settingRow.Value = newPath;
+        await _db.SaveChangesAsync(ct);
+
+        var resolvedPath = newPath.Length > 0 ? newPath : null;
+        return new UnknownFolderMigrationDto(
+            resolvedPath,
+            resolvedPath is not null && Directory.Exists(resolvedPath),
+            "default: <library-location>/__unknown",
+            foldersMoved,
+            filesMoved,
+            dbRowsUpdated,
+            warnings);
+    }
+
+    private static string UniqueDirectory(string parent, string preferredLeaf)
+    {
+        var dest = Path.Combine(parent, preferredLeaf);
+        if (!Directory.Exists(dest)) return dest;
+        for (int n = 1; ; n++)
+        {
+            dest = Path.Combine(parent, $"{preferredLeaf}_{n}");
+            if (!Directory.Exists(dest)) return dest;
+        }
+    }
+
+    // Pushover credentials are stored in AppSettings. Both keys must be set
+    // for notifications to fire; either being blank disables the feature.
+    public sealed record PushoverDto(string AppToken, string UserKey, bool Configured);
+    public sealed record UpdatePushover(string? AppToken, string? UserKey);
+    public sealed record PushoverTestResult(bool Sent, string? Error);
+
+    [HttpGet("pushover")]
+    public async Task<PushoverDto> GetPushover(CancellationToken ct)
+    {
+        var rows = await _db.AppSettings
+            .AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.PushoverAppToken
+                     || s.Key == AppSettingKeys.PushoverUserKey)
+            .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
+        rows.TryGetValue(AppSettingKeys.PushoverAppToken, out var token);
+        rows.TryGetValue(AppSettingKeys.PushoverUserKey, out var user);
+        return new PushoverDto(
+            token ?? "",
+            user ?? "",
+            !string.IsNullOrWhiteSpace(token) && !string.IsNullOrWhiteSpace(user));
+    }
+
+    [HttpPut("pushover")]
+    public async Task<ActionResult<PushoverDto>> SetPushover(
+        [FromBody] UpdatePushover body, CancellationToken ct)
+    {
+        var token = body.AppToken?.Trim() ?? "";
+        var user = body.UserKey?.Trim() ?? "";
+        await UpsertSettingAsync(AppSettingKeys.PushoverAppToken, token, ct);
+        await UpsertSettingAsync(AppSettingKeys.PushoverUserKey, user, ct);
+        await _db.SaveChangesAsync(ct);
+        return new PushoverDto(
+            token, user,
+            !string.IsNullOrWhiteSpace(token) && !string.IsNullOrWhiteSpace(user));
+    }
+
+    // Fire a test push so the user can verify credentials before relying on
+    // them for nightly book alerts. The body is allowed to override the
+    // stored values so a typo can be tested without saving first.
+    [HttpPost("pushover/test")]
+    public async Task<PushoverTestResult> TestPushover(
+        [FromBody] UpdatePushover? body,
+        [FromServices] PushoverClient client,
+        CancellationToken ct)
+    {
+        (string? Token, string? User)? overrideCreds = null;
+        if (body is not null
+            && (!string.IsNullOrWhiteSpace(body.AppToken) || !string.IsNullOrWhiteSpace(body.UserKey)))
+        {
+            overrideCreds = (body.AppToken?.Trim(), body.UserKey?.Trim());
+        }
+        var result = await client.SendAsync(
+            overrideCreds,
+            title: "TheLibrary test alert",
+            message: "Pushover credentials look good — new-book notifications will use this device.",
+            url: null,
+            ct);
+        return new PushoverTestResult(result.Sent, result.Error);
     }
 
     public sealed record OpenLibraryIdentityDto(

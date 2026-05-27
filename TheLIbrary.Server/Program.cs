@@ -73,6 +73,8 @@ builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.AuthorFolderDisamb
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.SameNameAuthorService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.PhysicalAuthorStarService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnzipService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnknownFolderFlattenerService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Pushover.PushoverClient>();
 
 // Hangfire uses the same SQL Server database for its job store so a restart
 // doesn't drop the schedule. WorkerCount=1 is the mutual-exclusion lever:

@@ -9,7 +9,52 @@ import OpenLibraryWorkSearch from '../components/OpenLibraryWorkSearch.jsx'
 import { bookCoverSrc } from '../bookCover.js'
 
 // Compact per-book edit / delete controls shown next to the title.
-function BookActions({ book, onEdit, onDelete }) {
+// Collapsed bucket rendered at the very bottom of an author page for books
+// the user has hidden via the "suppress" action. Kept lightweight on purpose
+// — just title + year + un-suppress — since the whole point is to keep them
+// out of sight until the user explicitly wants them back.
+function SuppressedBooksSection({ books, onToggleSuppress }) {
+    return (
+        <details style={{ marginTop: '2rem', borderTop: '1px solid var(--border)', paddingTop: '1rem' }}>
+            <summary style={{ cursor: 'pointer', color: 'var(--subtle)', fontSize: '0.9rem' }}>
+                Suppressed books ({books.length}) — hidden from the main list
+            </summary>
+            <table className="grid" style={{ marginTop: '0.5rem', opacity: 0.85 }}>
+                <thead>
+                    <tr>
+                        <th>Title</th>
+                        <th style={{ width: '5rem' }}>Year</th>
+                        <th style={{ width: '7rem' }}></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {books.map(b => (
+                        <tr key={b.id}>
+                            <td>
+                                <WorkTitle workKey={b.openLibraryWorkKey} title={b.title} />
+                                {b.series && (
+                                    <span className="subtle" style={{ marginLeft: '0.4rem', fontSize: '0.8em' }}>
+                                        ({b.series}{b.seriesPosition ? ` #${b.seriesPosition}` : ''})
+                                    </span>
+                                )}
+                            </td>
+                            <td>{b.firstPublishYear ?? '—'}</td>
+                            <td>
+                                <button className="btn-ghost"
+                                        onClick={() => onToggleSuppress(b)}
+                                        style={{ fontSize: '0.8rem' }}>
+                                    Unsuppress
+                                </button>
+                            </td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+        </details>
+    )
+}
+
+function BookActions({ book, onEdit, onDelete, onToggleSuppress }) {
     return (
         <span style={{ marginLeft: '0.3rem', whiteSpace: 'nowrap' }}>
             <button className="btn-ghost" title="Edit this book"
@@ -18,6 +63,14 @@ function BookActions({ book, onEdit, onDelete }) {
             <button className="btn-ghost" title="Delete this book"
                     onClick={() => onDelete(book)}
                     style={{ fontSize: '0.72rem', padding: '0 0.3rem', opacity: 0.55, color: 'var(--danger, #b91c1c)' }}>delete</button>
+            {onToggleSuppress && (
+                <button className="btn-ghost"
+                        title={book.suppressed ? 'Restore this book to the main list' : 'Hide this book — moves it to the suppressed section at the bottom'}
+                        onClick={() => onToggleSuppress(book)}
+                        style={{ fontSize: '0.72rem', padding: '0 0.3rem', opacity: 0.55 }}>
+                    {book.suppressed ? 'unsuppress' : 'suppress'}
+                </button>
+            )}
         </span>
     )
 }
@@ -833,6 +886,38 @@ export default function AuthorDetail() {
         }
     }
 
+    const toggleSuppress = async (book) => {
+        const next = !book.suppressed
+        try {
+            const r = await fetch(`/api/books/${book.id}/suppressed`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ suppressed: next })
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            setData(prev => prev ? {
+                ...prev,
+                books: prev.books.map(b => b.id === book.id ? { ...b, suppressed: next } : b)
+            } : prev)
+        } catch (e) {
+            alert(`Failed to toggle suppress: ${e.message}`)
+        }
+    }
+
+    const toggleNotifyNewBooks = async (enabled) => {
+        try {
+            const r = await fetch(`/api/authors/${id}/notify-new-books`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled })
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            setData(prev => prev ? { ...prev, notifyOnNewBooks: enabled } : prev)
+        } catch (e) {
+            alert(`Failed to update Pushover toggle: ${e.message}`)
+        }
+    }
+
     const sendAllUnread = async () => {
         const files = (data?.books ?? [])
             .filter(b => b.readStatus === 'Unread' || b.readStatus === 'Reading')
@@ -845,7 +930,11 @@ export default function AuthorDetail() {
     if (data === null) return <p>Loading…</p>
     if (data.error) return <p className="error">Failed: {data.error}</p>
 
-    const visibleBooks = ownedOnly ? data.books.filter(b => b.owned) : data.books
+    // Suppressed books are rendered in a dedicated section at the very bottom
+    // so they're still toggleable but don't clutter the main list.
+    const ownedFiltered = ownedOnly ? data.books.filter(b => b.owned) : data.books
+    const visibleBooks = ownedFiltered.filter(b => !b.suppressed)
+    const suppressedBooks = ownedFiltered.filter(b => b.suppressed)
     const ownedCount = data.books.filter(b => b.owned).length
 
     // Series suggestions for the datalist: all series where this author is primary
@@ -1078,6 +1167,21 @@ export default function AuthorDetail() {
                 )}
             </div>
 
+            <div style={{ marginBottom: '0.75rem', fontSize: '0.875em', color: 'var(--subtle)' }}>
+                <label style={{ cursor: 'pointer', userSelect: 'none' }}>
+                    <input
+                        type="checkbox"
+                        checked={!!data.notifyOnNewBooks}
+                        onChange={e => toggleNotifyNewBooks(e.target.checked)}
+                        style={{ marginRight: '0.4rem' }} />
+                    Pushover alert when a new book is detected
+                </label>
+                {' '}
+                <span title="Requires Pushover credentials configured in Settings. Alerts are skipped on the very first refresh after adding this author, and for books whose first publish year is older than last year.">
+                    ⓘ
+                </span>
+            </div>
+
             <div className="toolbar">
                 <label><input type="checkbox" checked={ownedOnly} onChange={e => setOwnedOnly(e.target.checked)} /> Owned only</label>
                 <button onClick={refresh} disabled={refreshing}>
@@ -1140,7 +1244,7 @@ export default function AuthorDetail() {
                                 </td>}
                                 <td>
                                     <WorkTitle workKey={b.openLibraryWorkKey} title={b.title} />
-                                    <BookActions book={b} onEdit={setEditBook} onDelete={deleteBook} />
+                                    <BookActions book={b} onEdit={setEditBook} onDelete={deleteBook} onToggleSuppress={toggleSuppress} />
                                     {editingSeriesId === b.id ? (
                                         <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
                                             <SeriesNamePicker
@@ -1308,7 +1412,7 @@ export default function AuthorDetail() {
                                 {series && <td></td>}
                                 <td>
                                     <WorkTitle workKey={b.openLibraryWorkKey} title={b.title} />
-                                    <BookActions book={b} onEdit={setEditBook} onDelete={deleteBook} />
+                                    <BookActions book={b} onEdit={setEditBook} onDelete={deleteBook} onToggleSuppress={toggleSuppress} />
                                     {editingSeriesId === b.id ? (
                                         <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
                                             <SeriesNamePicker
@@ -1423,6 +1527,12 @@ export default function AuthorDetail() {
                 openLibraryByFile={openLibraryByFile}
                 setOpenLibraryByFile={setOpenLibraryByFile}
                 onAddOpenLibraryBook={addOpenLibraryBook} />
+
+            {suppressedBooks.length > 0 && (
+                <SuppressedBooksSection
+                    books={suppressedBooks}
+                    onToggleSuppress={toggleSuppress} />
+            )}
 
             {preview && (
                 <BookPreview

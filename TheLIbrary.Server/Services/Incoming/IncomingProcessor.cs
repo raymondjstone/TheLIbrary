@@ -50,10 +50,10 @@ public sealed class IncomingProcessor
     public async Task<IncomingResult> ProcessUnknownAsync(Action<IncomingProgress>? onProgress, CancellationToken ct)
     {
         var primary = await ResolvePrimaryAsync(ct);
-        var unknownPath = Path.Combine(primary.Path, CalibreScanner.UnknownAuthorFolder);
+        var unknownPath = await UnknownFolderResolver.GetDestinationRootAsync(_db, primary.Path, ct);
         if (!_fs.DirectoryExists(unknownPath))
             return new IncomingResult(0, 0, 0, 0, 0,
-                new[] { $"No '{CalibreScanner.UnknownAuthorFolder}' folder under {primary.Path}" });
+                new[] { $"No quarantine folder found at {unknownPath}" });
         return await RunAsync(unknownPath, primary.Path, leaveUnmatchedInPlace: true, onProgress, ct);
     }
 
@@ -283,9 +283,10 @@ public sealed class IncomingProcessor
                         // a later reprocess-unknown can still pick up any
                         // folder-layout signal the user has in place.
                         var rel = Path.GetRelativePath(sourcePath, dir);
+                        var unknownDestRoot = await UnknownFolderResolver.GetDestinationRootAsync(_db, destRoot, ct);
                         destDir = string.IsNullOrEmpty(rel) || rel == "."
-                            ? Path.Combine(destRoot, CalibreScanner.UnknownAuthorFolder)
-                            : Path.Combine(destRoot, CalibreScanner.UnknownAuthorFolder, rel);
+                            ? unknownDestRoot
+                            : Path.Combine(unknownDestRoot, rel);
                     }
                     else
                     {

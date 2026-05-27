@@ -51,4 +51,15 @@ public static class AppSettingKeys
     // Semicolon-separated format preference order for duplicate-file triage.
     // Earlier entries are recommended over later ones on the duplicates page.
     public const string DuplicateFormatPreference = "DuplicateFormatPreference";
+
+    // Optional absolute path overriding the default `<library-location>/__unknown`
+    // quarantine layout. When set, ALL unmatched / quarantined author folders
+    // live under this single path instead of per-library-location subfolders.
+    // Unset = use the default per-location layout.
+    public const string UnknownFolder = "UnknownFolder";
+
+    // Pushover (https://pushover.net) credentials for new-book alerts. Both
+    // must be present for notifications to fire; unset = feature disabled.
+    public const string PushoverAppToken = "PushoverAppToken";
+    public const string PushoverUserKey = "PushoverUserKey";
 }

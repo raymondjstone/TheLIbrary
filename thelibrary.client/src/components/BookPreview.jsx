@@ -10,10 +10,16 @@ import ePub from 'epubjs'
 //
 // The streaming endpoint (`/api/files/{id}/preview?format=…`) does the
 // path-traversal check on the server, so this component just needs the URL.
-export default function BookPreview({ fileId, format, onClose, title }) {
+export default function BookPreview({ fileId, format, onClose, title, srcUrl }) {
     const f = (format || '').toLowerCase()
+    // srcUrl overrides the default /api/files/{id}/preview endpoint so the
+    // same modal can preview untracked files (where there is no LBF row yet).
+    const url = srcUrl ?? `/api/files/${fileId}/preview?format=${f}`
     return (
-        <div className="modal-backdrop" onClick={onClose}>
+        // zIndex inline override so the preview sits ON TOP of any caller
+        // that already opened a stacked modal (e.g. the Untracked browse pane
+        // uses zIndex: 1000). The default .modal-backdrop is 100.
+        <div className="modal-backdrop" style={{ zIndex: 1100 }} onClick={onClose}>
             {/*
               * The modal needs a CONCRETE height — epub.js sizes its inner
               * iframe to its container's pixel dimensions on first render,
@@ -32,9 +38,9 @@ export default function BookPreview({ fileId, format, onClose, title }) {
                     <button onClick={onClose} className="btn-ghost" title="Close">&times;</button>
                 </div>
                 <div style={{ flex: 1, overflow: 'hidden', display: 'flex', minHeight: 0 }}>
-                    {f === 'epub' && <EpubPane fileId={fileId} />}
-                    {f === 'pdf'  && <PdfPane fileId={fileId} />}
-                    {f === 'txt'  && <TxtPane fileId={fileId} />}
+                    {f === 'epub' && <EpubPane url={url} />}
+                    {f === 'pdf'  && <PdfPane url={url} />}
+                    {f === 'txt'  && <TxtPane url={url} />}
                     {!['epub', 'pdf', 'txt'].includes(f) && <UnsupportedPane format={f} />}
                 </div>
             </div>
@@ -42,7 +48,7 @@ export default function BookPreview({ fileId, format, onClose, title }) {
     )
 }
 
-function EpubPane({ fileId }) {
+function EpubPane({ url }) {
     const ref = useRef(null)
     const renditionRef = useRef(null)
     const bookRef = useRef(null)
@@ -60,7 +66,7 @@ function EpubPane({ fileId }) {
         // ASP.NET endpoint (which silently render as a blank pane otherwise).
         setLoading(true)
         setError(null)
-        fetch(`/api/files/${fileId}/preview?format=epub`)
+        fetch(url)
             .then(async r => {
                 if (!r.ok) {
                     const body = await r.text().catch(() => '')
@@ -107,7 +113,7 @@ function EpubPane({ fileId }) {
             try { renditionRef.current?.destroy?.() } catch { /* best effort */ }
             try { bookRef.current?.destroy?.() } catch { /* best effort */ }
         }
-    }, [fileId])
+    }, [url])
 
     const next = () => renditionRef.current?.next?.()
     const prev = () => renditionRef.current?.prev?.()
@@ -135,27 +141,27 @@ function EpubPane({ fileId }) {
     )
 }
 
-function PdfPane({ fileId }) {
+function PdfPane({ url }) {
     // Browsers' built-in PDF viewer handles paging, zoom, and search for free.
     return (
         <iframe
             title="PDF preview"
-            src={`/api/files/${fileId}/preview?format=pdf`}
+            src={url}
             style={{ flex: 1, border: 0, minHeight: 0, width: '100%', height: '100%' }} />
     )
 }
 
-function TxtPane({ fileId }) {
+function TxtPane({ url }) {
     const [text, setText] = useState(null)
     const [error, setError] = useState(null)
     useEffect(() => {
         let cancelled = false
-        fetch(`/api/files/${fileId}/preview?format=txt`)
+        fetch(url)
             .then(r => r.ok ? r.text() : Promise.reject(`${r.status} ${r.statusText}`))
             .then(t => { if (!cancelled) setText(t) })
             .catch(e => { if (!cancelled) setError(String(e.message || e)) })
         return () => { cancelled = true }
-    }, [fileId])
+    }, [url])
 
     if (error) return <p className="error" style={{ padding: '1rem' }}>Failed to load: {error}</p>
     if (text === null) return <p className="subtle" style={{ padding: '1rem' }}>Loading…</p>

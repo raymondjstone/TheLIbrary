@@ -20,6 +20,15 @@ export default function Settings() {
     const [newBlReason, setNewBlReason] = useState('')
     const [incoming, setIncoming] = useState({ path: '', exists: false })
     const [incomingEdit, setIncomingEdit] = useState('')
+    const [unknownFolder, setUnknownFolder] = useState({ path: null, exists: false, defaultDescription: '' })
+    const [unknownFolderEdit, setUnknownFolderEdit] = useState('')
+    const [unknownFolderSaving, setUnknownFolderSaving] = useState(false)
+    const [unknownFolderMigration, setUnknownFolderMigration] = useState(null)
+    const [pushover, setPushover] = useState({ appToken: '', userKey: '', configured: false })
+    const [pushoverEdit, setPushoverEdit] = useState({ appToken: '', userKey: '' })
+    const [pushoverSaving, setPushoverSaving] = useState(false)
+    const [pushoverTestResult, setPushoverTestResult] = useState(null)
+    const [pushoverTesting, setPushoverTesting] = useState(false)
     const [remarkable, setRemarkable] = useState(null)
     const [rmCode, setRmCode] = useState('')
     const [rmBusy, setRmBusy] = useState(false)
@@ -67,6 +76,22 @@ export default function Settings() {
             const body = await r.json()
             setIncoming(body)
             setIncomingEdit(body.path ?? '')
+        } catch (e) { setError(prev => prev ?? String(e)) }
+
+        try {
+            const r = await fetch('/api/settings/unknown-folder')
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setUnknownFolder(body)
+            setUnknownFolderEdit(body.path ?? '')
+        } catch (e) { setError(prev => prev ?? String(e)) }
+
+        try {
+            const r = await fetch('/api/settings/pushover')
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setPushover(body)
+            setPushoverEdit({ appToken: body.appToken ?? '', userKey: body.userKey ?? '' })
         } catch (e) { setError(prev => prev ?? String(e)) }
 
         try {
@@ -304,6 +329,81 @@ export default function Settings() {
         setIncoming(await r.json())
     }
 
+    const savePushover = async () => {
+        setError(null)
+        setPushoverSaving(true)
+        setPushoverTestResult(null)
+        try {
+            const r = await fetch('/api/settings/pushover', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(pushoverEdit),
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setPushover(body)
+            setPushoverEdit({ appToken: body.appToken ?? '', userKey: body.userKey ?? '' })
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setPushoverSaving(false)
+        }
+    }
+
+    const testPushover = async () => {
+        setPushoverTesting(true)
+        setPushoverTestResult(null)
+        try {
+            const r = await fetch('/api/settings/pushover/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(pushoverEdit),
+            })
+            const body = await r.json().catch(() => ({}))
+            setPushoverTestResult(body.sent
+                ? { sent: true, message: 'Test push sent — check your device.' }
+                : { sent: false, message: body.error || r.statusText })
+        } catch (e) {
+            setPushoverTestResult({ sent: false, message: String(e.message ?? e) })
+        } finally {
+            setPushoverTesting(false)
+        }
+    }
+
+    const saveUnknownFolder = async () => {
+        setError(null)
+        setUnknownFolderMigration(null)
+        const trimmed = unknownFolderEdit.trim()
+        if (trimmed && trimmed !== (unknownFolder.path ?? '')) {
+            const confirmMsg = `Move all quarantined items into "${trimmed}"?\n\nThis migrates every existing __unknown folder and updates database paths.`
+            if (!window.confirm(confirmMsg)) return
+        } else if (!trimmed && unknownFolder.path) {
+            if (!window.confirm('Clear the custom __unknown path and move all items back to the primary library default?')) return
+        }
+        setUnknownFolderSaving(true)
+        try {
+            const r = await fetch('/api/settings/unknown-folder', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: unknownFolderEdit })
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setUnknownFolder({ path: body.path, exists: body.exists, defaultDescription: body.defaultDescription })
+            setUnknownFolderEdit(body.path ?? '')
+            setUnknownFolderMigration({
+                foldersMoved: body.foldersMoved,
+                filesMoved: body.filesMoved,
+                dbRowsUpdated: body.dbRowsUpdated,
+                warnings: body.warnings ?? [],
+            })
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setUnknownFolderSaving(false)
+        }
+    }
+
     const saveOpenLibrary = async () => {
         setError(null)
         setOlSaving(true)
@@ -503,6 +603,79 @@ export default function Settings() {
                         : 'not configured'}
                 </span>
             </div>
+
+            <h2 style={{ marginTop: '1.5rem' }}>Unknown (quarantine) folder</h2>
+            <p className="subtle">
+                Optional. By default each library location keeps its own <code>__unknown</code> subfolder
+                for unmatched authors. Set a single absolute path here to consolidate quarantined items into
+                one location instead. Saving with a value moves every existing <code>__unknown</code> author
+                folder (across all enabled locations) into the new path and rewrites matching database paths.
+                Clearing the value moves everything back to the primary library's <code>__unknown</code>.
+            </p>
+            <div className="toolbar">
+                <input
+                    style={{ minWidth: 420 }}
+                    value={unknownFolderEdit}
+                    onChange={e => setUnknownFolderEdit(e.target.value)}
+                    placeholder="e.g. D:\\Books\\__quarantine (leave blank for default)" />
+                <button onClick={saveUnknownFolder} disabled={unknownFolderSaving}>
+                    {unknownFolderSaving ? 'Migrating…' : 'Save'}
+                </button>
+                <span className="subtle">
+                    {unknownFolder.path
+                        ? (unknownFolder.exists ? 'folder exists' : <span className="error">folder not found</span>)
+                        : (unknownFolder.defaultDescription || 'using default')}
+                </span>
+            </div>
+            {unknownFolderMigration && (
+                <p className="subtle" style={{ marginTop: '0.4rem' }}>
+                    Migration done: {unknownFolderMigration.foldersMoved} folder(s) moved,
+                    {' '}{unknownFolderMigration.filesMoved} file(s),
+                    {' '}{unknownFolderMigration.dbRowsUpdated} database row(s) updated.
+                    {unknownFolderMigration.warnings?.length > 0 && (
+                        <>
+                            {' '}<span className="error">Warnings: {unknownFolderMigration.warnings.join('; ')}</span>
+                        </>
+                    )}
+                </p>
+            )}
+
+            <h2 style={{ marginTop: '1.5rem' }}>Pushover new-book alerts</h2>
+            <p className="subtle">
+                Optional. Set both keys to receive a Pushover notification each time a
+                newly-published work by an opted-in author is detected during the
+                refresh-works job. Get values at <a href="https://pushover.net" target="_blank" rel="noreferrer">pushover.net</a>:
+                {' '}<strong>App token</strong> is from your Pushover application, <strong>User key</strong>
+                {' '}identifies your device. Turn on the per-author switch on each author's detail page
+                to opt them in. Alerts are skipped on an author's first refresh (to avoid backfill spam)
+                and for books whose first publish year is older than last year.
+            </p>
+            <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+                <input
+                    style={{ minWidth: 320 }}
+                    value={pushoverEdit.appToken}
+                    onChange={e => setPushoverEdit(p => ({ ...p, appToken: e.target.value }))}
+                    placeholder="App token" />
+                <input
+                    style={{ minWidth: 240 }}
+                    value={pushoverEdit.userKey}
+                    onChange={e => setPushoverEdit(p => ({ ...p, userKey: e.target.value }))}
+                    placeholder="User key" />
+                <button onClick={savePushover} disabled={pushoverSaving}>
+                    {pushoverSaving ? 'Saving…' : 'Save'}
+                </button>
+                <button onClick={testPushover} disabled={pushoverTesting || (!pushoverEdit.appToken.trim() || !pushoverEdit.userKey.trim())}>
+                    {pushoverTesting ? 'Sending…' : 'Send test'}
+                </button>
+                <span className="subtle">
+                    {pushover.configured ? 'configured · alerts enabled' : 'not configured'}
+                </span>
+            </div>
+            {pushoverTestResult && (
+                <p className={pushoverTestResult.sent ? 'subtle' : 'error'} style={{ marginTop: '0.4rem' }}>
+                    {pushoverTestResult.message}
+                </p>
+            )}
 
             <h2 style={{ marginTop: '1.5rem' }}>OpenLibrary identity</h2>
             <p className="subtle">

@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.OpenLibrary;
+using TheLibrary.Server.Services.Pushover;
 
 namespace TheLibrary.Server.Services.Sync;
 
@@ -48,6 +49,7 @@ public sealed class AuthorRefresher
     private readonly LibraryDbContext _db;
     private readonly OpenLibraryClient _ol;
     private readonly AuthorRefreshCoordinator _coordinator;
+    private readonly PushoverClient _pushover;
     private readonly ILogger<AuthorRefresher> _log;
 
     public sealed record RefreshCadenceSettings(int RecentDays, int MidDays, int DormantDays, int OldOrEmptyDays)
@@ -59,9 +61,10 @@ public sealed class AuthorRefresher
         LibraryDbContext db,
         OpenLibraryClient ol,
         AuthorRefreshCoordinator coordinator,
+        PushoverClient pushover,
         ILogger<AuthorRefresher> log)
     {
-        _db = db; _ol = ol; _coordinator = coordinator; _log = log;
+        _db = db; _ol = ol; _coordinator = coordinator; _pushover = pushover; _log = log;
     }
 
     public async Task<AuthorRefreshOutcome> RefreshAsync(Author author, Action<string>? onMessage, CancellationToken ct)
@@ -164,6 +167,12 @@ public sealed class AuthorRefresher
         }
 
         onMessage?.Invoke($"Fetching works for {author.Name}");
+
+        // Snapshot before mutation: skip Pushover alerts on the very first
+        // refresh of an author so adding a watchlist entry doesn't fire one
+        // notification per book backfilled.
+        var isInitialRefresh = author.LastSyncedAt is null;
+        var notificationsQueued = new List<(string Title, int? Year, string WorkKey)>();
 
         // Load existing books as a dict so we can both deduplicate and
         // backfill subjects/series for books that predate this feature.
@@ -284,6 +293,19 @@ public sealed class AuthorRefresher
                 SeriesPosition = seriesPos,
             });
             fetched++;
+
+            // Queue a Pushover alert if the author opted in, this isn't the
+            // first refresh (avoids backfill spam), and the book's publish
+            // year is "recent". FirstPublishYear is the most precise publish
+            // signal OL exposes via the works endpoint; if it's missing we
+            // err on the side of not notifying — better silent than spammy.
+            if (author.NotifyOnNewBooks && !isInitialRefresh
+                && doc.FirstPublishYear is int year
+                && year >= DateTime.UtcNow.Year - 1)
+            {
+                notificationsQueued.Add((doc.Title!, year, workKey));
+            }
+
             if (fetched % 50 == 0) await _db.SaveChangesAsync(ct);
         }
         await _db.SaveChangesAsync(ct);
@@ -357,6 +379,30 @@ public sealed class AuthorRefresher
         }
 
         await _db.SaveChangesAsync(ct);
+
+        // Fire-and-forget Pushover dispatch. Failures are logged inside the
+        // client; we don't surface them through the refresh outcome.
+        if (notificationsQueued.Count > 0)
+        {
+            foreach (var (title, year, workKey) in notificationsQueued)
+            {
+                var message = year.HasValue
+                    ? $"{author.Name} — \"{title}\" ({year.Value})"
+                    : $"{author.Name} — \"{title}\"";
+                var url = $"https://openlibrary.org/works/{workKey}";
+                var result = await _pushover.SendAsync(
+                    title: "New book detected",
+                    message: message,
+                    url: url,
+                    ct);
+                if (!result.Sent)
+                    _log.LogWarning(
+                        "Pushover alert for '{Title}' by {Author} not sent: {Error}",
+                        title, author.Name, result.Error);
+                else
+                    onMessage?.Invoke($"Pushover alert sent for \"{title}\"");
+            }
+        }
 
         return new AuthorRefreshOutcome(
             author.Id, false, null, author.Status.ToString(),

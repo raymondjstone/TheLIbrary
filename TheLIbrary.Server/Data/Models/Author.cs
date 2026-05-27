@@ -56,6 +56,12 @@ public class Author
     // Free-text memo written by the user — not synced from OL, never overwritten.
     public string? Notes { get; set; }
 
+    // When true, the AuthorRefresher fires a Pushover notification for each
+    // newly-discovered book by this author (skipping the very first refresh
+    // and skipping works whose FirstPublishYear pre-dates "recent"). Requires
+    // PushoverAppToken / PushoverUserKey to be configured in AppSettings.
+    public bool NotifyOnNewBooks { get; set; }
+
     // When set, this row is a duplicate (or pen name) of the referenced
     // author. OpenLibrary often splits one real author into several entries —
     // linking lets us treat them as one. The "canonical" author is the one

@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
 import AddAuthorDialog from './AddAuthorDialog.jsx'
 import OpenLibraryWorkSearch from '../components/OpenLibraryWorkSearch.jsx'
+import BookPreview from '../components/BookPreview.jsx'
+
+const PREVIEWABLE_EXTS = new Set(['epub', 'pdf', 'txt'])
+const fileExtension = (name) => {
+    const idx = name.lastIndexOf('.')
+    return idx >= 0 ? name.slice(idx + 1).toLowerCase() : ''
+}
 
 // Inline OL author suggestions panel rendered under an Untracked row. Renders
 // nothing until the user has clicked the "Suggest" button (lazy-loaded so a
@@ -46,6 +53,7 @@ export default function Untracked() {
     const [folderBrowser, setFolderBrowser] = useState(null)
     const [folderBrowserBusy, setFolderBrowserBusy] = useState(false)
     const [matchingPath, setMatchingPath] = useState(null)
+    const [preview, setPreview] = useState(null)
 
     const load = async () => {
         setError(null)
@@ -116,7 +124,6 @@ export default function Untracked() {
         if (!folderBrowser) return
         setMatchingPath(folderBrowser.currentPath || `${folderBrowser.bucket}:${folderBrowser.folder}`)
         const { bucket, folder, rootPath, currentPath } = folderBrowser
-        const hadMultipleEntries = (folderBrowser.entries?.length ?? 0) > 1
         try {
             const r = await fetch('/api/untracked/match-openlibrary', {
                 method: 'POST',
@@ -136,11 +143,9 @@ export default function Untracked() {
                 }),
             })
             if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText)
-            if (hadMultipleEntries) {
-                await browseFolder(bucket, folder, rootPath, currentPath)
-            } else {
-                setFolderBrowser(null)
-            }
+            // Always refresh the current folder view; never auto-close.
+            // The user closes the pane manually with the Close button.
+            await browseFolder(bucket, folder, rootPath, currentPath)
             await load()
         } finally {
             setMatchingPath(null)
@@ -426,7 +431,8 @@ export default function Untracked() {
                     <ul className="unclaimed-list">
                         {pagedUnclaimed.map(u => (
                             <li key={u.authorFolder}>
-                                <code>{u.authorFolder}</code> <span className="subtle">({u.fileCount} item{u.fileCount === 1 ? '' : 's'})</span>
+                                <span title="Folder" style={{ marginRight: '0.3rem' }}>📁</span>
+                                <code>{u.authorFolder}</code> <span className="subtle">(folder · {u.fileCount} item{u.fileCount === 1 ? '' : 's'})</span>
                                 <button className="btn-ghost"
                                     onClick={() => fetchSuggestions(u.authorFolder)}
                                     disabled={suggestionsByFolder[u.authorFolder]?.loading}>
@@ -499,7 +505,8 @@ export default function Untracked() {
                     <ul className="unclaimed-list">
                         {pagedUnknownFolders.map(u => (
                             <li key={u.authorFolder}>
-                                <code>{u.authorFolder}</code> <span className="subtle">({u.fileCount} item{u.fileCount === 1 ? '' : 's'})</span>
+                                <span title="Folder" style={{ marginRight: '0.3rem' }}>📁</span>
+                                <code>{u.authorFolder}</code> <span className="subtle">(folder · {u.fileCount} item{u.fileCount === 1 ? '' : 's'})</span>
                                 <button className="btn-ghost"
                                     onClick={() => fetchSuggestions(u.authorFolder)}
                                     disabled={suggestionsByFolder[u.authorFolder]?.loading}>
@@ -551,7 +558,9 @@ export default function Untracked() {
                             <div>
                                 <strong>Browse and match {folderBrowser.folder}</strong>
                                 <div className="subtle">{folderBrowser.bucket === 'unknown' ? '__unknown' : 'unclaimed'}{folderBrowser.currentPath ? ` / ${folderBrowser.currentPath}` : ''}</div>
-                                <div className="subtle">Selected target: {folderBrowser.selectedLabel || folderBrowser.folder} ({folderBrowser.selectedIsDirectory ? 'folder' : 'file'})</div>
+                                <div className="subtle">
+                                    Selected target: {folderBrowser.selectedIsDirectory ? '📁' : '📄'} {folderBrowser.selectedLabel || folderBrowser.folder} ({folderBrowser.selectedIsDirectory ? 'folder' : 'file'})
+                                </div>
                             </div>
                             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                                 <button className="btn-ghost"
@@ -584,11 +593,20 @@ export default function Untracked() {
                                 </div>
                             {folderBrowser.loading && <p className="subtle" style={{ marginTop: 0 }}>Loading folder contents…</p>}
                             {folderBrowser.loadError && <p className="error" style={{ marginTop: 0 }}>{folderBrowser.loadError}</p>}
-                                {folderBrowser.entries.map(entry => (
+                                {folderBrowser.entries.map(entry => {
+                                    const ext = entry.isDirectory ? '' : fileExtension(entry.name)
+                                    const canPreview = !entry.isDirectory && PREVIEWABLE_EXTS.has(ext)
+                                    return (
                                     <div key={entry.relativePath}
-                                         style={{ display: 'grid', gridTemplateColumns: 'minmax(12rem, 1fr) auto auto auto', gap: '0.5rem', alignItems: 'center', padding: '0.45rem 0.55rem', border: entry.relativePath === folderBrowser.selectedRelativePath ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: '6px', background: entry.relativePath === folderBrowser.selectedRelativePath ? 'var(--accent-bg, rgba(59,130,246,0.08))' : 'transparent', marginBottom: '0.45rem' }}>
+                                         style={{ display: 'grid', gridTemplateColumns: 'minmax(12rem, 1fr) auto auto auto auto', gap: '0.5rem', alignItems: 'center', padding: '0.45rem 0.55rem', border: entry.relativePath === folderBrowser.selectedRelativePath ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: '6px', background: entry.relativePath === folderBrowser.selectedRelativePath ? 'var(--accent-bg, rgba(59,130,246,0.08))' : 'transparent', marginBottom: '0.45rem' }}>
                                         <div>
-                                            <div><code>{entry.name}</code> <span className="subtle">({entry.isDirectory ? 'folder' : 'file'})</span></div>
+                                            <div>
+                                                <span title={entry.isDirectory ? 'Folder' : 'File'} style={{ marginRight: '0.3rem' }}>
+                                                    {entry.isDirectory ? '📁' : '📄'}
+                                                </span>
+                                                <code>{entry.name}</code>{' '}
+                                                <span className="subtle">({entry.isDirectory ? 'folder' : 'file'})</span>
+                                            </div>
                                             <div className="subtle">OpenLibrary search title: {entry.searchQuery}</div>
                                         </div>
                                         {entry.isDirectory
@@ -596,6 +614,21 @@ export default function Untracked() {
                                                       onClick={() => browseFolder(folderBrowser.bucket, folderBrowser.folder, folderBrowser.rootPath, entry.relativePath)}
                                                       disabled={folderBrowserBusy || !!matchingPath}>
                                                 Open
+                                              </button>
+                                            : <span />}
+                                        {canPreview
+                                            ? <button className="btn-ghost"
+                                                      title={`Preview this ${ext.toUpperCase()} file`}
+                                                      onClick={() => setPreview({
+                                                          bucket: folderBrowser.bucket,
+                                                          folder: folderBrowser.folder,
+                                                          rootPath: folderBrowser.rootPath,
+                                                          path: entry.relativePath,
+                                                          format: ext,
+                                                          title: entry.name,
+                                                      })}
+                                                      disabled={folderBrowserBusy || !!matchingPath}>
+                                                👁 Preview
                                               </button>
                                             : <span />}
                                         <button className="btn-ghost"
@@ -610,13 +643,15 @@ export default function Untracked() {
                                             {entry.isDirectory ? 'Choose folder' : 'Choose file'}
                                         </button>
                                         <button className="btn-ghost btn-danger"
-                                                title={`Permanently delete this ${entry.isDirectory ? 'folder' : 'file'}`}
+                                                title={`Permanently delete this ${entry.isDirectory ? 'folder' : 'file'} from disk and database`}
                                                 onClick={() => deleteBrowserEntry(entry)}
                                                 disabled={folderBrowserBusy || !!matchingPath || deletingEntry === entry.relativePath}>
-                                            {deletingEntry === entry.relativePath ? 'Deleting…' : '🗑'}
+                                            {deletingEntry === entry.relativePath
+                                                ? 'Deleting…'
+                                                : `🗑 Delete ${entry.isDirectory ? 'folder' : 'file'}`}
                                         </button>
                                     </div>
-                                ))}
+                                )})}
                             {!folderBrowser.loading && folderBrowser.entries.length === 0 && <p className="subtle" style={{ margin: 0 }}>No drill-down entries here.</p>}
                             </div>
 
@@ -655,6 +690,20 @@ export default function Untracked() {
                         }
                         load()
                     }} />
+            )}
+
+            {preview && (
+                <BookPreview
+                    format={preview.format}
+                    title={preview.title}
+                    srcUrl={`/api/untracked/preview?${new URLSearchParams({
+                        bucket: preview.bucket,
+                        folder: preview.folder,
+                        rootPath: preview.rootPath,
+                        path: preview.path,
+                        format: preview.format,
+                    }).toString()}`}
+                    onClose={() => setPreview(null)} />
             )}
         </section>
     )

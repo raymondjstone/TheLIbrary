@@ -236,6 +236,18 @@ public class BooksController : ControllerBase
         return Ok(new { book.Id, book.Wanted });
     }
 
+    public sealed record SuppressedRequest(bool Suppressed);
+
+    [HttpPut("{id:int}/suppressed")]
+    public async Task<IActionResult> SetSuppressed(int id, [FromBody] SuppressedRequest body, CancellationToken ct)
+    {
+        var book = await _db.Books.FirstOrDefaultAsync(b => b.Id == id, ct);
+        if (book is null) return NotFound();
+        book.Suppressed = body.Suppressed;
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { book.Id, book.Suppressed });
+    }
+
     public sealed record SeriesRequest(string? SeriesName, string? Position);
 
     [HttpPut("{id:int}/series")]

@@ -89,6 +89,18 @@ public sealed class UnzipService
             .Select(a => new { a.Id, a.Priority })
             .ToDictionaryAsync(a => a.Id, a => a.Priority, ct);
 
+        // Quarantine roots — files inside these aren't tracked as LBF rows
+        // (sync purges them, IncomingProcessor never inserts them) so they
+        // would never reach the unzip job otherwise. Scan them directly so a
+        // .zip dropped under __unknown/SomeAuthor/sub/ gets extracted into
+        // incoming on the next nightly run instead of sitting there forever.
+        var libraryLocationPaths = await db.LibraryLocations
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+        var quarantineRoots = await Calibre.UnknownFolderResolver.GetSourceRootsAsync(
+            db, libraryLocationPaths, ct);
+
         var files = await db.LocalBookFiles.ToListAsync(ct);
 
         files.Sort((x, y) =>
@@ -148,9 +160,71 @@ public sealed class UnzipService
             }
         }
 
+        // Second pass: archives sitting under quarantine roots that don't
+        // have an LBF row backing them.
+        foreach (var quarantineRoot in quarantineRoots)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!Directory.Exists(quarantineRoot)) continue;
+
+            List<string> archives;
+            try
+            {
+                archives = Directory.EnumerateFiles(quarantineRoot, "*", SearchOption.AllDirectories)
+                    .Where(p => CalibreScanner.ArchiveExtensions.Contains(Path.GetExtension(p)))
+                    .ToList();
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "Unzip: could not enumerate quarantine root {Root}", quarantineRoot);
+                continue;
+            }
+
+            foreach (var archivePath in archives)
+            {
+                ct.ThrowIfCancellationRequested();
+                _log.LogInformation("Unzip [quarantine]: {Path} -> {Incoming}", archivePath, incomingPath);
+                try
+                {
+                    ExtractArchive(archivePath, incomingPath);
+                    File.Delete(archivePath);
+                    PruneEmptyParents(archivePath, quarantineRoot);
+                    extracted++;
+                }
+                catch (Exception ex)
+                {
+                    _log.LogError(ex, "Unzip [quarantine]: failed to extract {Path}", archivePath);
+                    errors++;
+                }
+            }
+        }
+
         _log.LogInformation(
             "Unzip job done. Extracted={Extracted} Skipped={Skipped} Errors={Errors}",
             extracted, skipped, errors);
+    }
+
+    // Walk up from `startPath`'s parent removing each directory once it's
+    // empty, stopping at `stopRoot` so we never delete the quarantine root
+    // itself.
+    private static void PruneEmptyParents(string startPath, string stopRoot)
+    {
+        var stop = Path.GetFullPath(stopRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var current = Path.GetDirectoryName(startPath);
+        while (!string.IsNullOrWhiteSpace(current))
+        {
+            var full = Path.GetFullPath(current).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (!full.StartsWith(stop, StringComparison.OrdinalIgnoreCase)) break;
+            if (string.Equals(full, stop, StringComparison.OrdinalIgnoreCase)) break;
+            if (Directory.Exists(full) && !Directory.EnumerateFileSystemEntries(full).Any())
+            {
+                try { Directory.Delete(full); }
+                catch { break; }
+                current = Path.GetDirectoryName(full);
+                continue;
+            }
+            break;
+        }
     }
 
     private static void ExtractArchive(string archivePath, string destinationDir)

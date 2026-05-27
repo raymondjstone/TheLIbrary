@@ -194,6 +194,7 @@ public class AuthorsController : ControllerBase
         int? RefreshIntervalDays,
         string? Bio,
         string? Notes,
+        bool NotifyOnNewBooks,
         IReadOnlyList<BookRow> Books,
         IReadOnlyList<UnmatchedRow> UnmatchedLocal,
         IReadOnlyList<SeriesSuggestion> AssociatedSeries,
@@ -229,7 +230,8 @@ public class AuthorsController : ControllerBase
         int? SeriesId = null,
         string? SeriesPrimaryAuthorName = null,
         string? CoverUrl = null,
-        int AuthorId = 0);
+        int AuthorId = 0,
+        bool Suppressed = false);
 
     public sealed record LocalFileRow(int Id, string FullPath, IReadOnlyList<string> Formats);
 
@@ -362,7 +364,7 @@ public class AuthorsController : ControllerBase
                 .Select(b => new
                 {
                     b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.CoverUrl, b.OpenLibraryWorkKey,
-                    b.AuthorId, b.ManuallyOwned, b.ReadStatus, b.ReadAt, b.Wanted, b.Subjects,
+                    b.AuthorId, b.ManuallyOwned, b.ReadStatus, b.ReadAt, b.Wanted, b.Subjects, b.Suppressed,
                     SeriesName = b.Series != null ? b.Series.Name : null,
                     b.SeriesId,
                     SeriesPrimaryAuthorName = b.Series != null && b.Series.PrimaryAuthor != null ? b.Series.PrimaryAuthor.Name : null,
@@ -386,7 +388,8 @@ public class AuthorsController : ControllerBase
             b.SeriesId,
             b.SeriesPrimaryAuthorName,
             b.CoverUrl,
-            b.AuthorId
+            b.AuthorId,
+            b.Suppressed
         )).ToList();
 
         // Include orphan rows (AuthorId == null) whose Calibre folder matches
@@ -431,7 +434,7 @@ public class AuthorsController : ControllerBase
         return new AuthorDetail(
             a.Id, a.Name, a.OpenLibraryKey, a.CalibreFolderName,
             a.Status.ToString(), a.ExclusionReason, a.Priority, a.LastSyncedAt, a.NextFetchAt, a.RefreshIntervalDays,
-            a.Bio, a.Notes,
+            a.Bio, a.Notes, a.NotifyOnNewBooks,
             books, unmatched, associatedSeries,
             linkedTo, alternates, penNames);
     }
@@ -1165,19 +1168,33 @@ public class AuthorsController : ControllerBase
         string? relativePath,
         CancellationToken ct)
     {
-        var root = (await _db.LibraryLocations
-            .Where(l => l.Enabled)
-            .Select(l => l.Path)
-            .ToListAsync(ct))
-            .FirstOrDefault(p => string.Equals(p, rootPath?.Trim(), StringComparison.OrdinalIgnoreCase));
-        if (string.IsNullOrWhiteSpace(root)) return null;
-
         var normalizedBucket = bucket?.Trim().ToLowerInvariant();
+        var customUnknown = await UnknownFolderResolver.GetCustomPathAsync(_db, ct);
+
+        string? root = null;
+        if (normalizedBucket == "unknown" && customUnknown is not null
+            && string.Equals(rootPath?.Trim(), customUnknown, StringComparison.OrdinalIgnoreCase))
+        {
+            // The listing API returned the custom path as the rootPath sentinel.
+            root = customUnknown;
+        }
+        else
+        {
+            root = (await _db.LibraryLocations
+                .Where(l => l.Enabled)
+                .Select(l => l.Path)
+                .ToListAsync(ct))
+                .FirstOrDefault(p => string.Equals(p, rootPath?.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrWhiteSpace(root)) return null;
+        }
+
         var normalizedRelative = NormalizeRelativePath(relativePath);
         var basePath = normalizedBucket switch
         {
             "unclaimed" => Path.Combine(root, folder),
-            "unknown" => Path.Combine(root, CalibreScanner.UnknownAuthorFolder, folder),
+            "unknown" => customUnknown is not null
+                ? Path.Combine(customUnknown, folder)
+                : Path.Combine(root, CalibreScanner.UnknownAuthorFolder, folder),
             _ => null,
         };
         if (string.IsNullOrWhiteSpace(basePath)) return null;
@@ -1370,6 +1387,20 @@ public class AuthorsController : ControllerBase
         author.Notes = string.IsNullOrWhiteSpace(body.Notes) ? null : body.Notes.Trim();
         await _db.SaveChangesAsync(ct);
         return Ok(new { author.Id, author.Notes });
+    }
+
+    public sealed record SetNotifyOnNewBooksRequest(bool Enabled);
+
+    // Per-author toggle for Pushover new-book alerts. Requires Pushover
+    // credentials in AppSettings for any notification to actually fire.
+    [HttpPut("{id:int}/notify-new-books")]
+    public async Task<IActionResult> SetNotifyOnNewBooks(int id, [FromBody] SetNotifyOnNewBooksRequest body, CancellationToken ct)
+    {
+        var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (author is null) return NotFound();
+        author.NotifyOnNewBooks = body.Enabled;
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { author.Id, author.NotifyOnNewBooks });
     }
 
     public sealed record LinkAuthorRequest(int CanonicalAuthorId, bool IsPenName);
@@ -1793,6 +1824,55 @@ public class AuthorsController : ControllerBase
         return Ok(new UntrackedFolderContents(bucket.Trim(), folder.Trim(), rootPath.Trim(), relativePath, parentPath, entries));
     }
 
+    // In-browser preview for files that live under unclaimed/__unknown. The
+    // file isn't in LocalBookFiles yet, so the regular /api/files/{id}/preview
+    // endpoint won't find it — this one resolves via the same untracked path
+    // resolver and streams the bytes with an `inline` disposition.
+    [HttpGet("~/api/untracked/preview")]
+    public async Task<IActionResult> PreviewUntracked(
+        [FromQuery] string bucket,
+        [FromQuery] string folder,
+        [FromQuery] string rootPath,
+        [FromQuery] string? path,
+        [FromQuery] string format,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(format))
+            return BadRequest(new { error = "format query parameter is required" });
+
+        var sourcePath = await ResolveUntrackedSourcePathAsync(bucket, folder, rootPath, path, ct);
+        if (sourcePath is null) return NotFound(new { error = "Selected path not found" });
+
+        if (!System.IO.File.Exists(sourcePath))
+            return NotFound(new { error = "Only files can be previewed" });
+
+        var ext = Path.GetExtension(sourcePath).TrimStart('.').ToLowerInvariant();
+        if (!string.Equals(ext, format, StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { error = $"File extension '.{ext}' does not match requested format '.{format}'" });
+
+        if (!Services.Sync.FilePreviewResolver.SupportedFormats.TryGetValue(format, out var contentType))
+            return StatusCode(415, new { error = $"Preview not supported for '.{format}'. Supported: epub, pdf, txt." });
+
+        // Build the allowed-roots list: every enabled library location PLUS
+        // the custom __unknown path when one is set (it may live outside the
+        // library locations entirely).
+        var roots = await _db.LibraryLocations.AsNoTracking()
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+        var customUnknown = await UnknownFolderResolver.GetCustomPathAsync(_db, ct);
+        var allowedRoots = customUnknown is null
+            ? (IReadOnlyList<string>)roots
+            : roots.Append(customUnknown).ToList();
+
+        if (!Services.Sync.FilePreviewResolver.IsInsideAnyRoot(sourcePath, allowedRoots))
+            return StatusCode(403, new { error = "Refusing to serve a file outside enabled library locations" });
+
+        var safeName = Path.GetFileName(sourcePath).Replace("\"", "");
+        Response.Headers["Content-Disposition"] = $"inline; filename=\"{safeName}\"";
+        return PhysicalFile(sourcePath, contentType, enableRangeProcessing: true);
+    }
+
     [HttpPost("~/api/untracked/match-openlibrary")]
     public async Task<ActionResult<object>> MatchUntrackedToOpenLibrary(
         [FromBody] MatchUntrackedOpenLibraryRequest body,
@@ -2070,16 +2150,22 @@ public class AuthorsController : ControllerBase
             .Select(l => l.Path)
             .ToListAsync(ct);
 
+        var customUnknown = await UnknownFolderResolver.GetCustomPathAsync(_db, ct);
+        // With a custom path, every folder reports it as the RootPath sentinel
+        // — that's what the client passes back on delete/match actions.
+        var scanRoots = customUnknown is not null
+            ? new[] { (UnknownRoot: customUnknown, RootPath: customUnknown) }
+            : locations.Select(l => (UnknownRoot: Path.Combine(l, CalibreScanner.UnknownAuthorFolder), RootPath: l)).ToArray();
+
         var result = new List<(string Folder, int Count, string RootPath)>();
-        foreach (var root in locations)
+        foreach (var (unknownRoot, rootPath) in scanRoots)
         {
-            var unknownRoot = Path.Combine(root, CalibreScanner.UnknownAuthorFolder);
             if (!Directory.Exists(unknownRoot)) continue;
             foreach (var dir in Directory.GetDirectories(unknownRoot))
             {
                 var fileCount = Directory.GetFiles(dir, "*", SearchOption.AllDirectories).Length;
                 if (fileCount > 0)
-                    result.Add((Folder: Path.GetFileName(dir), Count: fileCount, RootPath: root));
+                    result.Add((Folder: Path.GetFileName(dir), Count: fileCount, RootPath: rootPath));
             }
         }
 
@@ -2114,11 +2200,13 @@ public class AuthorsController : ControllerBase
             .Select(l => l.Path)
             .ToListAsync(ct);
 
+        var unknownRoots = await UnknownFolderResolver.GetSourceRootsAsync(_db, locations, ct);
+
         var warnings = new List<string>();
         bool found = false;
-        foreach (var root in locations)
+        foreach (var unknownRoot in unknownRoots)
         {
-            var src = Path.Combine(root, CalibreScanner.UnknownAuthorFolder, folder);
+            var src = Path.Combine(unknownRoot, folder);
             if (!Directory.Exists(src)) continue;
             found = true;
             var dest = UniqueDirectory(incomingPath, folder);
@@ -2164,10 +2252,11 @@ public class AuthorsController : ControllerBase
             .Select(l => l.Path)
             .ToListAsync(ct);
 
+        var unknownRoots = await UnknownFolderResolver.GetSourceRootsAsync(_db, locations, ct);
+
         var warnings = new List<string>();
-        foreach (var root in locations)
+        foreach (var unknownRoot in unknownRoots)
         {
-            var unknownRoot = Path.Combine(root, CalibreScanner.UnknownAuthorFolder);
             if (!Directory.Exists(unknownRoot)) continue;
             foreach (var dir in Directory.GetDirectories(unknownRoot))
             {
@@ -2324,13 +2413,23 @@ public class AuthorsController : ControllerBase
             .Select(l => l.Path)
             .ToListAsync(ct);
 
+        var customUnknown = await UnknownFolderResolver.GetCustomPathAsync(_db, ct);
+        var primaryLocation = await _db.LibraryLocations
+            .Where(l => l.Enabled && l.IsPrimary)
+            .Select(l => l.Path)
+            .FirstOrDefaultAsync(ct)
+            ?? locations.FirstOrDefault();
+        // Per-location pairs of (where to scan, where to move matches into).
+        var scanPlan = customUnknown is not null
+            ? new[] { (UnknownRoot: customUnknown, DestRoot: primaryLocation ?? customUnknown) }
+            : locations.Select(l => (UnknownRoot: Path.Combine(l, CalibreScanner.UnknownAuthorFolder), DestRoot: l)).ToArray();
+
         var warnings = new List<string>();
         var details = new List<UnknownMatchResult>();
         int unmatched = 0;
 
-        foreach (var root in locations)
+        foreach (var (unknownRoot, root) in scanPlan)
         {
-            var unknownRoot = Path.Combine(root, CalibreScanner.UnknownAuthorFolder);
             if (!Directory.Exists(unknownRoot)) continue;
 
             var folderNames = Directory.EnumerateDirectories(unknownRoot)

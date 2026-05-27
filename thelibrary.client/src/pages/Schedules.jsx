@@ -9,6 +9,7 @@ const labels = {
     'same-name-authors': 'Add same-name OpenLibrary authors',
     'star-physical-authors': 'Give 1 star to physical-book authors',
     'cache-openlibrary-metadata': 'Cache OpenLibrary covers and subjects',
+    'flatten-unknown': 'Flatten __unknown subfolders (off by default)',
 }
 
 const fmtNextRun = (iso) => {

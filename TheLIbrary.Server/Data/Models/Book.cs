@@ -51,6 +51,12 @@ public class Book
 
     public bool Wanted { get; set; }
 
+    // User-hidden book. The author detail page renders these in a collapsed
+    // bucket at the very bottom (still toggleable back on). Use for OL works
+    // that are obviously non-English, duplicates, or just unwanted clutter
+    // the user doesn't want OL refreshes to keep surfacing.
+    public bool Suppressed { get; set; }
+
     // ISBN-13 (preferred) or ISBN-10, when known from imported metadata. Used
     // as a high-confidence match key in addition to NormalizedTitle.
     [MaxLength(20)]

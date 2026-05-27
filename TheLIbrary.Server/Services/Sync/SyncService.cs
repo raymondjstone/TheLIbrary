@@ -151,6 +151,16 @@ public sealed class SyncService
         static bool IsTracked(Author a) => a.Status != AuthorStatus.Excluded;
 
         var movedFolders = new List<string>();
+        var unknownRootCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        async Task<string> UnknownRootFor(string locationPath)
+        {
+            if (!unknownRootCache.TryGetValue(locationPath, out var cached))
+            {
+                cached = await Services.Calibre.UnknownFolderResolver.GetDestinationRootAsync(db, locationPath, ct);
+                unknownRootCache[locationPath] = cached;
+            }
+            return cached;
+        }
 
         foreach (var group in folderGroups)
         {
@@ -158,10 +168,11 @@ public sealed class SyncService
             var folder = group.Key;
             var folderKey = TitleNormalizer.NormalizeAuthor(folder);
             var locationPath = group.First().LocationPath;
+            var unknownRoot = await UnknownRootFor(locationPath);
 
             if (blacklistedNormalized.Contains(folderKey))
             {
-                if (MoveToUnknown(locationPath, folder)) movedFolders.Add(folder);
+                if (MoveToUnknown(locationPath, folder, unknownRoot)) movedFolders.Add(folder);
                 continue;
             }
 
@@ -177,12 +188,12 @@ public sealed class SyncService
                 // Author exists but is not on the watchlist (Priority=0, not Active).
                 // Move their folder to __unknown; keep the Author row so the user
                 // can still find and star it later.
-                if (MoveToUnknown(locationPath, folder)) movedFolders.Add(folder);
+                if (MoveToUnknown(locationPath, folder, unknownRoot)) movedFolders.Add(folder);
                 continue;
             }
 
             // No Author row — move to __unknown. Authors must be added explicitly.
-            if (MoveToUnknown(locationPath, folder)) movedFolders.Add(folder);
+            if (MoveToUnknown(locationPath, folder, unknownRoot)) movedFolders.Add(folder);
         }
 
         // Purge LocalBookFile rows for every relocated folder. Those paths are no
@@ -202,12 +213,11 @@ public sealed class SyncService
         await db.SaveChangesAsync(ct);
     }
 
-    private bool MoveToUnknown(string locationPath, string folderName)
+    private bool MoveToUnknown(string locationPath, string folderName, string unknownRoot)
     {
         var src = Path.Combine(locationPath, folderName);
         if (!Directory.Exists(src)) return true;
 
-        var unknownRoot = Path.Combine(locationPath, CalibreScanner.UnknownAuthorFolder);
         var dest = Path.Combine(unknownRoot, folderName);
         if (Directory.Exists(dest)) return true;
 
