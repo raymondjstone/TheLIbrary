@@ -124,6 +124,16 @@ public sealed class SystemProcessRunner : IProcessRunner
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
 
+        // Read stdout/stderr CONCURRENTLY with WaitForExit. `ebook-convert`
+        // is verbose (per-chapter progress lines); if we wait for exit first
+        // and read after, the OS pipe buffer (~4KB on Linux, ~64KB on Windows)
+        // fills, the child blocks on its next write, and the whole request
+        // hangs until the 10-minute timeout — causing both the visible
+        // "Converting…" hang and subsequent clicks queuing behind a stuck
+        // request on the browser's per-origin connection limit.
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+        var stderrTask = proc.StandardError.ReadToEndAsync(timeoutCts.Token);
+
         try
         {
             await proc.WaitForExitAsync(timeoutCts.Token);
@@ -134,8 +144,9 @@ public sealed class SystemProcessRunner : IProcessRunner
             throw new ProcessRunTimeoutException();
         }
 
-        var stdout = await proc.StandardOutput.ReadToEndAsync(ct);
-        var stderr = await proc.StandardError.ReadToEndAsync(ct);
+        // After exit the pipes close, so ReadToEnd resolves cleanly.
+        var stdout = await stdoutTask;
+        var stderr = await stderrTask;
         return new ProcessRunResult(proc.ExitCode, stdout, stderr);
     }
 }

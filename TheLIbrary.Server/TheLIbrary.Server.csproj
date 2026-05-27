@@ -10,6 +10,7 @@
     <UserSecretsId>10cf18f2-6b3b-44ea-8b32-8bb09b87498a</UserSecretsId>
     <ContainerRepository>thelibrary</ContainerRepository>
     <ContainerPort>5043</ContainerPort>
+    <ContainerBaseImage>galcomp.azurecr.io/aspnet-calibre:10.0</ContainerBaseImage>
     <ClientDir>$(MSBuildProjectDirectory)\..\thelibrary.client</ClientDir>
   </PropertyGroup>
 

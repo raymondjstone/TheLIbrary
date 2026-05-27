@@ -1,0 +1,37 @@
+# Base image used by the VS / .NET SDK container publish for The Library.
+#
+# The SDK's container build (`Microsoft.NET.Build.Containers`) can only pull
+# a base image from a registry — it can't run `apt-get` during the build —
+# so installing Calibre at app-publish time isn't possible. Build this
+# image once, push it to your registry, and point <ContainerBaseImage> at
+# the resulting tag.
+#
+# Build & push (run from the repo root):
+#
+#   docker build -f Dockerfile.aspnet-calibre -t galcomp.azurecr.io/aspnet-calibre:10.0 .
+#   az acr login --name galcomp
+#   docker push galcomp.azurecr.io/aspnet-calibre:10.0
+#
+# Then rebuild from VS — the SDK container publish will use this image
+# as the runtime base and `ebook-convert` will be on PATH so the
+# reMarkable "Convert & send" path works.
+#
+# Rebuild this base whenever the upstream ASP.NET image gets security
+# patches you want to pick up (every few months is fine for a personal
+# deployment).
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
+
+# Calibre pulls in Qt + a handful of X11/EGL libs even though we only
+# use the headless `ebook-convert` binary. --no-install-recommends keeps
+# the closure small, and a few packages get added back explicitly that
+# Calibre needs at runtime for image rendering / XML processing.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        calibre \
+        libegl1 \
+        libopengl0 \
+        libxkbcommon0 \
+        libxcb-cursor0 \
+    && rm -rf /var/lib/apt/lists/* \
+    && ebook-convert --version

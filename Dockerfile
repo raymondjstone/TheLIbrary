@@ -18,6 +18,33 @@ RUN dotnet publish TheLIbrary.Server/TheLIbrary.Server.csproj -c Release -o /app
 # Stage 3: Runtime
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
+
+# Install Calibre so the reMarkable "Convert & send" path can run
+# `ebook-convert` for non-EPUB/PDF sources (MOBI, AZW3, FB2, DOCX, …).
+# Without this the container's `ebook-convert` shell-out fails with
+# "No such file or directory" and the send button reports a conversion
+# error every time.
+#
+# Two install paths:
+#  • The Debian-packaged `calibre` (apt-get) — reliable, larger image,
+#    pulls Qt/X11 deps even with --no-install-recommends.
+#  • Calibre's official installer — latest version, similar dep footprint.
+# Going with apt for reproducibility; the small version lag is fine for
+# format conversion. If you need a slimmer image and don't use the
+# reMarkable convert flow, drop this block and remove --build-arg below.
+ARG INSTALL_CALIBRE=true
+RUN if [ "$INSTALL_CALIBRE" = "true" ]; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends \
+            calibre \
+            libegl1 \
+            libopengl0 \
+            libxkbcommon0 \
+            libxcb-cursor0 \
+        && rm -rf /var/lib/apt/lists/* \
+        && ebook-convert --version ; \
+    fi
+
 COPY --from=backend /app/publish .
 COPY --from=frontend /app/client/dist /app/wwwroot
 RUN echo "=== /app contents ===" && ls -la /app/ && echo "=== /app/wwwroot ===" && ls -la /app/wwwroot/ && test -f /app/wwwroot/index.html

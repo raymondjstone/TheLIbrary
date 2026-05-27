@@ -857,6 +857,13 @@ native EPUB/PDF will be sendable.
 }
 ```
 
+> **Running in Docker / on Azure?** The default ASP.NET runtime image has
+> no `ebook-convert`, so Convert & send fails on every non-native file
+> until you ship Calibre inside the container. See
+> [Calibre in the container](#calibre-in-the-container-required-for-convert--send-to-remarkable)
+> for the two supported install paths (local Docker build vs. `az acr build`
+> plus `<ContainerBaseImage>` for the VS / .NET SDK publish flow).
+
 > **Security** — the device token grants full access to your reMarkable
 > cloud library until you revoke it on the reMarkable website. It lives in
 > the same database as your connection string; protect the database at rest
@@ -1183,6 +1190,83 @@ automatically strip the `\\server\share` prefix to recover the container-local
 path for all file I/O and update the DB records to the container path format
 as they process each file. So a Windows-host install can move to a Docker
 deployment without re-syncing.
+
+### Calibre in the container (required for Convert & send to reMarkable)
+
+The reMarkable upload path is EPUB- or PDF-only — anything else (MOBI, AZW3,
+FB2, DOCX, CBZ, TXT, …) is converted in-process by shelling out to Calibre's
+`ebook-convert` CLI. The bare `mcr.microsoft.com/dotnet/aspnet:10.0` runtime
+image **does not include Calibre**, so a publish that uses the default base
+image will fail every Convert & send with:
+
+> Could not run ebook-convert (No such file or directory). Install Calibre
+> and set Calibre:EbookConvert in appsettings.json…
+
+Two ways to get Calibre into the image, depending on how you publish.
+
+**Path A — `docker build` from the repo's `Dockerfile`.** The included
+`Dockerfile` installs `calibre` (plus a small Qt/EGL runtime dep set) in the
+runtime stage by default. No extra steps. To skip Calibre and ship a smaller
+image (e.g. for a wishlist-only deployment that never sends to reMarkable),
+pass `--build-arg INSTALL_CALIBRE=false`.
+
+**Path B — `dotnet publish /t:PublishContainer` or Visual Studio "Publish
+to Container Registry".** This route uses the .NET SDK's container builder
+(`Microsoft.NET.Build.Containers`), which can only *pull* a base image from
+a registry — it cannot run `apt-get` while building. The Dockerfile above is
+not consulted at all. To get Calibre into the image you have to build a
+Calibre-enabled base image once and point `<ContainerBaseImage>` at it.
+
+A `Dockerfile.aspnet-calibre` recipe is committed in the repo root for this
+purpose. Two ways to build and push it:
+
+1. **No Docker daemon locally — `az acr build` (recommended for VS users).**
+   Builds in Azure Container Registry, no Docker Desktop / buildx install
+   needed. Because the .NET SDK build doesn't read your repo for this
+   step, do it from a one-file directory so `az acr build` doesn't try to
+   pack your whole repo (which fails on `.vs\…\*.vsidx` files locked while
+   VS is open):
+
+   ```cmd
+   mkdir "%TEMP%\aspnet-calibre-build"
+   copy Dockerfile.aspnet-calibre "%TEMP%\aspnet-calibre-build\Dockerfile"
+   cd /D "%TEMP%\aspnet-calibre-build"
+   az acr build --registry <YourRegistryName> --image aspnet-calibre:10.0 --file Dockerfile .
+   cd /D <repo-root>
+   ```
+
+   The `cd` into the temp dir matters — without it, the CLI resolves
+   `--file Dockerfile` against the current working directory and packages
+   your repo's main multi-stage Dockerfile instead, which then fails on
+   `thelibrary.client/package.json` not existing in the tiny context.
+
+2. **Local Docker daemon present.** From the repo root:
+
+   ```bash
+   docker build -f Dockerfile.aspnet-calibre -t <YourRegistry>.azurecr.io/aspnet-calibre:10.0 .
+   az acr login --name <YourRegistryName>
+   docker push <YourRegistry>.azurecr.io/aspnet-calibre:10.0
+   ```
+
+Either way, the resulting image is your runtime base. Add this line inside
+`TheLIbrary.Server.csproj` (in the existing `<PropertyGroup>`, after
+`<ContainerPort>`):
+
+```xml
+<ContainerBaseImage>YOUR-REGISTRY.azurecr.io/aspnet-calibre:10.0</ContainerBaseImage>
+```
+
+…then publish from VS as normal. The SDK container build layers your app
+on top of the Calibre-enabled base, `ebook-convert` is on PATH, and
+Convert & send works. Rebuild the base image whenever you want to pick
+up upstream ASP.NET security patches (every few months is fine for a
+personal deployment).
+
+**App Service / Container Apps registry permissions.** If Azure complains
+about pulling the base image during a publish or cold start, grant your
+hosting identity the `AcrPull` role on the registry holding
+`aspnet-calibre`. That's usually already in place when the app image
+itself lives in the same registry.
 
 ## API surface
 

@@ -275,6 +275,13 @@ public class AuthorsController : ControllerBase
     private static IReadOnlyList<string> FormatsInFolder(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) return Array.Empty<string>();
+        // FullPath may point at a single file (flat-file layout: one
+        // LocalBookFile row per file) or at a title directory (classic Calibre
+        // layout: one row for the title folder containing every format). Each
+        // row must report only what it actually represents — DO NOT scan
+        // siblings when the path is a file, or every row in a multi-format
+        // flat-file folder would falsely advertise the same set and clicking
+        // one row's Send button would look identical to clicking another's.
         if (System.IO.File.Exists(path))
         {
             var ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();

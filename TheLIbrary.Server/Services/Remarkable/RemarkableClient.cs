@@ -236,14 +236,30 @@ public sealed class RemarkableClient
         if (string.IsNullOrWhiteSpace(folderOrFile))
             throw new RemarkableException("Local file has no path on disk.");
 
-        // Edge case: FullPath already points at a file (older rows where a
-        // loose file sat directly under the author folder).
+        // Edge case: FullPath already points at a file (flat-file layout, or
+        // an older row where a loose file sat directly under the author
+        // folder). Always upload the actual file the row points at — NEVER
+        // substitute a sibling, because in a flat-file folder each format is
+        // its own LocalBookFile row and sibling-substitution would cause
+        // every click in the folder to upload the same epub.
         if (_fs.FileExists(folderOrFile))
         {
             var ext = Path.GetExtension(folderOrFile).ToLowerInvariant();
             if (ext is ".epub" or ".pdf") return (folderOrFile, null);
-            var epub = await _converter.ConvertToEpubAsync(folderOrFile, ct);
-            return (epub, epub);
+            try
+            {
+                var epub = await _converter.ConvertToEpubAsync(folderOrFile, ct);
+                return (epub, epub);
+            }
+            catch (CalibreConversionException ex)
+            {
+                // Re-throw as RemarkableException so the controller's catch
+                // arm turns it into a 400 with a clear message instead of
+                // letting it escape as a generic 500. Same wrapping pattern
+                // the folder-branch below already uses.
+                throw new RemarkableException(
+                    $"Calibre conversion of {Path.GetFileName(folderOrFile)} failed: {ex.Message}", ex);
+            }
         }
 
         if (!_fs.DirectoryExists(folderOrFile))
