@@ -29,7 +29,11 @@ local files at all as a pure author/works tracker and wishlist.
   fallback), CBZ (ComicInfo.xml), DOCX / ODT (Dublin Core), TXT (filename
   fallback only)
 - **In-browser preview** — EPUB / PDF / TXT render natively via epub.js,
-  the browser's PDF viewer, and a plain `<pre>` block respectively
+  the browser's PDF viewer, and a plain `<pre>` block respectively (available
+  on the author page **and** in the Untracked browse pane for files not yet
+  linked to a book)
+- **Pushover alerts** — optional per-author push notifications when a new
+  book by that author is detected during a refresh
 
 ## Pages
 
@@ -45,11 +49,11 @@ local files at all as a pure author/works tracker and wishlist.
 | Stats | `/stats` | KPI cards, books-read-by-year chart, top genres, per-author coverage |
 | Duplicates | `/duplicates` | Books matched to more than one local file folder |
 | Manual Books | `/manual-books` | Every manually-added book (works not on OpenLibrary), with inline edit and delete |
-| Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket (with one-click "Try matching all" against the current watchlist) |
+| Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket (with one-click "Try matching all" against the current watchlist). The browse pane drills into a folder, previews EPUB/PDF/TXT files in-place, matches a single file to an OpenLibrary work, and deletes files/folders (disk + DB) — and stays open after matching when other files remain |
 | Unmatched physical | `/physical-unmatched` | Editable list of physical-books-import rows that couldn't be matched; "Re-run matching" re-tries the whole list against the current library |
 | Sync | `/sync` | Live sync dashboard with phase tracking and progress |
 | Schedules | `/schedules` | Cron expressions and enabled/disabled flags for background jobs |
-| Settings | `/settings` | Library locations, incoming folder, ignored folders, blacklist, NZB sites, reMarkable pairing, Goodreads + physical-books import |
+| Settings | `/settings` | Library locations, incoming folder, custom quarantine (`__unknown`) folder override, Pushover credentials (+ "Send test"), ignored folders, blacklist, NZB sites, reMarkable pairing, Goodreads + physical-books import |
 
 ## How it works
 
@@ -203,6 +207,43 @@ The Stats page shows a year-by-year bar chart of books marked Read.
 To bulk-import reading history, use **Goodreads import** on the Settings page
 (see [Goodreads import](#goodreads-import)).
 
+## Pushover new-book alerts
+
+Optional. Configure a Pushover application token + user key on the **Settings**
+page (both are required; either being blank disables the feature) and then flip
+the **"Pushover alert when a new book is detected"** checkbox on each author's
+detail page to opt them in. The "Send test" button on Settings posts a one-off
+notification so you can verify credentials before relying on them at 3 AM.
+
+Alerts are fired by `AuthorRefresher` whenever a new `Book` row is inserted
+during an OpenLibrary refresh. Two guardrails keep the channel quiet:
+
+- **No backfill spam** — the very first refresh of a newly-added author
+  inserts every book they've ever written; the alert is suppressed on that
+  run by checking `LastSyncedAt is null` at the start.
+- **Publish-year gate** — only fires when `FirstPublishYear >= currentYear - 1`.
+  `FirstPublishYear` is the only publish-date signal OpenLibrary exposes
+  via the works endpoint (no month/day), so the gate is conservative on
+  purpose. Older works are silently filtered.
+
+Notifications include the author name, book title, year, and a deep link to the
+OpenLibrary work page. Failures are logged but never surface in the refresh
+outcome — a Pushover outage shouldn't fail a sync.
+
+## Book suppression
+
+Any book on an author's detail page can be **suppressed** via the per-row
+"suppress" action. Suppressed books are moved into a collapsed `<details>`
+section at the very bottom of the author page (below the unmatched-files
+panel), out of the way of the main grouped-by-series view. The bucket lists
+title, year, optional series, and an **Unsuppress** button to restore the
+book to the main list.
+
+The persistent `Book.Suppressed` flag is the user's way of saying "OpenLibrary
+keeps surfacing this work, but I don't want it on my list" — useful for
+non-English variants, obvious duplicates, or unwanted clutter. It does not
+delete the book or affect refresh logic; just changes how the row is rendered.
+
 ## Wanted flag
 
 Any unowned book can be starred as **Wanted** (☆ / ★ toggle on the Missing Works
@@ -350,6 +391,7 @@ bytes. A tampered `LocalBookFile.FullPath` (e.g. one rewritten to point at
 | GET    | `/api/files/{id}/preview?format=epub` | Stream an EPUB for in-browser rendering |
 | GET    | `/api/files/{id}/preview?format=pdf`  | Stream a PDF for the native viewer |
 | GET    | `/api/files/{id}/preview?format=txt`  | Stream a plain-text file |
+| GET    | `/api/untracked/preview?format=…`     | Same modal, but resolves the path through `ResolveUntrackedSourcePathAsync` so files inside the quarantine bucket (which have no `LocalBookFile` row) can also be previewed — the custom unknown path is added to the allowed-roots list so files outside the library locations still pass the safety check |
 
 ## NZB search sites
 
@@ -486,6 +528,30 @@ before they're slotted into the library.
 - **Folder-layout matching** — if a file's metadata is unreadable but any
   ancestor folder name matches a tracked author, the whole folder is treated
   as `<Author>/<Title>/<files>` so multi-format books stay together.
+
+## Custom quarantine (`__unknown`) folder
+
+By default each library location keeps its own `__unknown/` subfolder for
+unmatched author quarantine. Set **Unknown (quarantine) folder** on the
+**Settings** page (key `AppSettings["UnknownFolder"]`) to consolidate every
+quarantined item under one absolute path instead — handy when you want
+quarantine on a different drive, share, or outside the scanned library tree
+entirely.
+
+Saving the setting **migrates contents in the same request**: every existing
+`<library-location>/__unknown/<author>` folder (or, if a previous custom path
+was already set, every folder under that path) is moved into the new path
+with `_N` suffixing on collision, and matching `LocalBookFile.FullPath` rows
+are rewritten so on-disk and in-DB state stay aligned. Clearing the setting
+migrates everything back to the primary library location's default
+`__unknown/`. The response reports `foldersMoved / filesMoved / dbRowsUpdated`
+plus any per-folder warnings (e.g. cross-drive `Directory.Move` failures).
+
+Every code path that touches the quarantine bucket goes through
+`UnknownFolderResolver` — listing folders on the Untracked page, dispatching
+sync's "untracked → quarantine" moves, the `reprocess-unknown` job, the
+flatten-unknown job, and the unzip job's quarantine-archive pass — so the
+override applies everywhere without scattering branches across the codebase.
 
 ## Author matching
 
@@ -630,9 +696,30 @@ authors first). For each archive found:
 2. Deletes the archive from disk.
 3. Removes the `LocalBookFile` record from the database.
 
+A second pass then walks every quarantine root (each library location's
+`__unknown/`, or the custom path when set) and extracts any `.zip`/`.rar`
+file living there. Quarantine archives have no `LocalBookFile` row (sync
+purges them when moving folders to quarantine, and `IncomingProcessor` never
+inserts rows for unmatched files), so the LBF-driven pass alone would leave
+them sitting there forever. After extracting, any now-empty parent folders
+up to the quarantine root are pruned.
+
 The extracted files are then picked up by the next incoming processing run.
 Archives recorded under Windows UNC paths are remapped to the container mount
 path the same way as the series organizer.
+
+## Flatten-unknown job
+
+Off by default. Walks every author-level folder inside each quarantine root and
+moves any files nested in subdirectories up to the author folder root, then
+removes the now-empty subdirectories. Useful when an `__unknown/<author>/`
+folder accumulates messy `series/title/` nested layouts that you'd rather see
+flattened to one file per row. Collisions are resolved with `_N` suffixing,
+and `LocalBookFile.FullPath` rows are rewritten to the new path in the same
+transaction.
+
+Enable it on the **Schedules** page (`flatten-unknown` job, default cron
+`0 9 * * *`) — or run it once manually via **Run now**.
 
 ## Goodreads import
 
@@ -796,6 +883,7 @@ on every startup.
 | `same-name-authors` | `0 */6 * * *` | Add OpenLibrary authors that share a name with one you already track — a pure DB lookup against the seeded `OpenLibraryAuthor` catalogue, no API calls |
 | `star-physical-authors` | `0 10 * * *` | Give 1 star to any author with at least one manually-owned physical book whose current star rating is 0 |
 | `cache-openlibrary-metadata` | `30 10 * * *` | Backfill missing subjects and cache large OpenLibrary covers for existing books |
+| `flatten-unknown` | `0 9 * * *` (disabled by default) | Flatten any subfolders inside each quarantine author folder so each contains only files. See [Flatten-unknown job](#flatten-unknown-job) |
 
 Hangfire runs with `WorkerCount=1`, and all background work also passes through
 a single `BackgroundTaskCoordinator`, so a manual UI run and a cron tick can't
@@ -1108,6 +1196,7 @@ deployment without re-syncing.
 | GET    | `/api/authors/{id}` | Author detail + books (with genres, series, read status) + unmatched local files + associated series (primary and secondary) |
 | PUT    | `/api/authors/{id}/priority` | Set 0–5 star priority |
 | PUT    | `/api/authors/{id}/refresh-interval` | Set or clear a fixed works-refresh interval (days) |
+| PUT    | `/api/authors/{id}/notify-new-books` | Toggle Pushover new-book alerts for this author (requires credentials configured) |
 | POST   | `/api/authors/{id}/refresh` | On-demand single-author OpenLibrary refresh |
 | DELETE | `/api/authors/{id}` | Remove an author (moves files back to incoming) |
 | GET    | `/api/authors/starred` | Authors with priority ≥ 1 |
@@ -1132,6 +1221,7 @@ deployment without re-syncing.
 | POST   | `/api/books/bulk-ownership` | Bulk mark a list of books owned/not-owned |
 | PUT    | `/api/books/{id}/read-status` | Set ReadStatus (Unread/Reading/Read/Dnf) and optional ReadAt date |
 | PUT    | `/api/books/{id}/wanted` | Toggle the Wanted flag |
+| PUT    | `/api/books/{id}/suppressed` | Hide a book from the main author-detail list (rendered in a collapsed section at the bottom; reversible) |
 | GET    | `/api/books/missing` | Unowned books from starred authors (includes Wanted, Subjects, Series) |
 | GET    | `/api/books/recent-releases` | Works published in the last 5 years (starred authors) |
 | GET    | `/api/books/recent-releases/all` | Works published in the last 5 years (all authors) |
@@ -1180,10 +1270,14 @@ deployment without re-syncing.
 | GET    | `/api/unclaimed` | Calibre folders with no matching tracked author |
 | DELETE | `/api/unclaimed?folder=` | Move a folder back to incoming and blacklist the name |
 | DELETE | `/api/unclaimed/all` | Move all unclaimed folders back to incoming |
-| GET    | `/api/unknown-folders` | Author-level folders inside `__unknown` |
+| GET    | `/api/unknown-folders` | Author-level folders inside `__unknown` (or the custom quarantine path when set) |
 | POST   | `/api/unknown-folders/match` | Try matching every `__unknown` folder against the current watchlist (incl. OL alternate names) and move matches into the canonical author folder |
 | DELETE | `/api/unknown-folders?folder=` | Move one `__unknown` folder back to incoming |
 | DELETE | `/api/unknown-folders/all` | Move all `__unknown` folders back to incoming |
+| GET    | `/api/untracked/contents` | List files and subfolders inside a single unclaimed / unknown author folder, used by the Untracked browse pane |
+| GET    | `/api/untracked/preview?format=` | Stream an EPUB / PDF / TXT file from inside the quarantine bucket for the in-browser preview modal |
+| POST   | `/api/untracked/match-openlibrary` | Match a single file or sub-folder inside the browse pane to an OpenLibrary work, creating the author if needed and moving the file onto disk |
+| DELETE | `/api/untracked` | Delete a file or folder under the unclaimed / unknown bucket from disk and prune matching `LocalBookFile` rows |
 
 ### Locations, settings, and ignored folders
 
@@ -1203,6 +1297,11 @@ deployment without re-syncing.
 | PUT    | `/api/settings/refresh-cadence` | Update the four default refresh cadence buckets |
 | GET    | `/api/settings/duplicate-format-preference` | Read the duplicate-file format priority list |
 | PUT    | `/api/settings/duplicate-format-preference` | Update the duplicate-file format priority list |
+| GET    | `/api/settings/unknown-folder` | Read the optional custom quarantine path (empty = per-location `<root>/__unknown`) |
+| PUT    | `/api/settings/unknown-folder` | Set or clear the custom quarantine path; migrates contents from the old path and rewrites `LocalBookFile.FullPath` in the same request |
+| GET    | `/api/settings/pushover` | Read the Pushover app token and user key (both required for alerts to fire) |
+| PUT    | `/api/settings/pushover` | Update the Pushover credentials |
+| POST   | `/api/settings/pushover/test` | Send a test push using the stored credentials, or override-creds passed in the body |
 | GET    | `/api/ignored-folders` | Folder names excluded from every scan |
 | POST   | `/api/ignored-folders` | Add an ignored folder |
 | DELETE | `/api/ignored-folders/{id}` | Remove an ignored folder |
@@ -1281,7 +1380,9 @@ trusted LAN).
   row is a user-marked duplicate or pen name; `ClientSetNull` on delete so
   parent removal nulls children rather than cascading), `IsPenName` (when
   `LinkedToAuthorId` is set, distinguishes "fold into canonical" from
-  "show separately, just back-reference").
+  "show separately, just back-reference"), `NotifyOnNewBooks` (per-author
+  opt-in for Pushover alerts when a refresh inserts a new book published in
+  the current or previous year).
 - `Series` — normalised series name, optional FK to primary `Author`, optional
   `ParentSeriesId` self-referential FK (up to 5 levels deep), `PositionInParent`
   string for reading-order sorting within the parent. A series can be shared
@@ -1294,7 +1395,9 @@ trusted LAN).
   books), `ManuallyOwned` flag + timestamp, `Subjects` (semicolon-delimited OL
   subject tags; `NULL` = never checked, `""` = checked/none found), `SeriesId`
   (FK to `Series`), `SeriesPosition`, `ReadStatus` (Unread/Reading/Read/Dnf),
-  `ReadAt`, `Wanted`, `Isbn` (ISBN-13 preferred, normalised on insert), FK to Author.
+  `ReadAt`, `Wanted`, `Suppressed` (user-hidden; rendered in a collapsed
+  section at the bottom of the author detail page, never deleted),
+  `Isbn` (ISBN-13 preferred, normalised on insert), FK to Author.
 - `LocalBookFile` — path on disk (file path after organizer runs, directory path
   in classic Calibre layout), Calibre folder names, optional FKs to Author
   and Book (null FK = unmatched), `Isbn` (extracted from `dc:identifier` when
@@ -1302,7 +1405,9 @@ trusted LAN).
   Book ids for omnibus / boxed-set files; the primary Book stays on `BookId`).
 - `LibraryLocation` — a root directory to scan. Multiple allowed; exactly one
   is `IsPrimary`. Each has a label, enabled flag, and `LastScanAt`.
-- `AppSetting` — key/value store (incoming folder path, schedule config, etc).
+- `AppSetting` — key/value store (incoming folder path, schedule config,
+  custom quarantine path `UnknownFolder`, `PushoverAppToken` and
+  `PushoverUserKey` credentials, etc).
 - `IgnoredFolder` — author-level folder names to skip on every scan
   (case-insensitive). `__unknown` is always skipped automatically.
 - `AuthorBlacklist` — normalized author names that are never promoted to the
