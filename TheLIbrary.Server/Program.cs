@@ -74,6 +74,7 @@ builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.SameNameAuthorServ
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.PhysicalAuthorStarService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnzipService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnknownFolderFlattenerService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnknownAuthorAdoptionService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Pushover.PushoverClient>();
 
 // Hangfire uses the same SQL Server database for its job store so a restart

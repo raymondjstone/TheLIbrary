@@ -10,6 +10,7 @@ const labels = {
     'star-physical-authors': 'Give 1 star to physical-book authors',
     'cache-openlibrary-metadata': 'Cache OpenLibrary covers and subjects',
     'flatten-unknown': 'Flatten __unknown subfolders (off by default)',
+    'adopt-unknown-authors': 'Adopt _OLkey folders from __unknown → add author + return to incoming',
 }
 
 const fmtNextRun = (iso) => {

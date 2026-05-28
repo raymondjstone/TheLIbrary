@@ -160,7 +160,10 @@ public sealed class IncomingProcessor
             foreach (var f in filesInDir)
             {
                 var fext = Path.GetExtension(f).ToLowerInvariant();
-                if (fext is ".jpg" or ".jpeg" || CalibreScanner.JunkExtensions.Contains(fext))
+                var fname = Path.GetFileName(f);
+                if (fext is ".jpg" or ".jpeg"
+                    || CalibreScanner.JunkExtensions.Contains(fext)
+                    || CalibreScanner.JunkFileNames.Contains(fname))
                 {
                     try { DeleteAndWait(f); Report(null, $"deleted junk: {f}"); }
                     catch (Exception ex) { errors++; Report(null, $"error deleting {f}: {ex.Message}"); }
@@ -730,6 +733,20 @@ public sealed class IncomingProcessor
         {
             try
             {
+                // .NET's File.Move(overwrite: true) only honors `overwrite`
+                // when source and destination are on the SAME volume (a plain
+                // rename). Across volumes — which is the norm in Docker/Azure
+                // where the incoming and __unknown folders are separate mounts —
+                // it falls back to copy+delete via LinkOrCopyFile, and that
+                // path throws "already exists" if the target is present. Clear
+                // the destination ourselves first so the cross-volume copy has
+                // a clean target.
+                if (overwrite && _fs.FileExists(dst))
+                {
+                    try { _fs.DeleteFile(dst); }
+                    catch (IOException) when (attempt < maxAttempts) { }
+                    catch (UnauthorizedAccessException) when (attempt < maxAttempts) { }
+                }
                 _fs.MoveFile(src, dst, overwrite);
                 for (var i = 0; i < 20 && (_fs.FileExists(src) || !_fs.FileExists(dst)); i++)
                     Thread.Sleep(50);
@@ -738,6 +755,10 @@ public sealed class IncomingProcessor
             catch (IOException) when (attempt < maxAttempts) { }
             catch (UnauthorizedAccessException) when (attempt < maxAttempts) { }
             Thread.Sleep(200 * attempt);
+        }
+        if (overwrite && _fs.FileExists(dst))
+        {
+            try { _fs.DeleteFile(dst); } catch { /* let the move surface the real error */ }
         }
         _fs.MoveFile(src, dst, overwrite);
     }

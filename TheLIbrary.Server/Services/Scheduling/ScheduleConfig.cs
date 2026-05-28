@@ -30,12 +30,14 @@ public static class ScheduleJobIds
     public const string StarPhysicalAuthors = "star-physical-authors";
     public const string CacheOpenLibraryMetadata = "cache-openlibrary-metadata";
     public const string FlattenUnknown = "flatten-unknown";
+    public const string AdoptUnknownAuthors = "adopt-unknown-authors";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
         Sync, Seed, AuthorUpdates, Incoming, ReprocessUnknown, RefreshWorks,
         OrganizeSeries, Unzip, DisambiguateFolders, SameNameAuthors,
-        StarPhysicalAuthors, CacheOpenLibraryMetadata, FlattenUnknown
+        StarPhysicalAuthors, CacheOpenLibraryMetadata, FlattenUnknown,
+        AdoptUnknownAuthors
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -58,5 +60,6 @@ public static class ScheduleJobIds
             [StarPhysicalAuthors] = new() { Cron = "0 10 * * *", Enabled = true },
             [CacheOpenLibraryMetadata] = new() { Cron = "30 10 * * *", Enabled = true },
             [FlattenUnknown] = new() { Cron = "0 9 * * *", Enabled = false },
+            [AdoptUnknownAuthors] = new() { Cron = "0 8 * * *", Enabled = true },
         };
 }

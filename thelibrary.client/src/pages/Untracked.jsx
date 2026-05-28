@@ -39,6 +39,7 @@ export default function Untracked() {
     const [unclaimed, setUnclaimed] = useState([])
     const [unknownFolders, setUnknownFolders] = useState([])
     const [search, setSearch] = useState('')
+    const [suffixFilter, setSuffixFilter] = useState('')
     const [pageSize, setPageSize] = useState(100)
     const [unclaimedPage, setUnclaimedPage] = useState(1)
     const [unknownPage, setUnknownPage] = useState(1)
@@ -337,12 +338,14 @@ export default function Untracked() {
     const total = unclaimed.length + unknownFolders.length
     const activePaneTitle = folderBrowser?.selectedLabel || folderBrowser?.folder || ''
     const searchTerm = search.trim().toLowerCase()
-    const filteredUnclaimed = searchTerm
-        ? unclaimed.filter(u => u.authorFolder.toLowerCase().includes(searchTerm))
-        : unclaimed
-    const filteredUnknownFolders = searchTerm
-        ? unknownFolders.filter(u => u.authorFolder.toLowerCase().includes(searchTerm))
-        : unknownFolders
+    const allFormats = [...new Set([...unclaimed, ...unknownFolders].flatMap(u => u.formats || []).map(f => f.toLowerCase()))].sort()
+    const matchesFolderFilters = (u) => {
+        if (searchTerm && !u.authorFolder.toLowerCase().includes(searchTerm)) return false
+        if (suffixFilter && !(u.formats || []).some(f => f.toLowerCase() === suffixFilter)) return false
+        return true
+    }
+    const filteredUnclaimed = unclaimed.filter(matchesFolderFilters)
+    const filteredUnknownFolders = unknownFolders.filter(matchesFolderFilters)
 
     const totalUnclaimedPages = Math.max(1, Math.ceil(filteredUnclaimed.length / pageSize))
     const totalUnknownPages = Math.max(1, Math.ceil(filteredUnknownFolders.length / pageSize))
@@ -374,6 +377,17 @@ export default function Untracked() {
                     placeholder="Search untracked folders…"
                     style={{ padding: '0.35rem 0.5rem', minWidth: '18rem' }}
                 />
+                <label className="subtle" style={{ display: 'inline-flex', gap: '0.4rem', alignItems: 'center' }}>
+                    Book suffix
+                    <select value={suffixFilter} onChange={e => {
+                        setSuffixFilter(e.target.value)
+                        setUnclaimedPage(1)
+                        setUnknownPage(1)
+                    }}>
+                        <option value="">All</option>
+                        {allFormats.map(format => <option key={format} value={format}>{format.toUpperCase()}</option>)}
+                    </select>
+                </label>
                 <label className="subtle" style={{ display: 'inline-flex', gap: '0.4rem', alignItems: 'center' }}>
                     Page size
                     <select value={pageSize} onChange={e => {
@@ -432,7 +446,7 @@ export default function Untracked() {
                         {pagedUnclaimed.map(u => (
                             <li key={u.authorFolder}>
                                 <span title="Folder" style={{ marginRight: '0.3rem' }}>📁</span>
-                                <code>{u.authorFolder}</code> <span className="subtle">(folder · {u.fileCount} item{u.fileCount === 1 ? '' : 's'})</span>
+                                <code>{u.authorFolder}</code> <span className="subtle">(folder · {u.fileCount} item{u.fileCount === 1 ? '' : 's'}{u.formats?.length ? ` · ${u.formats.map(f => f.toUpperCase()).join(', ')}` : ''})</span>
                                 <button className="btn-ghost"
                                     onClick={() => fetchSuggestions(u.authorFolder)}
                                     disabled={suggestionsByFolder[u.authorFolder]?.loading}>
@@ -506,7 +520,7 @@ export default function Untracked() {
                         {pagedUnknownFolders.map(u => (
                             <li key={u.authorFolder}>
                                 <span title="Folder" style={{ marginRight: '0.3rem' }}>📁</span>
-                                <code>{u.authorFolder}</code> <span className="subtle">(folder · {u.fileCount} item{u.fileCount === 1 ? '' : 's'})</span>
+                                <code>{u.authorFolder}</code> <span className="subtle">(folder · {u.fileCount} item{u.fileCount === 1 ? '' : 's'}{u.formats?.length ? ` · ${u.formats.map(f => f.toUpperCase()).join(', ')}` : ''})</span>
                                 <button className="btn-ghost"
                                     onClick={() => fetchSuggestions(u.authorFolder)}
                                     disabled={suggestionsByFolder[u.authorFolder]?.loading}>

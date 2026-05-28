@@ -7,8 +7,12 @@ namespace TheLibrary.Server.Services.OpenLibrary;
 
 public sealed class OpenLibraryRequestFailedException : Exception
 {
-    public OpenLibraryRequestFailedException(string relativeUrl)
-        : base($"OpenLibrary request failed after multiple attempts: {relativeUrl}")
+    public OpenLibraryRequestFailedException(string relativeUrl, Exception? inner = null)
+        : base(
+            inner is null
+                ? $"OpenLibrary request failed after multiple attempts: {relativeUrl}"
+                : $"OpenLibrary request failed after multiple attempts: {relativeUrl} ({inner.Message})",
+            inner)
     {
         RelativeUrl = relativeUrl;
     }
@@ -125,6 +129,12 @@ public sealed class OpenLibraryClient
     private async Task<T?> GetJsonAsync<T>(string relativeUrl, CancellationToken ct)
     {
         const int maxAttempts = 5;
+        // Tracks the most recent transient failure so the give-up exception
+        // below can carry it as InnerException. Without this, a final-attempt
+        // 429/5xx used to escape as a raw private TransientException with the
+        // useless default ".NET Exception of type … was thrown" message.
+        Exception? lastError = null;
+
         for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
             try
@@ -150,38 +160,55 @@ public sealed class OpenLibraryClient
                                 "OpenLibrary rate-limited the app (429) — dropping to 1 req/sec until restart");
                             _limiter.Demote();
                         }
-                        var retryAfter = resp.Headers.RetryAfter?.Delta
-                                         ?? TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, attempt)));
-                        _log.LogWarning("OpenLibrary {Status} for {Url} — waiting {Delay}s (attempt {Attempt})",
-                            (int)resp.StatusCode, relativeUrl, retryAfter.TotalSeconds, attempt);
-                        await Task.Delay(retryAfter, ct);
-                        throw new TransientException();
+                        // Don't burn the Retry-After delay on the final attempt —
+                        // we're about to give up anyway.
+                        if (attempt < maxAttempts)
+                        {
+                            var retryAfter = resp.Headers.RetryAfter?.Delta
+                                             ?? TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, attempt)));
+                            _log.LogWarning("OpenLibrary {Status} for {Url} — waiting {Delay}s (attempt {Attempt})",
+                                (int)resp.StatusCode, relativeUrl, retryAfter.TotalSeconds, attempt);
+                            await Task.Delay(retryAfter, ct);
+                        }
+                        throw new TransientException((int)resp.StatusCode, relativeUrl);
                     }
                     resp.EnsureSuccessStatusCode();
                     await using var s = await resp.Content.ReadAsStreamAsync(ct);
                     return await JsonSerializer.DeserializeAsync<T>(s, JsonOpts, ct);
                 }, ct);
             }
-            catch (TransientException) when (attempt < maxAttempts)
+            catch (TransientException ex)
             {
-                // loop to retry
+                lastError = ex;
+                if (attempt >= maxAttempts) break;
             }
-            catch (HttpRequestException ex) when (attempt < maxAttempts)
+            catch (HttpRequestException ex)
             {
+                lastError = ex;
+                if (attempt >= maxAttempts) break;
                 _log.LogWarning(ex, "OpenLibrary request failed for {Url} (attempt {Attempt})", relativeUrl, attempt);
                 await Task.Delay(TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, attempt))), ct);
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested && attempt < maxAttempts)
+            catch (OperationCanceledException ex) when (!ct.IsCancellationRequested)
             {
                 // HttpClient timeout (TaskCanceledException with InnerException=TimeoutException),
                 // not an external cancellation — retry it like any other transient failure.
+                lastError = ex;
+                if (attempt >= maxAttempts) break;
                 _log.LogWarning("OpenLibrary request timed out for {Url} (attempt {Attempt})", relativeUrl, attempt);
                 await Task.Delay(TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, attempt))), ct);
             }
         }
         _log.LogError("OpenLibrary request gave up after {N} attempts: {Url}", maxAttempts, relativeUrl);
-        throw new OpenLibraryRequestFailedException(relativeUrl);
+        throw new OpenLibraryRequestFailedException(relativeUrl, lastError);
     }
 
-    private sealed class TransientException : Exception { }
+    // Internal signal that a request hit a retryable status (429/5xx). Carries
+    // a real message so when it ends up as the InnerException of an
+    // OpenLibraryRequestFailedException the cause is legible in logs.
+    private sealed class TransientException : Exception
+    {
+        public TransientException(int statusCode, string relativeUrl)
+            : base($"OpenLibrary returned {statusCode} for {relativeUrl}") { }
+    }
 }

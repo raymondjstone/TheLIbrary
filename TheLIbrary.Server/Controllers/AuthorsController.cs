@@ -1242,6 +1242,27 @@ public class AuthorsController : ControllerBase
         return $"{cleanParent}/{cleanChild}";
     }
 
+    private static IReadOnlyList<string> FormatsInUnknownFolder(string rootPath, string folder)
+    {
+        var defaultUnknownPath = Path.Combine(rootPath, CalibreScanner.UnknownAuthorFolder, folder);
+        var customUnknownPath = Path.Combine(rootPath, folder);
+        var folderPath = Directory.Exists(defaultUnknownPath) ? defaultUnknownPath : customUnknownPath;
+        if (!Directory.Exists(folderPath)) return Array.Empty<string>();
+        try
+        {
+            return Directory.EnumerateFiles(folderPath, "*", SearchOption.AllDirectories)
+                .Select(p => Path.GetExtension(p).TrimStart('.').ToLowerInvariant())
+                .Where(ext => EbookExtensions.Contains("." + ext))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(ext => ext)
+                .ToList();
+        }
+        catch
+        {
+            return Array.Empty<string>();
+        }
+    }
+
     private async Task MoveFileToAuthorFolderAsync(LocalBookFile file, Author targetAuthor, CancellationToken ct)
     {
         var targetFolder = SanitizeSegment(targetAuthor.CalibreFolderName ?? targetAuthor.Name);
@@ -1731,7 +1752,7 @@ public class AuthorsController : ControllerBase
         return NoContent();
     }
 
-    public sealed record UnclaimedFolder(string AuthorFolder, int FileCount, IReadOnlyList<string> RootPaths);
+    public sealed record UnclaimedFolder(string AuthorFolder, int FileCount, IReadOnlyList<string> RootPaths, IReadOnlyList<string> Formats);
 
     public sealed record UntrackedFolderEntry(
         string Name,
@@ -1783,6 +1804,10 @@ public class AuthorsController : ControllerBase
                     .Where(p => !string.IsNullOrWhiteSpace(p))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .Cast<string>()
+                    .ToList(),
+                g.SelectMany(f => FormatsInFolder(f.FullPath))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(x => x)
                     .ToList()))
             .ToList();
     }
@@ -2145,7 +2170,7 @@ public class AuthorsController : ControllerBase
         return NoContent();
     }
 
-    public sealed record UnknownFolder(string AuthorFolder, int FileCount, IReadOnlyList<string> RootPaths);
+    public sealed record UnknownFolder(string AuthorFolder, int FileCount, IReadOnlyList<string> RootPaths, IReadOnlyList<string> Formats);
 
     // Lists author-level folders that exist inside the __unknown quarantine
     // bucket across all enabled library locations.
@@ -2182,7 +2207,11 @@ public class AuthorsController : ControllerBase
             .Select(g => new UnknownFolder(
                 g.Key,
                 g.Sum(x => x.Count),
-                g.Select(x => x.RootPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList()))
+                g.Select(x => x.RootPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                g.SelectMany(x => FormatsInUnknownFolder(x.RootPath, x.Folder))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(x => x)
+                    .ToList()))
             .ToList();
     }
 

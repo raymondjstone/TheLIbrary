@@ -39,6 +39,15 @@ public sealed class CalibreScanner
         ".html", ".htm", ".css", ".part", ".crdownload"
     };
 
+    // Extensionless metadata/system files dropped by Calibre and similar tools.
+    // They have no extension so JunkExtensions never matches them, and they're
+    // not books — left alone they get shuffled into __unknown on every incoming
+    // run. Matched by exact file name (case-insensitive) and deleted on sight.
+    internal static readonly HashSet<string> JunkFileNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "VERSION", "Index", "metadata.db", "metadata_db_prefs_backup.json"
+    };
+
     private readonly ILogger<CalibreScanner> _log;
 
     public CalibreScanner(ILogger<CalibreScanner> log) { _log = log; }

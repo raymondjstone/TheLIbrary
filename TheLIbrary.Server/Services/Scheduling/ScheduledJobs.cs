@@ -28,6 +28,7 @@ public sealed class ScheduledJobs
     private readonly PhysicalAuthorStarService _physicalStars;
     private readonly OpenLibraryMetadataCacheService _metadataCache;
     private readonly UnknownFolderFlattenerService _flattenUnknown;
+    private readonly UnknownAuthorAdoptionService _adoptUnknownAuthors;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -42,13 +43,14 @@ public sealed class ScheduledJobs
         PhysicalAuthorStarService physicalStars,
         OpenLibraryMetadataCacheService metadataCache,
         UnknownFolderFlattenerService flattenUnknown,
+        UnknownAuthorAdoptionService adoptUnknownAuthors,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
     {
         _sync = sync; _incoming = incoming; _organizer = organizer; _unzip = unzip;
         _disambiguator = disambiguator; _sameNames = sameNames; _physicalStars = physicalStars; _metadataCache = metadataCache;
-        _flattenUnknown = flattenUnknown;
+        _flattenUnknown = flattenUnknown; _adoptUnknownAuthors = adoptUnknownAuthors;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -140,6 +142,12 @@ public sealed class ScheduledJobs
         ScheduleJobIds.FlattenUnknown, manualTrigger,
         ct => _flattenUnknown.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _flattenUnknown.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunAdoptUnknownAuthors(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.AdoptUnknownAuthors, manualTrigger,
+        ct => _adoptUnknownAuthors.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _adoptUnknownAuthors.IsRunning);
 
     internal Task RunWithPollingForTests(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,

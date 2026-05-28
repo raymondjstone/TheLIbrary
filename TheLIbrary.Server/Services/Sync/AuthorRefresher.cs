@@ -349,12 +349,26 @@ public sealed class AuthorRefresher
                 ? TimeSpan.FromDays(author.RefreshIntervalDays.Value)
                 : await NextFetchIntervalAsync(years, ct));
 
-        // Fetch and store author bio if we don't have one yet.
+        // Fetch and store author bio if we don't have one yet. The bio is a
+        // nice-to-have; the works (already fetched and saved above) are the
+        // point of this run. A transient OpenLibrary failure here — e.g. a
+        // string of 503s on /authors/{key}.json — must NOT abort the whole
+        // refresh and lose the works we just persisted. Swallow it and let
+        // the next scheduled refresh pick the bio up.
         if (string.IsNullOrWhiteSpace(author.Bio))
         {
-            var detail = await _ol.FetchAuthorAsync(author.OpenLibraryKey!, ct);
-            if (detail?.Bio is { } bio)
-                author.Bio = ExtractBio(bio);
+            try
+            {
+                var detail = await _ol.FetchAuthorAsync(author.OpenLibraryKey!, ct);
+                if (detail?.Bio is { } bio)
+                    author.Bio = ExtractBio(bio);
+            }
+            catch (OpenLibraryRequestFailedException ex)
+            {
+                _log.LogWarning(ex,
+                    "Bio fetch for '{Name}' ({Key}) failed — keeping works, will retry bio next refresh",
+                    author.Name, author.OpenLibraryKey);
+            }
         }
 
         // Name-collision check: this refresh might have just produced the
