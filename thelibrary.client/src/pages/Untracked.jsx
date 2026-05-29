@@ -9,6 +9,12 @@ const fileExtension = (name) => {
     return idx >= 0 ? name.slice(idx + 1).toLowerCase() : ''
 }
 
+const omitKey = (obj, key) => {
+    if (!obj || !(key in obj)) return obj || {}
+    const { [key]: _, ...rest } = obj
+    return rest
+}
+
 // Inline OL author suggestions panel rendered under an Untracked row. Renders
 // nothing until the user has clicked the "Suggest" button (lazy-loaded so a
 // page with hundreds of folders doesn't hammer the OL rate limiter).
@@ -40,6 +46,7 @@ export default function Untracked() {
     const [unknownFolders, setUnknownFolders] = useState([])
     const [search, setSearch] = useState('')
     const [suffixFilter, setSuffixFilter] = useState('')
+    const [sortOrder, setSortOrder] = useState('name')
     const [pageSize, setPageSize] = useState(100)
     const [unclaimedPage, setUnclaimedPage] = useState(1)
     const [unknownPage, setUnknownPage] = useState(1)
@@ -77,6 +84,53 @@ export default function Untracked() {
         else setError(prev => prev ?? `/api/unknown-folders: ${unkRes.reason?.message || unkRes.reason}`)
     }
 
+    const fetchFolderContents = async (bucket, folder, rootPath, path = '', recursiveFilesOnly = false) => {
+        const qs = new URLSearchParams({ bucket, folder, rootPath })
+        if (path) qs.set('path', path)
+        if (recursiveFilesOnly) qs.set('recursiveFilesOnly', 'true')
+        const r = await fetch(`/api/untracked/contents?${qs.toString()}`)
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText)
+        return r.json()
+    }
+
+    const loadExpandedFolders = async (bucket, folder, rootPath, entries) => {
+        const directoryEntries = entries.filter(entry => entry.isDirectory)
+        if (directoryEntries.length === 0) {
+            return {
+                expandedPaths: {},
+                nestedEntries: {},
+                nestedLoadingPaths: {},
+                nestedErrorPaths: {},
+            }
+        }
+
+        const expandedPaths = Object.fromEntries(directoryEntries.map(entry => [entry.relativePath, true]))
+        const results = await Promise.allSettled(directoryEntries.map(async entry => ({
+            path: entry.relativePath,
+            body: await fetchFolderContents(bucket, folder, rootPath, entry.relativePath, true),
+        })))
+
+        const nestedEntries = {}
+        const nestedErrorPaths = {}
+        for (const result of results) {
+            if (result.status === 'fulfilled') {
+                nestedEntries[result.value.path] = result.value.body.entries || []
+            } else {
+                const path = result.reason?.path
+                const message = String(result.reason?.message || result.reason || 'Failed to load nested items.')
+                if (path)
+                    nestedErrorPaths[path] = message
+            }
+        }
+
+        return {
+            expandedPaths,
+            nestedEntries,
+            nestedLoadingPaths: {},
+            nestedErrorPaths,
+        }
+    }
+
     const browseFolder = async (bucket, folder, rootPath, path = '') => {
         const normalizedPath = path || ''
         const defaultLabel = normalizedPath || folder
@@ -88,6 +142,10 @@ export default function Untracked() {
             currentPath: normalizedPath,
             parentPath: normalizedPath.includes('/') ? normalizedPath.split('/').slice(0, -1).join('/') : null,
             entries: [],
+            expandedPaths: {},
+            nestedEntries: {},
+            nestedLoadingPaths: {},
+            nestedErrorPaths: {},
             selectedRelativePath: normalizedPath,
             selectedSearchQuery: defaultQuery,
             selectedLabel: defaultLabel,
@@ -98,13 +156,11 @@ export default function Untracked() {
         setFolderBrowserBusy(true)
         setError(null)
         try {
-            const qs = new URLSearchParams({ bucket, folder, rootPath })
-            if (path) qs.set('path', path)
-            const r = await fetch(`/api/untracked/contents?${qs.toString()}`)
-            if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText)
-            const body = await r.json()
+            const body = await fetchFolderContents(bucket, folder, rootPath, path)
+            const expandedState = await loadExpandedFolders(bucket, folder, rootPath, body.entries || [])
             setFolderBrowser({
                 ...body,
+                ...expandedState,
                 selectedRelativePath: body.currentPath,
                 selectedSearchQuery: body.currentPath?.split('/').at(-1) || body.folder,
                 selectedLabel: body.currentPath || body.folder,
@@ -121,9 +177,195 @@ export default function Untracked() {
         }
     }
 
+    const selectBrowserEntry = (entry) => {
+        setFolderBrowser(prev => prev ? {
+            ...prev,
+            selectedRelativePath: entry.relativePath,
+            selectedSearchQuery: entry.searchQuery,
+            selectedLabel: entry.relativePath,
+            selectedIsDirectory: entry.isDirectory,
+        } : prev)
+    }
+
+    const toggleFolderExpansion = async (entry) => {
+        if (!folderBrowser || !entry.isDirectory) return
+        if (folderBrowser.expandedPaths?.[entry.relativePath]) {
+            setFolderBrowser(prev => prev ? {
+                ...prev,
+                expandedPaths: omitKey(prev.expandedPaths, entry.relativePath),
+                nestedLoadingPaths: omitKey(prev.nestedLoadingPaths, entry.relativePath),
+                nestedErrorPaths: omitKey(prev.nestedErrorPaths, entry.relativePath),
+            } : prev)
+            return
+        }
+
+        if (folderBrowser.nestedEntries?.[entry.relativePath]) {
+            setFolderBrowser(prev => prev ? {
+                ...prev,
+                expandedPaths: { ...prev.expandedPaths, [entry.relativePath]: true },
+                nestedErrorPaths: omitKey(prev.nestedErrorPaths, entry.relativePath),
+            } : prev)
+            return
+        }
+
+        setFolderBrowser(prev => prev ? {
+            ...prev,
+            expandedPaths: { ...prev.expandedPaths, [entry.relativePath]: true },
+            nestedLoadingPaths: { ...prev.nestedLoadingPaths, [entry.relativePath]: true },
+            nestedErrorPaths: omitKey(prev.nestedErrorPaths, entry.relativePath),
+        } : prev)
+
+        try {
+            const body = await fetchFolderContents(folderBrowser.bucket, folderBrowser.folder, folderBrowser.rootPath, entry.relativePath, true)
+            setFolderBrowser(prev => prev ? {
+                ...prev,
+                nestedEntries: { ...prev.nestedEntries, [entry.relativePath]: body.entries || [] },
+                nestedLoadingPaths: omitKey(prev.nestedLoadingPaths, entry.relativePath),
+                nestedErrorPaths: omitKey(prev.nestedErrorPaths, entry.relativePath),
+            } : prev)
+        } catch (e) {
+            const message = String(e.message || e)
+            setFolderBrowser(prev => prev ? {
+                ...prev,
+                nestedLoadingPaths: omitKey(prev.nestedLoadingPaths, entry.relativePath),
+                nestedErrorPaths: { ...prev.nestedErrorPaths, [entry.relativePath]: message },
+            } : prev)
+        }
+    }
+
+    const renderBrowserEntries = (entries, depth = 0) => entries.map(entry => {
+        const ext = entry.isDirectory ? '' : fileExtension(entry.name)
+        const canPreview = !entry.isDirectory && PREVIEWABLE_EXTS.has(ext)
+        const isSelected = entry.relativePath === folderBrowser.selectedRelativePath
+        const isExpanded = !!folderBrowser.expandedPaths?.[entry.relativePath]
+        const nested = folderBrowser.nestedEntries?.[entry.relativePath] || []
+        const nestedLoading = !!folderBrowser.nestedLoadingPaths?.[entry.relativePath]
+        const nestedError = folderBrowser.nestedErrorPaths?.[entry.relativePath]
+        const nestedFolderPrefix = entry.relativePath ? `${entry.relativePath}/` : ''
+
+        return (
+            <div key={entry.relativePath} style={{ marginBottom: '0.45rem', marginLeft: depth === 0 ? 0 : `${depth * 1.1}rem` }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'auto minmax(12rem, 1fr) auto auto auto auto', gap: '0.5rem', alignItems: 'center', padding: '0.45rem 0.55rem', border: isSelected ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: '6px', background: isSelected ? 'var(--accent-bg, rgba(59,130,246,0.08))' : 'transparent' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                        {entry.isDirectory ? (
+                            <button className="btn-ghost"
+                                    title={isExpanded ? 'Collapse nested items' : 'Expand nested items'}
+                                    onClick={() => toggleFolderExpansion(entry)}
+                                    disabled={folderBrowserBusy || !!matchingPath}
+                                    style={{ padding: '0 0.35rem', minWidth: '2rem' }}>
+                                {isExpanded ? '▾' : '▸'}
+                            </button>
+                        ) : (
+                            <span style={{ width: '2rem' }} />
+                        )}
+                    </div>
+                    <div>
+                        <div>
+                            <span title={entry.isDirectory ? 'Folder' : 'File'} style={{ marginRight: '0.3rem' }}>
+                                {entry.isDirectory ? '📁' : '📄'}
+                            </span>
+                            <code>{entry.name}</code>{' '}
+                            <span className="subtle">({entry.isDirectory ? 'folder' : 'file'})</span>
+                        </div>
+                        <div className="subtle">OpenLibrary search title: {entry.searchQuery}</div>
+                    </div>
+                    {entry.isDirectory
+                        ? <button className="btn-ghost"
+                                  onClick={() => browseFolder(folderBrowser.bucket, folderBrowser.folder, folderBrowser.rootPath, entry.relativePath)}
+                                  disabled={folderBrowserBusy || !!matchingPath}>
+                            Open
+                          </button>
+                        : <span />}
+                    {canPreview
+                        ? <button className="btn-ghost"
+                                  title={`Preview this ${ext.toUpperCase()} file`}
+                                  onClick={() => setPreview({
+                                      bucket: folderBrowser.bucket,
+                                      folder: folderBrowser.folder,
+                                      rootPath: folderBrowser.rootPath,
+                                      path: entry.relativePath,
+                                      format: ext,
+                                      title: entry.name,
+                                  })}
+                                  disabled={folderBrowserBusy || !!matchingPath}>
+                            👁 Preview
+                          </button>
+                        : <span />}
+                    <button className="btn-ghost"
+                            onClick={() => selectBrowserEntry(entry)}
+                            disabled={folderBrowserBusy || !!matchingPath}>
+                        {entry.isDirectory ? 'Choose folder' : 'Choose file'}
+                    </button>
+                    <button className="btn-ghost btn-danger"
+                            title={`Permanently delete this ${entry.isDirectory ? 'folder' : 'file'} from disk and database`}
+                            onClick={() => deleteBrowserEntry(entry)}
+                            disabled={folderBrowserBusy || !!matchingPath || deletingEntry === entry.relativePath}>
+                        {deletingEntry === entry.relativePath
+                            ? 'Deleting…'
+                            : `🗑 Delete ${entry.isDirectory ? 'folder' : 'file'}`}
+                    </button>
+                </div>
+                {entry.isDirectory && isExpanded && (
+                    <div style={{ marginTop: '0.35rem', paddingLeft: '0.75rem', borderLeft: '1px solid var(--border)' }}>
+                        {nestedLoading && <p className="subtle" style={{ margin: '0.25rem 0 0.45rem' }}>Loading nested items…</p>}
+                        {nestedError && <p className="error" style={{ margin: '0.25rem 0 0.45rem' }}>{nestedError}</p>}
+                        {!nestedLoading && !nestedError && nested.length > 0 && nested.map(fileEntry => {
+                            const nestedExt = fileExtension(fileEntry.name)
+                            const nestedCanPreview = PREVIEWABLE_EXTS.has(nestedExt)
+                            const nestedSelected = fileEntry.relativePath === folderBrowser.selectedRelativePath
+                            const relativeToExpanded = fileEntry.relativePath.startsWith(nestedFolderPrefix)
+                                ? fileEntry.relativePath.slice(nestedFolderPrefix.length)
+                                : fileEntry.relativePath
+
+                            return (
+                                <div key={fileEntry.relativePath}
+                                     style={{ display: 'grid', gridTemplateColumns: 'minmax(12rem, 1fr) auto auto auto', gap: '0.5rem', alignItems: 'center', padding: '0.4rem 0.55rem', border: nestedSelected ? '1px solid var(--accent)' : '1px dashed var(--border)', borderRadius: '6px', background: nestedSelected ? 'var(--accent-bg, rgba(59,130,246,0.08))' : 'transparent', marginBottom: '0.35rem', marginLeft: `${(depth + 1) * 1.1}rem` }}>
+                                    <div>
+                                        <div>
+                                            <span title="File" style={{ marginRight: '0.3rem' }}>📄</span>
+                                            <code>{relativeToExpanded}</code>
+                                        </div>
+                                        <div className="subtle">OpenLibrary search title: {fileEntry.searchQuery}</div>
+                                    </div>
+                                    {nestedCanPreview
+                                        ? <button className="btn-ghost"
+                                                  title={`Preview this ${nestedExt.toUpperCase()} file`}
+                                                  onClick={() => setPreview({
+                                                      bucket: folderBrowser.bucket,
+                                                      folder: folderBrowser.folder,
+                                                      rootPath: folderBrowser.rootPath,
+                                                      path: fileEntry.relativePath,
+                                                      format: nestedExt,
+                                                      title: fileEntry.name,
+                                                  })}
+                                                  disabled={folderBrowserBusy || !!matchingPath}>
+                                            👁 Preview
+                                          </button>
+                                        : <span />}
+                                    <button className="btn-ghost"
+                                            onClick={() => selectBrowserEntry(fileEntry)}
+                                            disabled={folderBrowserBusy || !!matchingPath}>
+                                        Choose file
+                                    </button>
+                                    <button className="btn-ghost btn-danger"
+                                            title="Permanently delete this file from disk and database"
+                                            onClick={() => deleteBrowserEntry(fileEntry)}
+                                            disabled={folderBrowserBusy || !!matchingPath || deletingEntry === fileEntry.relativePath}>
+                                        {deletingEntry === fileEntry.relativePath ? 'Deleting…' : '🗑 Delete file'}
+                                    </button>
+                                </div>
+                            )
+                        })}
+                        {!nestedLoading && !nestedError && nested.length === 0 && <p className="subtle" style={{ margin: '0.25rem 0 0.45rem' }}>No nested items here.</p>}
+                    </div>
+                )}
+            </div>
+        )
+    })
+
     const useOpenLibraryMatch = async (work) => {
         if (!folderBrowser) return
-        setMatchingPath(folderBrowser.currentPath || `${folderBrowser.bucket}:${folderBrowser.folder}`)
+        setMatchingPath(folderBrowser.selectedRelativePath || folderBrowser.currentPath || `${folderBrowser.bucket}:${folderBrowser.folder}`)
         const { bucket, folder, rootPath, currentPath } = folderBrowser
         try {
             const r = await fetch('/api/untracked/match-openlibrary', {
@@ -344,8 +586,19 @@ export default function Untracked() {
         if (suffixFilter && !(u.formats || []).some(f => f.toLowerCase() === suffixFilter)) return false
         return true
     }
-    const filteredUnclaimed = unclaimed.filter(matchesFolderFilters)
-    const filteredUnknownFolders = unknownFolders.filter(matchesFolderFilters)
+    const compareFolders = (a, b) => {
+        if (sortOrder === 'items-desc') {
+            const diff = (b.fileCount || 0) - (a.fileCount || 0)
+            return diff || a.authorFolder.localeCompare(b.authorFolder)
+        }
+        if (sortOrder === 'items-asc') {
+            const diff = (a.fileCount || 0) - (b.fileCount || 0)
+            return diff || a.authorFolder.localeCompare(b.authorFolder)
+        }
+        return a.authorFolder.localeCompare(b.authorFolder)
+    }
+    const filteredUnclaimed = [...unclaimed.filter(matchesFolderFilters)].sort(compareFolders)
+    const filteredUnknownFolders = [...unknownFolders.filter(matchesFolderFilters)].sort(compareFolders)
 
     const totalUnclaimedPages = Math.max(1, Math.ceil(filteredUnclaimed.length / pageSize))
     const totalUnknownPages = Math.max(1, Math.ceil(filteredUnknownFolders.length / pageSize))
@@ -399,6 +652,18 @@ export default function Untracked() {
                         <option value={50}>50</option>
                         <option value={100}>100</option>
                         <option value={250}>250</option>
+                    </select>
+                </label>
+                <label className="subtle" style={{ display: 'inline-flex', gap: '0.4rem', alignItems: 'center' }}>
+                    Order
+                    <select value={sortOrder} onChange={e => {
+                        setSortOrder(e.target.value)
+                        setUnclaimedPage(1)
+                        setUnknownPage(1)
+                    }}>
+                        <option value="name">Folder name</option>
+                        <option value="items-desc">Items: high to low</option>
+                        <option value="items-asc">Items: low to high</option>
                     </select>
                 </label>
                 <span className="subtle">Showing {filteredUnclaimed.length + filteredUnknownFolders.length} of {total} folder(s)</span>
@@ -607,65 +872,7 @@ export default function Untracked() {
                                 </div>
                             {folderBrowser.loading && <p className="subtle" style={{ marginTop: 0 }}>Loading folder contents…</p>}
                             {folderBrowser.loadError && <p className="error" style={{ marginTop: 0 }}>{folderBrowser.loadError}</p>}
-                                {folderBrowser.entries.map(entry => {
-                                    const ext = entry.isDirectory ? '' : fileExtension(entry.name)
-                                    const canPreview = !entry.isDirectory && PREVIEWABLE_EXTS.has(ext)
-                                    return (
-                                    <div key={entry.relativePath}
-                                         style={{ display: 'grid', gridTemplateColumns: 'minmax(12rem, 1fr) auto auto auto auto', gap: '0.5rem', alignItems: 'center', padding: '0.45rem 0.55rem', border: entry.relativePath === folderBrowser.selectedRelativePath ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: '6px', background: entry.relativePath === folderBrowser.selectedRelativePath ? 'var(--accent-bg, rgba(59,130,246,0.08))' : 'transparent', marginBottom: '0.45rem' }}>
-                                        <div>
-                                            <div>
-                                                <span title={entry.isDirectory ? 'Folder' : 'File'} style={{ marginRight: '0.3rem' }}>
-                                                    {entry.isDirectory ? '📁' : '📄'}
-                                                </span>
-                                                <code>{entry.name}</code>{' '}
-                                                <span className="subtle">({entry.isDirectory ? 'folder' : 'file'})</span>
-                                            </div>
-                                            <div className="subtle">OpenLibrary search title: {entry.searchQuery}</div>
-                                        </div>
-                                        {entry.isDirectory
-                                            ? <button className="btn-ghost"
-                                                      onClick={() => browseFolder(folderBrowser.bucket, folderBrowser.folder, folderBrowser.rootPath, entry.relativePath)}
-                                                      disabled={folderBrowserBusy || !!matchingPath}>
-                                                Open
-                                              </button>
-                                            : <span />}
-                                        {canPreview
-                                            ? <button className="btn-ghost"
-                                                      title={`Preview this ${ext.toUpperCase()} file`}
-                                                      onClick={() => setPreview({
-                                                          bucket: folderBrowser.bucket,
-                                                          folder: folderBrowser.folder,
-                                                          rootPath: folderBrowser.rootPath,
-                                                          path: entry.relativePath,
-                                                          format: ext,
-                                                          title: entry.name,
-                                                      })}
-                                                      disabled={folderBrowserBusy || !!matchingPath}>
-                                                👁 Preview
-                                              </button>
-                                            : <span />}
-                                        <button className="btn-ghost"
-                                                onClick={() => setFolderBrowser(prev => prev ? {
-                                                    ...prev,
-                                                    selectedRelativePath: entry.relativePath,
-                                                    selectedSearchQuery: entry.searchQuery,
-                                                    selectedLabel: entry.relativePath,
-                                                    selectedIsDirectory: entry.isDirectory,
-                                                } : prev)}
-                                                disabled={folderBrowserBusy || !!matchingPath}>
-                                            {entry.isDirectory ? 'Choose folder' : 'Choose file'}
-                                        </button>
-                                        <button className="btn-ghost btn-danger"
-                                                title={`Permanently delete this ${entry.isDirectory ? 'folder' : 'file'} from disk and database`}
-                                                onClick={() => deleteBrowserEntry(entry)}
-                                                disabled={folderBrowserBusy || !!matchingPath || deletingEntry === entry.relativePath}>
-                                            {deletingEntry === entry.relativePath
-                                                ? 'Deleting…'
-                                                : `🗑 Delete ${entry.isDirectory ? 'folder' : 'file'}`}
-                                        </button>
-                                    </div>
-                                )})}
+                                {renderBrowserEntries(folderBrowser.entries)}
                             {!folderBrowser.loading && folderBrowser.entries.length === 0 && <p className="subtle" style={{ margin: 0 }}>No drill-down entries here.</p>}
                             </div>
 

@@ -1766,6 +1766,7 @@ public class AuthorsController : ControllerBase
         string RootPath,
         string CurrentPath,
         string? ParentPath,
+        bool RecursiveFilesOnly,
         IReadOnlyList<UntrackedFolderEntry> Entries);
 
     public sealed record MatchUntrackedOpenLibraryRequest(
@@ -1818,6 +1819,7 @@ public class AuthorsController : ControllerBase
         [FromQuery] string folder,
         [FromQuery] string rootPath,
         [FromQuery] string? path,
+        [FromQuery] bool recursiveFilesOnly,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(bucket) || string.IsNullOrWhiteSpace(folder) || string.IsNullOrWhiteSpace(rootPath))
@@ -1834,26 +1836,44 @@ public class AuthorsController : ControllerBase
             ? null
             : NormalizeRelativePath(Path.GetDirectoryName(relativePath)?.Replace('\\', '/'));
 
-        var entries = Directory.EnumerateFileSystemEntries(sourcePath)
-            .Where(p => Directory.Exists(p)
-                        || CalibreScanner.EbookExtensions.Contains(Path.GetExtension(p))
-                        || CalibreScanner.ArchiveExtensions.Contains(Path.GetExtension(p)))
-            .Select(p => new
-            {
-                Path = p,
-                Name = Path.GetFileName(p),
-                IsDirectory = Directory.Exists(p)
-            })
-            .OrderByDescending(x => x.IsDirectory)
-            .ThenBy(x => x.Name)
-            .Select(x => new UntrackedFolderEntry(
-                x.Name,
-                CombineRelativePath(relativePath, x.Name),
-                x.IsDirectory,
-                x.IsDirectory ? x.Name : Path.GetFileNameWithoutExtension(x.Name)))
-            .ToList();
+        List<UntrackedFolderEntry> entries;
+        if (recursiveFilesOnly)
+        {
+            entries = Directory.EnumerateFiles(sourcePath, "*", SearchOption.AllDirectories)
+                .Where(p => CalibreScanner.EbookExtensions.Contains(Path.GetExtension(p))
+                            || CalibreScanner.ArchiveExtensions.Contains(Path.GetExtension(p)))
+                .Select(p => Path.GetRelativePath(sourcePath, p).Replace('\\', '/'))
+                .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .Select(p => new UntrackedFolderEntry(
+                    Path.GetFileName(p),
+                    CombineRelativePath(relativePath, p),
+                    false,
+                    Path.GetFileNameWithoutExtension(p)))
+                .ToList();
+        }
+        else
+        {
+            entries = Directory.EnumerateFileSystemEntries(sourcePath)
+                .Where(p => Directory.Exists(p)
+                            || CalibreScanner.EbookExtensions.Contains(Path.GetExtension(p))
+                            || CalibreScanner.ArchiveExtensions.Contains(Path.GetExtension(p)))
+                .Select(p => new
+                {
+                    Path = p,
+                    Name = Path.GetFileName(p),
+                    IsDirectory = Directory.Exists(p)
+                })
+                .OrderByDescending(x => x.IsDirectory)
+                .ThenBy(x => x.Name)
+                .Select(x => new UntrackedFolderEntry(
+                    x.Name,
+                    CombineRelativePath(relativePath, x.Name),
+                    x.IsDirectory,
+                    x.IsDirectory ? x.Name : Path.GetFileNameWithoutExtension(x.Name)))
+                .ToList();
+        }
 
-        return Ok(new UntrackedFolderContents(bucket.Trim(), folder.Trim(), rootPath.Trim(), relativePath, parentPath, entries));
+        return Ok(new UntrackedFolderContents(bucket.Trim(), folder.Trim(), rootPath.Trim(), relativePath, parentPath, recursiveFilesOnly, entries));
     }
 
     // In-browser preview for files that live under unclaimed/__unknown. The
