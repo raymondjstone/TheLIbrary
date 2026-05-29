@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 
 const labels = {
     'sync': 'Sync (Calibre → OpenLibrary)',
@@ -18,6 +18,61 @@ const fmtNextRun = (iso) => {
     const d = new Date(iso)
     if (Number.isNaN(d.getTime())) return '—'
     return d.toLocaleString()
+}
+
+function JobHistory({ jobId }) {
+    const [history, setHistory] = useState(null)
+    const [open, setOpen] = useState(false)
+
+    const load = async () => {
+        const r = await fetch(`/api/schedules/${jobId}/history`)
+        if (!r.ok) return
+        setHistory(await r.json())
+    }
+
+    const toggle = () => {
+        if (!open && !history) load()
+        setOpen(o => !o)
+    }
+
+    if (!open) {
+        return <button className="btn-ghost" style={{ fontSize: '0.8em' }} onClick={toggle}>History</button>
+    }
+
+    return (
+        <div style={{ marginTop: '0.4rem' }}>
+            <button className="btn-ghost" style={{ fontSize: '0.8em' }} onClick={toggle}>Hide history</button>
+            {history === null && <span className="subtle" style={{ marginLeft: '0.5rem' }}>Loading…</span>}
+            {history !== null && history.length === 0 && <span className="subtle" style={{ marginLeft: '0.5rem' }}>No recent runs.</span>}
+            {history !== null && history.length > 0 && (
+                <table style={{ marginTop: '0.4rem', fontSize: '0.8rem', borderCollapse: 'collapse' }}>
+                    <thead>
+                        <tr>
+                            <th style={{ padding: '0.15rem 0.5rem', textAlign: 'left', color: 'var(--subtle)' }}>State</th>
+                            <th style={{ padding: '0.15rem 0.5rem', textAlign: 'left', color: 'var(--subtle)' }}>Finished</th>
+                            <th style={{ padding: '0.15rem 0.5rem', textAlign: 'left', color: 'var(--subtle)' }}>Duration</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {history.map((h, i) => (
+                            <tr key={i}>
+                                <td style={{ padding: '0.15rem 0.5rem', color: h.state === 'Failed' ? 'var(--danger, #dc2626)' : '#22c55e' }}>
+                                    {h.state}
+                                </td>
+                                <td style={{ padding: '0.15rem 0.5rem', color: 'var(--subtle)' }}>
+                                    {h.finishedAt ? new Date(h.finishedAt).toLocaleString() : '—'}
+                                </td>
+                                <td style={{ padding: '0.15rem 0.5rem', color: 'var(--subtle)' }}>
+                                    {h.durationSeconds != null ? `${Math.round(h.durationSeconds)}s` : '—'}
+                                    {h.exceptionMessage && <span title={h.exceptionMessage} style={{ marginLeft: '0.3rem', cursor: 'help' }}>⚠</span>}
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            )}
+        </div>
+    )
 }
 
 export default function Schedules() {
@@ -111,35 +166,42 @@ export default function Schedules() {
                         {rows.map(row => {
                             const draft = drafts[row.jobId] || { cron: row.cron, enabled: row.enabled }
                             return (
-                                <tr key={row.jobId}>
-                                    <td>{labels[row.jobId] || row.jobId}</td>
-                                    <td>
-                                        <input
-                                            type="checkbox"
-                                            checked={draft.enabled}
-                                            onChange={e => setDraft(row.jobId, { enabled: e.target.checked })}
-                                        />
-                                    </td>
-                                    <td>
-                                        <input
-                                            type="text"
-                                            value={draft.cron}
-                                            onChange={e => setDraft(row.jobId, { cron: e.target.value })}
-                                            spellCheck={false}
-                                            style={{ fontFamily: 'monospace', minWidth: '10rem' }}
-                                        />
-                                    </td>
-                                    <td>{draft.enabled ? fmtNextRun(row.nextRunUtc) : 'disabled'}</td>
-                                    <td>
-                                        <button
-                                            onClick={() => save(row.jobId)}
-                                            disabled={!isDirty(row) || saving[row.jobId]}>
-                                            {saving[row.jobId] ? 'Saving…' : 'Save'}
-                                        </button>
-                                        {' '}
-                                        <button onClick={() => runNow(row.jobId)}>Run now</button>
-                                    </td>
-                                </tr>
+                                <React.Fragment key={row.jobId}>
+                                    <tr>
+                                        <td>{labels[row.jobId] || row.jobId}</td>
+                                        <td>
+                                            <input
+                                                type="checkbox"
+                                                checked={draft.enabled}
+                                                onChange={e => setDraft(row.jobId, { enabled: e.target.checked })}
+                                            />
+                                        </td>
+                                        <td>
+                                            <input
+                                                type="text"
+                                                value={draft.cron}
+                                                onChange={e => setDraft(row.jobId, { cron: e.target.value })}
+                                                spellCheck={false}
+                                                style={{ fontFamily: 'monospace', minWidth: '10rem' }}
+                                            />
+                                        </td>
+                                        <td>{draft.enabled ? fmtNextRun(row.nextRunUtc) : 'disabled'}</td>
+                                        <td>
+                                            <button
+                                                onClick={() => save(row.jobId)}
+                                                disabled={!isDirty(row) || saving[row.jobId]}>
+                                                {saving[row.jobId] ? 'Saving…' : 'Save'}
+                                            </button>
+                                            {' '}
+                                            <button onClick={() => runNow(row.jobId)}>Run now</button>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td colSpan={5} style={{ paddingTop: 0, paddingBottom: '0.5rem' }}>
+                                            <JobHistory jobId={row.jobId} />
+                                        </td>
+                                    </tr>
+                                </React.Fragment>
                             )
                         })}
                     </tbody>

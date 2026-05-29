@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import AddAuthorDialog from './AddAuthorDialog.jsx'
 import StarRating from '../components/StarRating.jsx'
-
 const PREFS_KEY = 'authors.listPrefs.v1'
 const PAGE_SIZE = 50
 
@@ -30,6 +29,9 @@ export default function Authors() {
     const [dialog, setDialog] = useState(null)
     const [busyId, setBusyId] = useState(null)
     const [error, setError] = useState(null)
+    const [selected, setSelected] = useState(new Set())
+    const [bulkBusy, setBulkBusy] = useState(false)
+    const [mergeTarget, setMergeTarget] = useState('')  // authorId string for merge target
 
     useEffect(() => {
         savePrefs({ statusFilter, minPriority, sort, dir, query })
@@ -85,6 +87,63 @@ export default function Authors() {
             setError(String(e.message || e))
             setAuthors(list => list?.map(a => a.id === author.id ? { ...a, priority: previous } : a))
         }
+    }
+
+    const toggleSelect = (id) => {
+        setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+    }
+
+    const toggleSelectPage = () => {
+        const pageIds = pageRows.map(a => a.id)
+        const allIn = pageIds.every(id => selected.has(id))
+        setSelected(prev => {
+            const n = new Set(prev)
+            if (allIn) pageIds.forEach(id => n.delete(id))
+            else pageIds.forEach(id => n.add(id))
+            return n
+        })
+    }
+
+    const bulkSetStatus = async (status) => {
+        if (!selected.size) return
+        setBulkBusy(true)
+        setError(null)
+        try {
+            const reason = status === 'Excluded' ? (prompt('Exclusion reason (optional):') ?? '') : ''
+            const r = await fetch('/api/authors/bulk-status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ authorIds: Array.from(selected), status, exclusionReason: reason || null })
+            })
+            if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText)
+            setSelected(new Set())
+            load()
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setBulkBusy(false) }
+    }
+
+    const mergeSelected = async () => {
+        if (selected.size !== 1) { alert('Select exactly one source author to merge.'); return }
+        const targetId = Number(mergeTarget)
+        if (!targetId) { alert('Enter the target author ID to merge into.'); return }
+        const [srcId] = selected
+        if (srcId === targetId) { alert('Source and target must be different.'); return }
+        if (!confirm(`Merge author #${srcId} INTO #${targetId}? The source author will be deleted.`)) return
+        setBulkBusy(true)
+        setError(null)
+        try {
+            const r = await fetch(`/api/authors/${srcId}/merge`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ intoAuthorId: targetId })
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setSelected(new Set())
+            setMergeTarget('')
+            load()
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setBulkBusy(false) }
     }
 
     const filtered = useMemo(() => {
@@ -183,6 +242,26 @@ export default function Authors() {
                 <span className="count">{filtered?.length ?? 0} author(s)</span>
             </div>
 
+            {selected.size > 0 && (
+                <div className="toolbar" style={{ background: 'var(--surface2, #f3f4f6)', borderRadius: '6px', padding: '0.4rem 0.6rem', marginBottom: '0.5rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <span style={{ fontWeight: 600 }}>{selected.size} selected</span>
+                    <button className="btn-ghost" disabled={bulkBusy} onClick={() => bulkSetStatus('Active')}>Set Active</button>
+                    <button className="btn-ghost" disabled={bulkBusy} onClick={() => bulkSetStatus('Pending')}>Set Pending</button>
+                    <button className="btn-ghost btn-danger" disabled={bulkBusy} onClick={() => bulkSetStatus('Excluded')}>Set Excluded</button>
+                    <span style={{ borderLeft: '1px solid var(--border)', margin: '0 0.2rem' }} />
+                    <input
+                        type="number"
+                        placeholder="Merge into author ID…"
+                        value={mergeTarget}
+                        onChange={e => setMergeTarget(e.target.value)}
+                        style={{ width: '13rem' }} />
+                    <button className="btn-ghost btn-danger" disabled={bulkBusy || selected.size !== 1 || !mergeTarget} onClick={mergeSelected}>
+                        Merge selected into ID →
+                    </button>
+                    <button className="btn-ghost" onClick={() => setSelected(new Set())}>Clear selection</button>
+                </div>
+            )}
+
             {letterIndex && letterIndex.length > 1 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.15rem', margin: '0.5rem 0' }}>
                     {letterIndex.map(l => (
@@ -204,6 +283,12 @@ export default function Authors() {
                         <table className="grid">
                             <thead>
                                 <tr>
+                                    <th style={{ width: '1%' }}>
+                                        <input type="checkbox"
+                                            checked={pageRows.length > 0 && pageRows.every(a => selected.has(a.id))}
+                                            onChange={toggleSelectPage}
+                                            title="Select/deselect page" />
+                                    </th>
                                     <th>{sortLabel('name', 'Name')}</th>
                                     <th>{sortLabel('priority', 'Priority')}</th>
                                     <th>Status</th>
@@ -218,6 +303,11 @@ export default function Authors() {
                             <tbody>
                                 {pageRows.map(a => (
                                     <tr key={a.id}>
+                                        <td>
+                                            <input type="checkbox"
+                                                checked={selected.has(a.id)}
+                                                onChange={() => toggleSelect(a.id)} />
+                                        </td>
                                         <td>
                                             <Link to={`/authors/${a.id}`}>{a.name}</Link>
                                             {a.calibreFolderName && a.calibreFolderName !== a.name

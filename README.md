@@ -39,20 +39,21 @@ local files at all as a pure author/works tracker and wishlist.
 
 | Page | Route | Purpose |
 |------|-------|---------|
-| Authors | `/authors` | Full watchlist with filter, sort, pagination, and A–Z jump index |
-| Author detail | `/authors/:id` | Books (grouped by series), bio, read status, NZB links, reMarkable send |
+| Authors | `/authors` | Full watchlist with filter, sort, pagination, A–Z jump index, per-row selection, bulk status (Active / Pending / Excluded), and author merge |
+| Author detail | `/authors/:id` | Books (grouped by series), bio, read status, NZB links, reMarkable send, Calibre scan timestamp, bulk "Mark all missing as wanted" |
 | Recent Releases | `/recent-releases` | New works from starred authors (last 5 years) |
 | All Releases | `/all-releases` | New works from all tracked authors |
-| Missing Works | `/missing` | Unowned books from starred authors — bulk-own, wanted flag, genre filter, search |
+| Missing Works | `/missing` | Unowned books from starred authors — bulk-own, wanted flag, genre filter, year range filter, CSV export, per-book file-candidate matching panel (fuzzy-matched from author unmatched files + unknown folder) |
+| Wanted | `/wanted` | Wanted books grouped by author — per-book selection, author-level select-all, bulk remove from wanted, NZB search links, author priority stars |
 | Starred Authors | `/starred` | Authors with priority ≥ 1 |
 | Series | `/series` | Hierarchical series tree with owned/total progress bars; create new series; inline edit of name, primary author, additional authors, parent series, and reading order position; deep-linkable via `?q=SeriesName` |
-| Stats | `/stats` | KPI cards, books-read-by-year chart, top genres, per-author coverage |
+| Stats | `/stats` | KPI cards, books-read-by-year chart, top genres, per-author coverage, file-format breakdown chart, files-acquired-by-month chart |
 | Duplicates | `/duplicates` | Books matched to more than one local file folder |
 | Manual Books | `/manual-books` | Every manually-added book (works not on OpenLibrary), with inline edit and delete |
 | Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket (with one-click "Try matching all" against the current watchlist). The browse pane drills into a folder, previews EPUB/PDF/TXT files in-place, matches a single file to an OpenLibrary work, and deletes files/folders (disk + DB) — and stays open after matching when other files remain |
 | Unmatched physical | `/physical-unmatched` | Editable list of physical-books-import rows that couldn't be matched; "Re-run matching" re-tries the whole list against the current library |
 | Sync | `/sync` | Live sync dashboard with phase tracking and progress |
-| Schedules | `/schedules` | Cron expressions and enabled/disabled flags for background jobs |
+| Schedules | `/schedules` | Cron expressions and enabled/disabled flags for background jobs; per-job last-N-run history panel |
 | Settings | `/settings` | Library locations, incoming folder, custom quarantine (`__unknown`) folder override, Pushover credentials (+ "Send test"), ignored folders, blacklist, NZB sites, reMarkable pairing, Goodreads + physical-books import |
 
 ## How it works
@@ -249,6 +250,33 @@ delete the book or affect refresh logic; just changes how the row is rendered.
 Any unowned book can be starred as **Wanted** (☆ / ★ toggle on the Missing Works
 page and the author detail page). Wanted books sort to the top of Missing Works.
 Goodreads "to-read" shelf items are also set as wanted during import.
+
+## Finding a physical file for a missing book
+
+On the Missing Works page each book row has a **▼** button that expands a
+file-candidate panel. Opening the panel fires a single request to
+`GET /api/books/{id}/file-candidates`, which scans two sources and returns up
+to 20 results ranked by [Jaro-Winkler](#local-file--book-matching) similarity
+against the book's normalised title:
+
+| Source | What it contains |
+|--------|-----------------|
+| **Author files** | `LocalBookFile` records already linked to the author in the DB but not yet matched to any specific book (the same rows shown on the author detail page as "unmatched") |
+| **Unknown folder** | Files found on disk inside the `__unknown` quarantine bucket (not yet in the DB at all) |
+
+Each candidate shows its filename, source, and match percentage. Two actions
+are available:
+
+- **Link** — sets `BookId` on the existing `LocalBookFile` record (or creates a
+  new one for unknown-folder files). The book is now owned and disappears from
+  the missing list.
+- **Link & Move** *(unknown-folder files only)* — same as Link, but also
+  physically moves the file into `<primary library>/<Author>/<NormalizedTitle>/`
+  so it lands in the canonical library tree. The `LocalBookFile` record is
+  created with the new path.
+
+The panel is lazy-loaded (fetched once on first open, cached for the session)
+and score-filtered at ≥ 40 % to suppress obviously unrelated files.
 
 ## Manually-added books
 
@@ -1276,6 +1304,8 @@ itself lives in the same registry.
 |--------|------|---------|
 | GET    | `/api/authors` | List tracked authors |
 | POST   | `/api/authors` | Add an author to the watchlist from an OL key |
+| POST   | `/api/authors/bulk-status` | Bulk set status (Active / Pending / Excluded) for a list of authors |
+| POST   | `/api/authors/{id}/merge` | Merge a source author into a target — reassigns all books and local files, then deletes the source |
 | POST   | `/api/authors/{id}/books` | Catalogue a manually-added book under this author (synthetic `XX` work key) |
 | GET    | `/api/authors/{id}` | Author detail + books (with genres, series, read status) + unmatched local files + associated series (primary and secondary) |
 | PUT    | `/api/authors/{id}/priority` | Set 0–5 star priority |
@@ -1305,8 +1335,12 @@ itself lives in the same registry.
 | POST   | `/api/books/bulk-ownership` | Bulk mark a list of books owned/not-owned |
 | PUT    | `/api/books/{id}/read-status` | Set ReadStatus (Unread/Reading/Read/Dnf) and optional ReadAt date |
 | PUT    | `/api/books/{id}/wanted` | Toggle the Wanted flag |
+| POST   | `/api/books/bulk-wanted` | Bulk set the Wanted flag for a list of books |
 | PUT    | `/api/books/{id}/suppressed` | Hide a book from the main author-detail list (rendered in a collapsed section at the bottom; reversible) |
 | GET    | `/api/books/missing` | Unowned books from starred authors (includes Wanted, Subjects, Series) |
+| GET    | `/api/books/missing/export` | CSV download of the full missing-works list |
+| GET    | `/api/books/{id}/file-candidates` | Up to 20 fuzzy-scored file candidates for a missing book — author's unmatched `LocalBookFile` records first, then files in the `__unknown` quarantine folder(s) |
+| POST   | `/api/books/{id}/link-file` | Link a candidate file to a book (by `FileId` or raw `FilePath`); optionally move the file into the author's library folder (`Move: true`) |
 | GET    | `/api/books/recent-releases` | Works published in the last 5 years (starred authors) |
 | GET    | `/api/books/recent-releases/all` | Works published in the last 5 years (all authors) |
 | GET    | `/api/books/duplicates` | Books matched to more than one local file folder |
@@ -1333,7 +1367,7 @@ itself lives in the same registry.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET    | `/api/stats` | Library KPIs, read-by-year, top genres, author coverage |
+| GET    | `/api/stats` | Library KPIs, read-by-year, top genres, author coverage, file-format breakdown, files-acquired-by-month |
 | POST   | `/api/import/goodreads` | Import a Goodreads export CSV (multipart/form-data `file`) |
 | POST   | `/api/import/physical-books` | Import a physical-books inventory (tab or fixed-width); marks matches as `ManuallyOwned` and persists unmatched rows for later editing |
 | GET    | `/api/import/physical-books/unmatched` | List rows from past imports that couldn't be matched |
@@ -1424,6 +1458,7 @@ itself lives in the same registry.
 | GET    | `/api/schedules` | List scheduled jobs and their cron/enabled state |
 | PUT    | `/api/schedules/{jobId}` | Update a job's cron expression or enabled flag |
 | POST   | `/api/schedules/{jobId}/run` | Trigger a job immediately (manualTrigger=true) |
+| GET    | `/api/schedules/{jobId}/history` | Recent succeeded/failed runs for a job (state, finish time, duration) |
 
 ### reMarkable
 

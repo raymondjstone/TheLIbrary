@@ -432,6 +432,7 @@ export default function AuthorDetail() {
     const [editBook, setEditBook] = useState(null)
     const [unlinking, setUnlinking] = useState(false)
     const [suggestionsByFile, setSuggestionsByFile] = useState({})  // { fileId: { inferredTitle, candidates } }
+    const [markingAllWanted, setMarkingAllWanted] = useState(false)
     const [bulkBusy, setBulkBusy] = useState(false)
     const [preview, setPreview] = useState(null)  // { fileId, format, title } | null
     const [openLibraryByFile, setOpenLibraryByFile] = useState({})
@@ -667,6 +668,31 @@ export default function AuthorDetail() {
         } catch (e) {
             setData(prev => prev ? { ...prev, priority: previous } : prev)
             alert(`Failed to save priority: ${e.message ?? e}`)
+        }
+    }
+
+    const markAllMissingWanted = async () => {
+        if (!data) return
+        const missingIds = data.books
+            .filter(b => !b.owned && !b.wanted)
+            .map(b => b.id)
+        if (!missingIds.length) return
+        setMarkingAllWanted(true)
+        try {
+            const r = await fetch('/api/books/bulk-wanted', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids: missingIds, wanted: true })
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            setData(prev => prev ? {
+                ...prev,
+                books: prev.books.map(b => missingIds.includes(b.id) ? { ...b, wanted: true } : b)
+            } : prev)
+        } catch (e) {
+            alert(`Failed: ${e.message ?? e}`)
+        } finally {
+            setMarkingAllWanted(false)
         }
     }
 
@@ -1128,6 +1154,9 @@ export default function AuthorDetail() {
                 {data.nextFetchAt
                     ? <>Next refresh: {new Date(data.nextFetchAt).toLocaleDateString()}{' · '}</>
                     : <>Next refresh: due now{' · '}</>}
+                {data.calibreScannedAt
+                    ? <>Last Calibre scan: {new Date(data.calibreScannedAt).toLocaleDateString()}{' · '}</>
+                    : <>Last Calibre scan: never{' · '}</>}
                 {editingInterval ? (
                     <span>
                         <input
@@ -1191,6 +1220,14 @@ export default function AuthorDetail() {
                     <button onClick={() => setShowAddBook(true)}
                             title="Catalogue a book OpenLibrary doesn't list yet">
                         + Add book
+                    </button>
+                )}
+                {data.books.some(b => !b.owned && !b.wanted) && (
+                    <button className="btn-ghost"
+                            disabled={markingAllWanted}
+                            onClick={markAllMissingWanted}
+                            title="Mark all unowned books by this author as wanted">
+                        {markingAllWanted ? 'Marking…' : '★ Mark all missing as wanted'}
                     </button>
                 )}
                 {rmConnected && (

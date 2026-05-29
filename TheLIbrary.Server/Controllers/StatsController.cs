@@ -72,13 +72,43 @@ public class StatsController : ControllerBase
             r.Total == 0 ? 0 : (int)Math.Round(100.0 * r.Owned / r.Total)
         )).ToList();
 
+        // Format breakdown: count of local files by extension (e.g. epub, pdf, mobi).
+        var formatRows = await _db.LocalBookFiles.AsNoTracking()
+            .Select(f => f.FullPath)
+            .ToListAsync(ct);
+        var formatCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in formatRows)
+        {
+            var ext = System.IO.Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+            if (!string.IsNullOrEmpty(ext))
+                formatCounts[ext] = formatCounts.TryGetValue(ext, out var n) ? n + 1 : 1;
+        }
+        var formatBreakdown = formatCounts
+            .OrderByDescending(kv => kv.Value)
+            .Select(kv => new FormatCount(kv.Key, kv.Value))
+            .ToList();
+
+        // Acquisition rate: files added per calendar month over the last 24 months.
+        var cutoff = DateTime.UtcNow.AddMonths(-24);
+        var acquisitionRaw = await _db.LocalBookFiles.AsNoTracking()
+            .Where(f => f.ModifiedAt >= cutoff)
+            .Select(f => new { f.ModifiedAt })
+            .ToListAsync(ct);
+        var acquisitionCounts = acquisitionRaw
+            .GroupBy(f => new { f.ModifiedAt.Year, f.ModifiedAt.Month })
+            .Select(g => new MonthCount($"{g.Key.Year}-{g.Key.Month:D2}", g.Count()))
+            .OrderBy(m => m.Month)
+            .ToList();
+
         return new LibraryStats(
             totalBooks, ownedBooks, missingBooks,
             readCount, readingCount, wantedCount,
             totalAuthors, activeAuthors, starredAuthors,
             readByYear.Select(r => new YearCount(r.Year, r.Count)).ToList(),
             topGenres,
-            coverage);
+            coverage,
+            formatBreakdown,
+            acquisitionCounts);
     }
 
     public sealed record LibraryStats(
@@ -93,9 +123,13 @@ public class StatsController : ControllerBase
         int StarredAuthors,
         IReadOnlyList<YearCount> ReadByYear,
         IReadOnlyList<GenreCount> TopGenres,
-        IReadOnlyList<AuthorCoverage> AuthorCoverage);
+        IReadOnlyList<AuthorCoverage> AuthorCoverage,
+        IReadOnlyList<FormatCount> FormatBreakdown,
+        IReadOnlyList<MonthCount> AcquisitionByMonth);
 
     public sealed record YearCount(int Year, int Count);
     public sealed record GenreCount(string Genre, int Count);
     public sealed record AuthorCoverage(int Id, string Name, int Priority, int Total, int Owned, int Percent);
+    public sealed record FormatCount(string Format, int Count);
+    public sealed record MonthCount(string Month, int Count);
 }

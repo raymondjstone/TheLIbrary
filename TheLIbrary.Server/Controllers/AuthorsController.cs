@@ -208,7 +208,8 @@ public class AuthorsController : ControllerBase
         IReadOnlyList<LinkedAuthorRef> Alternates,
         // Pen-name children — listed for UI navigation but NOT folded in. The
         // user's books pages keep them separate.
-        IReadOnlyList<LinkedAuthorRef> PenNames);
+        IReadOnlyList<LinkedAuthorRef> PenNames,
+        DateTime? CalibreScannedAt = null);
 
     public sealed record BookRow(
         int Id,
@@ -443,7 +444,7 @@ public class AuthorsController : ControllerBase
             a.Status.ToString(), a.ExclusionReason, a.Priority, a.LastSyncedAt, a.NextFetchAt, a.RefreshIntervalDays,
             a.Bio, a.Notes, a.NotifyOnNewBooks,
             books, unmatched, associatedSeries,
-            linkedTo, alternates, penNames);
+            linkedTo, alternates, penNames, a.CalibreScannedAt);
     }
 
     private static List<string> FolderCandidatesFor(Author a)
@@ -1372,6 +1373,32 @@ public class AuthorsController : ControllerBase
         if (any) await _db.SaveChangesAsync(ct);
     }
 
+    public sealed record BulkStatusRequest(IReadOnlyList<int> AuthorIds, string Status, string? ExclusionReason);
+    public sealed record BulkStatusResult(int Updated);
+
+    // Applies a status change (Active / Excluded / Pending) to a batch of authors at once.
+    [HttpPost("bulk-status")]
+    public async Task<ActionResult<BulkStatusResult>> BulkStatus([FromBody] BulkStatusRequest body, CancellationToken ct)
+    {
+        if (!Enum.TryParse<AuthorStatus>(body.Status, ignoreCase: true, out var status))
+            return BadRequest(new { error = $"Unknown status '{body.Status}'" });
+
+        var ids = (body.AuthorIds ?? Array.Empty<int>()).Distinct().ToList();
+        if (ids.Count == 0) return Ok(new BulkStatusResult(0));
+
+        var authors = await _db.Authors.Where(a => ids.Contains(a.Id)).ToListAsync(ct);
+        foreach (var a in authors)
+        {
+            a.Status = status;
+            if (status == AuthorStatus.Excluded)
+                a.ExclusionReason = string.IsNullOrWhiteSpace(body.ExclusionReason) ? null : body.ExclusionReason.Trim();
+            else
+                a.ExclusionReason = null;
+        }
+        await _db.SaveChangesAsync(ct);
+        return Ok(new BulkStatusResult(authors.Count));
+    }
+
     public sealed record SetPriorityRequest(int Priority);
 
     // Update the user's 0–5 star rating. Values outside the range are
@@ -1429,6 +1456,52 @@ public class AuthorsController : ControllerBase
         author.NotifyOnNewBooks = body.Enabled;
         await _db.SaveChangesAsync(ct);
         return Ok(new { author.Id, author.NotifyOnNewBooks });
+    }
+
+    public sealed record MergeAuthorRequest(int IntoAuthorId);
+    public sealed record MergeAuthorResult(int BooksReassigned, int FilesReassigned);
+
+    // Merges the current author INTO another author: all their Books and
+    // LocalBookFiles are reassigned to the target, then this author is deleted.
+    // Books that would create a duplicate OL work key on the target are skipped
+    // (the merge still completes for the rest).
+    [HttpPost("{id:int}/merge")]
+    public async Task<ActionResult<MergeAuthorResult>> Merge(int id, [FromBody] MergeAuthorRequest body, CancellationToken ct)
+    {
+        if (id == body.IntoAuthorId)
+            return BadRequest(new { error = "Cannot merge an author into themselves." });
+
+        var source = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (source is null) return NotFound(new { error = "Source author not found." });
+
+        var target = await _db.Authors.FirstOrDefaultAsync(a => a.Id == body.IntoAuthorId, ct);
+        if (target is null) return BadRequest(new { error = "Target author not found." });
+
+        // Collect work keys already on the target so we can skip duplicates.
+        var targetKeys = await _db.Books
+            .Where(b => b.AuthorId == body.IntoAuthorId && b.OpenLibraryWorkKey != null && b.OpenLibraryWorkKey != "")
+            .Select(b => b.OpenLibraryWorkKey)
+            .ToHashSetAsync(ct);
+
+        var sourceBooks = await _db.Books.Where(b => b.AuthorId == id).ToListAsync(ct);
+        int booksReassigned = 0;
+        foreach (var book in sourceBooks)
+        {
+            if (!string.IsNullOrEmpty(book.OpenLibraryWorkKey) && targetKeys.Contains(book.OpenLibraryWorkKey))
+                continue; // would create duplicate — skip
+            book.AuthorId = body.IntoAuthorId;
+            targetKeys.Add(book.OpenLibraryWorkKey!);
+            booksReassigned++;
+        }
+
+        var sourceFiles = await _db.LocalBookFiles.Where(f => f.AuthorId == id).ToListAsync(ct);
+        foreach (var f in sourceFiles) f.AuthorId = body.IntoAuthorId;
+
+        await _db.SaveChangesAsync(ct);
+        _db.Authors.Remove(source);
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(new MergeAuthorResult(booksReassigned, sourceFiles.Count));
     }
 
     public sealed record LinkAuthorRequest(int CanonicalAuthorId, bool IsPenName);

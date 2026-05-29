@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.IO;
 using TheLibrary.Server.Services.Sync;
 
@@ -688,6 +689,41 @@ public class BooksController : ControllerBase
             .ToListAsync(ct);
     }
 
+    // CSV download of the missing-works list.
+    [HttpGet("missing/export")]
+    public async Task<IActionResult> ExportMissingWorks(CancellationToken ct)
+    {
+        var rows = await MissingWorks(ct);
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("Author,Title,Year,Series,Wanted,OpenLibraryKey");
+        foreach (var r in rows)
+        {
+            static string Esc(string? s) => s is null ? "" : "\"" + s.Replace("\"", "\"\"") + "\"";
+            sb.Append(Esc(r.AuthorName)).Append(',')
+              .Append(Esc(r.Title)).Append(',')
+              .Append(r.FirstPublishYear?.ToString() ?? "").Append(',')
+              .Append(Esc(r.Series)).Append(',')
+              .Append(r.Wanted ? "yes" : "").Append(',')
+              .AppendLine(Esc(r.OpenLibraryWorkKey));
+        }
+        var bytes = System.Text.Encoding.UTF8.GetBytes(sb.ToString());
+        return File(bytes, "text/csv", "missing-works.csv");
+    }
+
+    public sealed record BulkMarkWantedRequest(IReadOnlyList<int>? Ids, bool Wanted);
+
+    // Marks a batch of books wanted/unwanted in one call.
+    [HttpPost("bulk-wanted")]
+    public async Task<IActionResult> BulkMarkWanted([FromBody] BulkMarkWantedRequest body, CancellationToken ct)
+    {
+        var ids = (body.Ids ?? Array.Empty<int>()).ToList();
+        if (ids.Count == 0) return Ok(new { updated = 0 });
+        var books = await _db.Books.Where(b => ids.Contains(b.Id)).ToListAsync(ct);
+        foreach (var b in books) b.Wanted = body.Wanted;
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { updated = books.Count });
+    }
+
     public sealed record RecentReleaseRow(
         int Id,
         string Title,
@@ -748,5 +784,190 @@ public class BooksController : ControllerBase
                 r.OpenLibraryWorkKey, r.AuthorId, r.AuthorName, r.AuthorPriority,
                 r.Owned, r.ReadStatusStr, r.SeriesName, r.Subjects))
             .ToList();
+    }
+
+    // -------------------------------------------------------------------------
+    // File candidates & linking for missing works
+    // -------------------------------------------------------------------------
+
+    public sealed record FileCandidateDto(
+        // null when the candidate comes from the unknown folder (not yet in DB)
+        int? FileId,
+        string FullPath,
+        string DisplayName,
+        double Score,
+        // "linked" = already in LocalBookFiles for this author; "unknown" = raw file
+        string Source);
+
+    // Returns up to 20 fuzzy-scored file candidates for a missing book.
+    // Sources:
+    //   1. Unmatched LocalBookFiles belonging to the same author
+    //   2. Files in the __unknown quarantine folder(s)
+    [HttpGet("{id:int}/file-candidates")]
+    public async Task<ActionResult<IReadOnlyList<FileCandidateDto>>> GetFileCandidates(
+        int id, CancellationToken ct)
+    {
+        var book = await _db.Books
+            .AsNoTracking()
+            .Include(b => b.Author)
+            .FirstOrDefaultAsync(b => b.Id == id, ct);
+        if (book is null) return NotFound();
+
+        var normalizedTarget = TitleNormalizer.Normalize(book.Title);
+
+        var candidates = new List<FileCandidateDto>();
+
+        // 1. Unmatched LocalBookFiles for this author
+        var unmatched = await _db.LocalBookFiles
+            .AsNoTracking()
+            .Where(f => f.AuthorId == book.AuthorId && f.BookId == null)
+            .ToListAsync(ct);
+
+        foreach (var f in unmatched)
+        {
+            var raw = !string.IsNullOrWhiteSpace(f.MetadataTitle) ? f.MetadataTitle
+                    : !string.IsNullOrWhiteSpace(f.NormalizedTitle) ? f.NormalizedTitle
+                    : Path.GetFileNameWithoutExtension(f.FullPath);
+            var score = FuzzyScore.JaroWinkler(normalizedTarget, TitleNormalizer.Normalize(raw));
+            if (score >= 0.4)
+                candidates.Add(new FileCandidateDto(f.Id, f.FullPath, Path.GetFileName(f.FullPath), score, "linked"));
+        }
+
+        // 2. Files in unknown folder roots
+        var locationPaths = await _db.LibraryLocations
+            .AsNoTracking()
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+
+        var unknownRoots = await UnknownFolderResolver.GetSourceRootsAsync(_db, locationPaths, ct);
+        foreach (var root in unknownRoots)
+        {
+            if (!Directory.Exists(root)) continue;
+            foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            {
+                var ext = Path.GetExtension(file).ToLowerInvariant();
+                if (!CalibreScanner.EbookExtensions.Contains(ext)) continue;
+                var nameNoExt = Path.GetFileNameWithoutExtension(file);
+                var score = FuzzyScore.JaroWinkler(normalizedTarget, TitleNormalizer.Normalize(nameNoExt));
+                if (score >= 0.4)
+                    candidates.Add(new FileCandidateDto(null, file, Path.GetFileName(file), score, "unknown"));
+            }
+        }
+
+        var top20 = candidates
+            .OrderByDescending(c => c.Score)
+            .Take(20)
+            .ToList();
+
+        return Ok(top20);
+    }
+
+    public sealed record LinkFileRequest(
+        // Provide one of the two:
+        int? FileId,        // existing LocalBookFile to link
+        string? FilePath,   // raw path from unknown folder
+        bool Move           // if true, move the file into the author's library folder
+    );
+
+    public sealed record LinkFileResult(bool Moved, string FinalPath);
+
+    // Links a file (existing LocalBookFile or raw unknown-folder file) to the
+    // specified book, marking the book as owned. If Move=true and the file is
+    // not already under a library location, it is moved into the author's folder.
+    [HttpPost("{id:int}/link-file")]
+    public async Task<ActionResult<LinkFileResult>> LinkFile(
+        int id, [FromBody] LinkFileRequest body, CancellationToken ct)
+    {
+        var book = await _db.Books
+            .Include(b => b.Author)
+            .FirstOrDefaultAsync(b => b.Id == id, ct);
+        if (book is null) return NotFound(new { error = "Book not found" });
+
+        var locationPaths = await _db.LibraryLocations
+            .AsNoTracking()
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+
+        string sourcePath;
+        LocalBookFile? existingFile = null;
+
+        if (body.FileId is int fid)
+        {
+            existingFile = await _db.LocalBookFiles.FirstOrDefaultAsync(f => f.Id == fid, ct);
+            if (existingFile is null) return NotFound(new { error = "File not found" });
+            sourcePath = existingFile.FullPath;
+        }
+        else if (!string.IsNullOrWhiteSpace(body.FilePath))
+        {
+            sourcePath = body.FilePath;
+            if (!System.IO.File.Exists(sourcePath))
+                return BadRequest(new { error = "File does not exist on disk" });
+        }
+        else
+        {
+            return BadRequest(new { error = "Provide either FileId or FilePath" });
+        }
+
+        var finalPath = sourcePath;
+        var moved = false;
+
+        if (body.Move)
+        {
+            // Determine the author's canonical folder under the primary location
+            var primaryLocation = await _db.LibraryLocations
+                .AsNoTracking()
+                .Where(l => l.Enabled && l.IsPrimary)
+                .OrderBy(l => l.Id)
+                .FirstOrDefaultAsync(ct)
+                ?? await _db.LibraryLocations
+                    .AsNoTracking()
+                    .Where(l => l.Enabled)
+                    .OrderBy(l => l.Id)
+                    .FirstOrDefaultAsync(ct);
+
+            if (primaryLocation is not null)
+            {
+                var authorFolder = book.Author?.Name is string n
+                    ? Path.Combine(primaryLocation.Path, n)
+                    : primaryLocation.Path;
+                var destDir = Path.Combine(authorFolder, TitleNormalizer.Normalize(book.Title));
+                if (!Directory.Exists(destDir)) Directory.CreateDirectory(destDir);
+                var dest = Path.Combine(destDir, Path.GetFileName(sourcePath));
+                if (!dest.Equals(sourcePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    _fs.MoveFile(sourcePath, dest, overwrite: false);
+                    finalPath = dest;
+                    moved = true;
+                }
+            }
+        }
+
+        if (existingFile is not null)
+        {
+            existingFile.BookId = book.Id;
+            existingFile.ManuallyUnmatched = false;
+            if (moved) existingFile.FullPath = finalPath;
+        }
+        else
+        {
+            // Create a new LocalBookFile record for the formerly-unknown file
+            var newFile = new LocalBookFile
+            {
+                AuthorId = book.AuthorId,
+                BookId = book.Id,
+                FullPath = finalPath,
+                AuthorFolder = book.Author?.Name ?? "",
+                TitleFolder = Path.GetDirectoryName(finalPath) ?? "",
+                NormalizedTitle = TitleNormalizer.Normalize(book.Title),
+                ModifiedAt = System.IO.File.GetLastWriteTimeUtc(finalPath),
+                SizeBytes = new FileInfo(finalPath).Length,
+            };
+            _db.LocalBookFiles.Add(newFile);
+        }
+
+        await _db.SaveChangesAsync(ct);
+        return Ok(new LinkFileResult(moved, finalPath));
     }
 }

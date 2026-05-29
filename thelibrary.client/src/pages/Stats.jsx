@@ -113,6 +113,54 @@ export default function Stats() {
                     </table>
                 </>
             )}
+
+            {stats.formatBreakdown?.length > 0 && (
+                <>
+                    <h3>File Formats</h3>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '1.5rem', alignItems: 'flex-end' }}>
+                        {(() => {
+                            const max = Math.max(...stats.formatBreakdown.map(f => f.count))
+                            return stats.formatBreakdown.map(({ format, count }) => {
+                                const h = max === 0 ? 0 : Math.round((count / max) * 80)
+                                return (
+                                    <div key={format} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.2rem' }}>
+                                        <span style={{ fontSize: '0.7rem', color: 'var(--subtle)' }}>{count}</span>
+                                        <div style={{
+                                            width: '2.5rem', height: `${Math.max(h, 4)}px`, minHeight: '4px',
+                                            background: 'var(--accent, #3b82f6)', borderRadius: '3px 3px 0 0'
+                                        }} />
+                                        <span style={{ fontSize: '0.7rem', color: 'var(--subtle)', textTransform: 'uppercase' }}>{format}</span>
+                                    </div>
+                                )
+                            })
+                        })()}
+                    </div>
+                </>
+            )}
+
+            {stats.acquisitionByMonth?.length > 0 && (
+                <>
+                    <h3>Files Added (last 24 months)</h3>
+                    <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.25rem', height: '100px', marginBottom: '1.5rem', overflowX: 'auto' }}>
+                        {(() => {
+                            const max = Math.max(...stats.acquisitionByMonth.map(m => m.count))
+                            return stats.acquisitionByMonth.map(({ month, count }) => {
+                                const h = max === 0 ? 0 : Math.round((count / max) * 85)
+                                return (
+                                    <div key={month} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.2rem', minWidth: '2rem' }}>
+                                        <span style={{ fontSize: '0.6rem', color: 'var(--subtle)' }}>{count}</span>
+                                        <div style={{
+                                            width: '1.6rem', height: `${Math.max(h, 2)}px`, minHeight: '2px',
+                                            background: '#22c55e', borderRadius: '2px 2px 0 0'
+                                        }} />
+                                        <span style={{ fontSize: '0.6rem', color: 'var(--subtle)', writingMode: 'vertical-rl', transform: 'rotate(180deg)', height: '3rem' }}>{month}</span>
+                                    </div>
+                                )
+                            })
+                        })()}
+                    </div>
+                </>
+            )}
         </section>
     )
 }
