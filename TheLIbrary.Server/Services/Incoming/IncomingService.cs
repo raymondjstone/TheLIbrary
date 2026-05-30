@@ -1,3 +1,6 @@
+using Microsoft.EntityFrameworkCore;
+using TheLibrary.Server.Data;
+using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.Scheduling;
 
 namespace TheLibrary.Server.Services.Incoming;
@@ -96,6 +99,12 @@ public sealed class IncomingService
                 using var scope = _scopeFactory.CreateScope();
                 var processor = scope.ServiceProvider.GetRequiredService<IncomingProcessor>();
                 var result = await run(processor, hostCt);
+
+                // This run shuffles files into / out of the __unknown quarantine
+                // folder, so re-index it (in a fresh scope) to keep the
+                // missing-works match search's DB index current.
+                await ReindexUnknownAsync(coordinatorKey, hostCt);
+
                 MutateState(s =>
                 {
                     s.Phase = IncomingPhase.Done;
@@ -126,6 +135,30 @@ public sealed class IncomingService
         }, hostCt);
 
         return true;
+    }
+
+    // Re-indexes the __unknown quarantine folder into the UnknownFiles table.
+    // Best-effort: a failure here must not fail the incoming/unknown job.
+    private async Task ReindexUnknownAsync(string job, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+            var locations = await db.LibraryLocations
+                .Where(l => l.Enabled)
+                .Select(l => l.Path)
+                .ToListAsync(ct);
+            var idx = await UnknownFileIndexer.RescanAsync(db, locations, ct);
+            _log.LogInformation(
+                "Unknown folder index ({Job}): {Seen} ebook file(s) across {Roots} root(s) ({Missing} missing); +{Added}/-{Removed}; total {Total}",
+                job, idx.EbookFilesSeen, idx.RootsChecked.Count, idx.RootsMissing.Count,
+                idx.Added, idx.Removed, idx.Total);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Unknown folder indexing failed after {Job}", job);
+        }
     }
 
     private void Report(IncomingProgress p)

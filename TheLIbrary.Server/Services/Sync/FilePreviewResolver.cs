@@ -14,6 +14,8 @@ public static class FilePreviewResolver
             ["epub"] = "application/epub+zip",
             ["pdf"]  = "application/pdf",
             ["txt"]  = "text/plain; charset=utf-8",
+            ["cbz"]  = "application/x-cbz",
+            ["zip"]  = "application/zip",
         };
 
     public sealed record Resolution(string FullPath, string ContentType, string FileName);

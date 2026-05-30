@@ -97,6 +97,22 @@ main section > h2:first-child { margin: 0 0 1rem; font-size: 1.3rem; font-weight
 .grid tr.missing:hover { filter: brightness(0.97); }
 .grid tr.edition td { padding-top: 0.25rem; padding-bottom: 0.25rem; }
 
+/* Row tint for books by a starred (priority ≥ 1) author. */
+.grid tr.starred-row { background: var(--accent-bg); }
+.grid tr.starred-row:hover { filter: brightness(0.97); }
+
+/* Fixed-size cover slot so rows keep a uniform height whether or not a
+   cover image is found. The placeholder fills the same box. */
+.cover-slot { width: 40px; height: 60px; border-radius: 3px; display: block; }
+.cover-slot.cover-img { object-fit: cover; box-shadow: var(--shadow-sm); }
+.cover-slot.cover-empty { background: var(--bg); border: 1px solid var(--border); box-shadow: none; }
+
+/* Compact action buttons sized to sit inline in a table row. */
+.row-actions { display: inline-flex; gap: 0.35rem; white-space: nowrap; }
+.row-actions button { padding: 0.3rem 0.6rem; font-size: 0.8rem; }
+button.btn-outline { background: var(--card); color: var(--text); border: 1px solid var(--border); box-shadow: none; }
+button.btn-outline:hover:not(:disabled) { background: var(--bg); border-color: var(--accent); color: var(--accent); }
+
 /* Book covers – was 40 px, now 56 px */
 .grid img { display: block; width: 40px; max-width: 56px; height: auto; border-radius: 3px; box-shadow: var(--shadow-sm); object-fit: cover; }
 

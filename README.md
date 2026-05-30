@@ -392,8 +392,7 @@ spanning every pattern above plus negative examples that must return all-null.
 
 ## In-browser preview
 
-Click any format chip (`epub`, `pdf`, `txt`) on an author detail page to open
-an in-browser preview modal. The modal handles each format natively:
+Click any previewable format chip (`epub`, `pdf`, `txt`, `mobi`, `azw`, `azw3`, `fb2`, `lit`, `docx`, `odt`, `cbz`, `zip`) on an author detail page or the Untracked page to open an in-browser preview modal. The modal handles each format dynamically:
 
 - **EPUB** — rendered with [epub.js](https://github.com/futurepress/epub.js).
   Has prev/next paging controls and uses byte-range requests so large books
@@ -402,11 +401,8 @@ an in-browser preview modal. The modal handles each format natively:
   built-in viewer provides paging, zoom, and search.
 - **TXT** — fetched and rendered in a serif `<pre>` block with line-wrapping.
   Project Gutenberg-style plain-text books work without any conversion.
-
-Chips for other formats (MOBI, AZW3, LIT, FB2, CBZ, DOCX, ODT, …) are still
-shown but aren't clickable. Those need server-side conversion via
-`ebook-convert` to be previewable in-browser — that's wired up for reMarkable
-send but not for in-app preview yet.
+- **MOBI / AZW / AZW3 / FB2 / LIT / DOCX / ODT** — converted on-the-fly to EPUB using Calibre (`ebook-convert`) and rendered smoothly in the EPUB pane.
+- **CBZ / Comic ZIP** — extracts and renders images sequentially as pages directly within the modal.
 
 **Security**: the streaming endpoint validates that the resolved disk path
 lives inside one of the enabled `LibraryLocation` roots before reading any
@@ -416,7 +412,7 @@ bytes. A tampered `LocalBookFile.FullPath` (e.g. one rewritten to point at
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET    | `/api/files/{id}/preview?format=epub` | Stream an EPUB for in-browser rendering |
+| GET    | `/api/files/{id}/preview?format=epub` | Stream an EPUB (or convertible formats converted to EPUB) for in-browser rendering |
 | GET    | `/api/files/{id}/preview?format=pdf`  | Stream a PDF for the native viewer |
 | GET    | `/api/files/{id}/preview?format=txt`  | Stream a plain-text file |
 | GET    | `/api/untracked/preview?format=…`     | Same modal, but resolves the path through `ResolveUntrackedSourcePathAsync` so files inside the quarantine bucket (which have no `LocalBookFile` row) can also be previewed — the custom unknown path is added to the allowed-roots list so files outside the library locations still pass the safety check |

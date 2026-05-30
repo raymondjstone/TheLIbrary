@@ -46,7 +46,7 @@ export default function Settings() {
     const [refreshCadenceEdit, setRefreshCadenceEdit] = useState({ recentDays: 2, midDays: 14, dormantDays: 28, oldOrEmptyDays: 60 })
     const [refreshCadenceSaving, setRefreshCadenceSaving] = useState(false)
     const [duplicateFormatPreference, setDuplicateFormatPreference] = useState(null)
-    const [duplicateFormatEdit, setDuplicateFormatEdit] = useState('epub;pdf;azw3;mobi;azw;fb2;lit;cbz;docx;odt;prc;pdb')
+    const [duplicateFormatEdit, setDuplicateFormatEdit] = useState('epub;pdf;azw3;mobi;azw;fb2;lit;cbz;docx;odt;rtf;prc;pdb;opf')
     const [duplicateFormatSaving, setDuplicateFormatSaving] = useState(false)
 
     const load = async () => {

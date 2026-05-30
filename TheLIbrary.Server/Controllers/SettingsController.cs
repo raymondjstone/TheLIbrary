@@ -195,6 +195,126 @@ public class SettingsController : ControllerBase
         }
     }
 
+    // Resilient recursive walk — skip nothing (Hidden/System/symlinks all
+    // count) and don't abort on an unreadable subfolder.
+    private static readonly EnumerationOptions UnknownWalk = new()
+    {
+        RecurseSubdirectories = true,
+        IgnoreInaccessible = true,
+        AttributesToSkip = 0,
+    };
+
+    // Sentinel extension key for files that have no extension at all.
+    private const string NoExtensionKey = "(none)";
+
+    private async Task<IReadOnlyList<string>> EnabledLibraryRootsAsync(CancellationToken ct)
+        => await _db.LibraryLocations.AsNoTracking()
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+
+    public sealed record UnknownFileTypeRow(string Extension, int Count);
+    public sealed record UnknownFileTypesDto(
+        IReadOnlyList<string> Roots,
+        IReadOnlyList<string> MissingRoots,
+        int Total,
+        IReadOnlyList<UnknownFileTypeRow> Types);
+
+    // Counts every file in the __unknown quarantine folder grouped by extension
+    // (lowercased; "(none)" for extensionless files). No per-file stat, so it's
+    // a straight directory walk — but at hundreds of thousands of files it can
+    // still take a little while, hence it's a user-triggered scan.
+    [HttpGet("unknown-folder/file-types")]
+    public async Task<ActionResult<UnknownFileTypesDto>> UnknownFileTypes(CancellationToken ct)
+    {
+        var roots = await UnknownFolderResolver.GetSourceRootsAsync(_db, await EnabledLibraryRootsAsync(ct), ct);
+        var missing = new List<string>();
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var total = 0;
+
+        foreach (var root in roots)
+        {
+            if (!Directory.Exists(root)) { missing.Add(root); continue; }
+            foreach (var file in Directory.EnumerateFiles(root, "*", UnknownWalk))
+            {
+                ct.ThrowIfCancellationRequested();
+                var ext = Path.GetExtension(file);
+                var key = string.IsNullOrEmpty(ext) ? NoExtensionKey : ext.ToLowerInvariant();
+                counts[key] = counts.TryGetValue(key, out var n) ? n + 1 : 1;
+                total++;
+            }
+        }
+
+        var types = counts
+            .OrderByDescending(kv => kv.Value)
+            .ThenBy(kv => kv.Key, StringComparer.Ordinal)
+            .Select(kv => new UnknownFileTypeRow(kv.Key, kv.Value))
+            .ToList();
+        return Ok(new UnknownFileTypesDto(roots, missing, total, types));
+    }
+
+    public sealed record PurgeUnknownTypeRequest(string Extension);
+    public sealed record PurgeUnknownTypeResult(string Extension, int Deleted, int Failed, IReadOnlyList<string> Errors);
+
+    // Deletes every file of the given extension under the __unknown quarantine
+    // root(s). "(none)" purges extensionless files. Files are collected first,
+    // then deleted, so the lazy directory walk isn't mutated mid-enumeration.
+    // Only files are removed; empty folders are left for the flatten job.
+    [HttpPost("unknown-folder/purge")]
+    public async Task<ActionResult<PurgeUnknownTypeResult>> PurgeUnknownFileType(
+        [FromBody] PurgeUnknownTypeRequest body, CancellationToken ct)
+    {
+        var raw = body.Extension?.Trim();
+        if (string.IsNullOrEmpty(raw)) return BadRequest(new { error = "Extension is required." });
+
+        var noExt = string.Equals(raw, NoExtensionKey, StringComparison.OrdinalIgnoreCase);
+        var ext = noExt ? "" : (raw.StartsWith('.') ? raw : "." + raw).ToLowerInvariant();
+
+        var roots = await UnknownFolderResolver.GetSourceRootsAsync(_db, await EnabledLibraryRootsAsync(ct), ct);
+
+        var toDelete = new List<string>();
+        foreach (var root in roots)
+        {
+            if (!Directory.Exists(root)) continue;
+            foreach (var file in Directory.EnumerateFiles(root, "*", UnknownWalk))
+            {
+                ct.ThrowIfCancellationRequested();
+                var fext = Path.GetExtension(file);
+                var match = noExt
+                    ? string.IsNullOrEmpty(fext)
+                    : string.Equals(fext, ext, StringComparison.OrdinalIgnoreCase);
+                if (match) toDelete.Add(file);
+            }
+        }
+
+        var deleted = 0;
+        var failed = 0;
+        var errors = new List<string>();
+        foreach (var file in toDelete)
+        {
+            ct.ThrowIfCancellationRequested();
+            try { System.IO.File.Delete(file); deleted++; }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                failed++;
+                if (errors.Count < 50) errors.Add($"{Path.GetFileName(file)}: {e.Message}");
+            }
+        }
+
+        // Keep the ebook index in step: if we purged an ebook extension, drop the
+        // matching UnknownFiles rows (junk extensions are never indexed there).
+        if (!noExt && deleted > 0 && CalibreScanner.EbookExtensions.Contains(ext))
+        {
+            for (var i = 0; i < toDelete.Count; i += 1000)
+            {
+                var slice = toDelete.Skip(i).Take(1000).ToList();
+                await _db.UnknownFiles.Where(u => slice.Contains(u.FullPath)).ExecuteDeleteAsync(ct);
+            }
+        }
+
+        return Ok(new PurgeUnknownTypeResult(noExt ? NoExtensionKey : ext, deleted, failed, errors));
+    }
+
     // Pushover credentials are stored in AppSettings. Both keys must be set
     // for notifications to fire; either being blank disables the feature.
     public sealed record PushoverDto(string AppToken, string UserKey, bool Configured);

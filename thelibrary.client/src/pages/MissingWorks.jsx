@@ -5,6 +5,7 @@ function FileCandidatesPanel({ bookId, onLink }) {
     const [candidates, setCandidates] = useState(null)
     const [loading, setLoading] = useState(false)
     const [linkBusy, setLinkBusy] = useState(null)
+    const [filter, setFilter] = useState('')
     const loaded = useRef(false)
 
     useEffect(() => {
@@ -22,13 +23,33 @@ function FileCandidatesPanel({ bookId, onLink }) {
     if (!candidates?.length) return <div style={{ padding: '0.5rem 1rem', color: 'var(--subtle)', fontSize: '0.85em' }}>No candidate files found.</div>
 
     const pct = v => `${Math.round(v * 100)}%`
-    const sourceLabel = s => s === 'linked' ? 'author files' : 'unknown folder'
+    const sourceLabel = s => s === 'linked' ? 'library file' : 'unknown folder'
+    const rowKey = c => c.fileId != null ? `f${c.fileId}` : `p${c.fullPath}`
+
+    const q = filter.trim().toLowerCase()
+    const visible = q
+        ? candidates.filter(c =>
+            c.displayName.toLowerCase().includes(q) || (c.fullPath ?? '').toLowerCase().includes(q))
+        : candidates
 
     return (
         <div style={{ padding: '0.4rem 1rem 0.6rem', background: 'var(--surface-alt, #f7f7f7)', borderRadius: '0 0 4px 4px' }}>
-            <div style={{ fontSize: '0.78em', color: 'var(--subtle)', marginBottom: '0.3rem' }}>
-                Potential matches ({candidates.length})
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.3rem' }}>
+                <span style={{ fontSize: '0.78em', color: 'var(--subtle)' }}>
+                    Potential matches ({q ? `${visible.length} of ${candidates.length}` : candidates.length})
+                </span>
+                <input
+                    type="search"
+                    placeholder="Filter matches…"
+                    value={filter}
+                    onChange={e => setFilter(e.target.value)}
+                    style={{ marginLeft: 'auto', padding: '0.15rem 0.4rem', fontSize: '0.8em', width: '14rem' }} />
             </div>
+            {visible.length === 0 ? (
+                <div style={{ color: 'var(--subtle)', fontSize: '0.82em', padding: '0.2rem 0' }}>
+                    No matches contain “{filter.trim()}”.
+                </div>
+            ) : (
             <table style={{ width: '100%', fontSize: '0.82em', borderCollapse: 'collapse' }}>
                 <thead>
                     <tr style={{ color: 'var(--subtle)' }}>
@@ -39,8 +60,10 @@ function FileCandidatesPanel({ bookId, onLink }) {
                     </tr>
                 </thead>
                 <tbody>
-                    {candidates.map((c, i) => (
-                        <tr key={i} style={{ borderTop: '1px solid var(--border, #eee)' }}>
+                    {visible.map(c => {
+                        const k = rowKey(c)
+                        return (
+                        <tr key={k} style={{ borderTop: '1px solid var(--border, #eee)' }}>
                             <td style={{ padding: '0.2rem 0.4rem 0.2rem 0', wordBreak: 'break-all' }}>
                                 {c.displayName}
                             </td>
@@ -53,25 +76,27 @@ function FileCandidatesPanel({ bookId, onLink }) {
                             <td style={{ padding: '0.2rem 0 0.2rem 0.6rem', whiteSpace: 'nowrap' }}>
                                 <button
                                     className="btn-ghost"
-                                    disabled={linkBusy === i}
+                                    disabled={linkBusy === k}
                                     style={{ fontSize: '0.85em', marginRight: '0.3rem' }}
-                                    onClick={async () => { setLinkBusy(i); await onLink(c, false); setLinkBusy(null) }}>
+                                    onClick={async () => { setLinkBusy(k); await onLink(c, false); setLinkBusy(null) }}>
                                     Link
                                 </button>
                                 {c.source === 'unknown' && (
                                     <button
                                         className="btn-ghost"
-                                        disabled={linkBusy === i}
+                                        disabled={linkBusy === k}
                                         style={{ fontSize: '0.85em' }}
-                                        onClick={async () => { setLinkBusy(i); await onLink(c, true); setLinkBusy(null) }}>
+                                        onClick={async () => { setLinkBusy(k); await onLink(c, true); setLinkBusy(null) }}>
                                         Link &amp; Move
                                     </button>
                                 )}
                             </td>
                         </tr>
-                    ))}
+                        )
+                    })}
                 </tbody>
             </table>
+            )}
         </div>
     )
 }
@@ -156,6 +181,27 @@ export default function MissingWorks() {
         }
     }
 
+    // Mark a book foreign — it gets suppressed, so it drops off this list (the
+    // missing query excludes suppressed books) and onto the Foreign Titles page.
+    const markForeign = async (book) => {
+        setWantedBusy(prev => new Set(prev).add(book.id))
+        try {
+            const r = await fetch(`/api/books/${book.id}/foreign`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ foreign: true })
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            setData(prev => prev?.filter(b => b.id !== book.id))
+            if (cachedMissing) cachedMissing = cachedMissing.filter(b => b.id !== book.id)
+            setSelected(prev => { const n = new Set(prev); n.delete(book.id); return n })
+        } catch (e) {
+            alert(`Failed: ${e.message}`)
+        } finally {
+            setWantedBusy(prev => { const n = new Set(prev); n.delete(book.id); return n })
+        }
+    }
+
     const bulkMarkOwned = async () => {
         if (!selected.size) return
         setBulkBusy(true)
@@ -203,7 +249,11 @@ export default function MissingWorks() {
             if (!b.subjects) continue
             for (const g of b.subjects.split(';')) {
                 const t = g.trim()
-                if (t) counts[t] = (counts[t] ?? 0) + 1
+                if (t) {
+                    // Normalize standard genres (e.g. "Science fiction", "Fiction", "Fantasy") to Capitalized
+                    const normalized = t.charAt(0).toUpperCase() + t.slice(1).toLowerCase()
+                    counts[normalized] = (counts[normalized] ?? 0) + 1
+                }
             }
         }
         return Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([g]) => g)
@@ -219,7 +269,8 @@ export default function MissingWorks() {
             )
         }
         if (genreFilter) {
-            rows = rows.filter(b => b.subjects?.split(';').some(s => s.trim() === genreFilter))
+            const filterNorm = genreFilter.toLowerCase()
+            rows = rows.filter(b => b.subjects?.split(';').some(s => s.trim().toLowerCase() === filterNorm))
         }
         if (minYear) {
             const y = Number(minYear)
@@ -406,13 +457,21 @@ export default function MissingWorks() {
                                                         src={`https://covers.openlibrary.org/b/id/${b.coverId}-S.jpg`} />
                                                     : null}
                                             </td>
-                                            <td>
+                                            <td style={{ whiteSpace: 'nowrap' }}>
                                                 <button
                                                     className="btn-ghost"
                                                     title={expandedCandidates.has(b.id) ? 'Hide matches' : 'Find matching files'}
                                                     style={{ fontSize: '0.8em', padding: '0.1rem 0.3rem' }}
                                                     onClick={() => toggleCandidates(b.id)}>
                                                     {expandedCandidates.has(b.id) ? '▲' : '▼'}
+                                                </button>
+                                                <button
+                                                    className="btn-ghost"
+                                                    title="Mark as foreign — suppresses it and lists it on the Foreign Titles page"
+                                                    disabled={wantedBusy.has(b.id)}
+                                                    style={{ fontSize: '0.72em', padding: '0.1rem 0.3rem' }}
+                                                    onClick={() => markForeign(b)}>
+                                                    foreign
                                                 </button>
                                             </td>
                                             <td>

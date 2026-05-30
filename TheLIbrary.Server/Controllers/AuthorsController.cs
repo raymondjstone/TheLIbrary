@@ -22,6 +22,7 @@ public class AuthorsController : ControllerBase
     private readonly ManualBookService _manualBooks;
     private readonly IFileSystem _fs;
     private readonly ILogger<AuthorsController> _log;
+    private readonly CalibreConverter _converter;
 
     public AuthorsController(
         LibraryDbContext db,
@@ -29,7 +30,8 @@ public class AuthorsController : ControllerBase
         AuthorRefresher refresher,
         ManualBookService manualBooks,
         IFileSystem fs,
-        ILogger<AuthorsController> log)
+        ILogger<AuthorsController> log,
+        CalibreConverter converter)
     {
         _db = db;
         _ol = ol;
@@ -37,6 +39,7 @@ public class AuthorsController : ControllerBase
         _manualBooks = manualBooks;
         _fs = fs;
         _log = log;
+        _converter = converter;
     }
 
     public sealed record AuthorListItem(
@@ -232,7 +235,8 @@ public class AuthorsController : ControllerBase
         string? SeriesPrimaryAuthorName = null,
         string? CoverUrl = null,
         int AuthorId = 0,
-        bool Suppressed = false);
+        bool Suppressed = false,
+        bool Foreign = false);
 
     public sealed record LocalFileRow(int Id, string FullPath, IReadOnlyList<string> Formats);
 
@@ -268,7 +272,7 @@ public class AuthorsController : ControllerBase
     private static readonly HashSet<string> EbookExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".epub", ".mobi", ".azw", ".azw3", ".azw4", ".kf8", ".prc", ".pdb",
-        ".fb2", ".fbz", ".pdf", ".lit", ".cbz", ".docx", ".odt", ".txt"
+        ".fb2", ".fbz", ".pdf", ".lit", ".cbz", ".docx", ".odt", ".rtf", ".opf", ".txt"
     };
 
     // FullPath may be a file path (flat-file layout after organizer runs) or a
@@ -372,7 +376,7 @@ public class AuthorsController : ControllerBase
                 .Select(b => new
                 {
                     b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.CoverUrl, b.OpenLibraryWorkKey,
-                    b.AuthorId, b.ManuallyOwned, b.ReadStatus, b.ReadAt, b.Wanted, b.Subjects, b.Suppressed,
+                    b.AuthorId, b.ManuallyOwned, b.ReadStatus, b.ReadAt, b.Wanted, b.Subjects, b.Suppressed, b.Foreign,
                     SeriesName = b.Series != null ? b.Series.Name : null,
                     b.SeriesId,
                     SeriesPrimaryAuthorName = b.Series != null && b.Series.PrimaryAuthor != null ? b.Series.PrimaryAuthor.Name : null,
@@ -397,7 +401,8 @@ public class AuthorsController : ControllerBase
             b.SeriesPrimaryAuthorName,
             b.CoverUrl,
             b.AuthorId,
-            b.Suppressed
+            b.Suppressed,
+            b.Foreign
         )).ToList();
 
         // Include orphan rows (AuthorId == null) whose Calibre folder matches
@@ -1972,11 +1977,39 @@ public class AuthorsController : ControllerBase
             return NotFound(new { error = "Only files can be previewed" });
 
         var ext = Path.GetExtension(sourcePath).TrimStart('.').ToLowerInvariant();
-        if (!string.Equals(ext, format, StringComparison.OrdinalIgnoreCase))
+        var supportedConversions = new[] { "mobi", "azw", "azw3", "fb2", "lit", "docx", "odt", "cbz", "zip" };
+        var isConvertible = supportedConversions.Contains(ext);
+
+        if (!isConvertible && !string.Equals(ext, format, StringComparison.OrdinalIgnoreCase))
             return BadRequest(new { error = $"File extension '.{ext}' does not match requested format '.{format}'" });
 
-        if (!Services.Sync.FilePreviewResolver.SupportedFormats.TryGetValue(format, out var contentType))
-            return StatusCode(415, new { error = $"Preview not supported for '.{format}'. Supported: epub, pdf, txt." });
+        string? contentType = "application/octet-stream";
+        if (isConvertible || !Services.Sync.FilePreviewResolver.SupportedFormats.TryGetValue(format, out contentType))
+        {
+            if (isConvertible && (format.Equals("epub", StringComparison.OrdinalIgnoreCase) || format.Equals(ext, StringComparison.OrdinalIgnoreCase)))
+            {
+                try
+                {
+                    var convertedPath = await _converter.ConvertToEpubAsync(sourcePath, ct);
+                    if (System.IO.File.Exists(convertedPath))
+                    {
+                        var bytes = await System.IO.File.ReadAllBytesAsync(convertedPath, ct);
+                        try { System.IO.File.Delete(convertedPath); } catch { /* best effort */ }
+                        Response.Headers["Content-Disposition"] = $"inline; filename=\"{Path.GetFileNameWithoutExtension(sourcePath)}.epub\"";
+                        return File(bytes, "application/epub+zip");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return StatusCode(500, new { error = $"On-the-fly conversion to EPUB failed: {ex.Message}" });
+                }
+            }
+
+            if (!isConvertible)
+            {
+                return StatusCode(415, new { error = $"Preview not supported for '.{format}'. Supported: epub, pdf, txt, cbz, zip." });
+            }
+        }
 
         // Build the allowed-roots list: every enabled library location PLUS
         // the custom __unknown path when one is set (it may live outside the

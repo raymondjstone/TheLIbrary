@@ -32,6 +32,10 @@ function SuppressedBooksSection({ books, onToggleSuppress }) {
                         <tr key={b.id}>
                             <td>
                                 <WorkTitle workKey={b.openLibraryWorkKey} title={b.title} />
+                                {b.foreign && (
+                                    <span className="filetype-tag" style={{ marginLeft: '0.4rem' }}
+                                          title="Flagged as not in English">foreign</span>
+                                )}
                                 {b.series && (
                                     <span className="subtle" style={{ marginLeft: '0.4rem', fontSize: '0.8em' }}>
                                         ({b.series}{b.seriesPosition ? ` #${b.seriesPosition}` : ''})
@@ -42,6 +46,7 @@ function SuppressedBooksSection({ books, onToggleSuppress }) {
                             <td>
                                 <button className="btn-ghost"
                                         onClick={() => onToggleSuppress(b)}
+                                        title={b.foreign ? 'Restore to the main list and clear the foreign flag' : 'Restore to the main list'}
                                         style={{ fontSize: '0.8rem' }}>
                                     Unsuppress
                                 </button>
@@ -54,7 +59,7 @@ function SuppressedBooksSection({ books, onToggleSuppress }) {
     )
 }
 
-function BookActions({ book, onEdit, onDelete, onToggleSuppress }) {
+function BookActions({ book, onEdit, onDelete, onToggleSuppress, onMarkForeign }) {
     return (
         <span style={{ marginLeft: '0.3rem', whiteSpace: 'nowrap' }}>
             <button className="btn-ghost" title="Edit this book"
@@ -69,6 +74,14 @@ function BookActions({ book, onEdit, onDelete, onToggleSuppress }) {
                         onClick={() => onToggleSuppress(book)}
                         style={{ fontSize: '0.72rem', padding: '0 0.3rem', opacity: 0.55 }}>
                     {book.suppressed ? 'unsuppress' : 'suppress'}
+                </button>
+            )}
+            {onMarkForeign && !book.suppressed && (
+                <button className="btn-ghost"
+                        title="Mark this book as foreign — suppresses it and lists it on the Foreign Titles page"
+                        onClick={() => onMarkForeign(book)}
+                        style={{ fontSize: '0.72rem', padding: '0 0.3rem', opacity: 0.55 }}>
+                    foreign
                 </button>
             )}
         </span>
@@ -96,7 +109,7 @@ function WorkTitle({ workKey, title }) {
 // Clickable format chip (epub / pdf / txt / mobi / …). EPUB / PDF / TXT open
 // the in-browser preview modal; other formats render the same as before with
 // no click handler since the preview endpoint would just 415.
-const PREVIEWABLE_EXTS = new Set(['epub', 'pdf', 'txt'])
+const PREVIEWABLE_EXTS = new Set(['epub', 'pdf', 'txt', 'mobi', 'azw', 'azw3', 'fb2', 'lit', 'docx', 'odt', 'cbz', 'zip'])
 
 function FormatChip({ ext, onPreview, fileId, title }) {
     const canPreview = PREVIEWABLE_EXTS.has(ext.toLowerCase()) && onPreview && fileId
@@ -914,6 +927,26 @@ export default function AuthorDetail() {
 
     const toggleSuppress = async (book) => {
         const next = !book.suppressed
+        // Unsuppressing a foreign book also clears the foreign flag — going
+        // through the /foreign endpoint records ConfirmedEnglish, so the scan
+        // won't re-flag it, and clears both suppressed and foreign at once.
+        if (!next && book.foreign) {
+            try {
+                const r = await fetch(`/api/books/${book.id}/foreign`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ foreign: false })
+                })
+                if (!r.ok) throw new Error(r.statusText)
+                setData(prev => prev ? {
+                    ...prev,
+                    books: prev.books.map(b => b.id === book.id ? { ...b, suppressed: false, foreign: false } : b)
+                } : prev)
+            } catch (e) {
+                alert(`Failed to unsuppress: ${e.message}`)
+            }
+            return
+        }
         try {
             const r = await fetch(`/api/books/${book.id}/suppressed`, {
                 method: 'PUT',
@@ -927,6 +960,26 @@ export default function AuthorDetail() {
             } : prev)
         } catch (e) {
             alert(`Failed to toggle suppress: ${e.message}`)
+        }
+    }
+
+    // Flag a book as foreign. Foreign implies suppressed, so locally we set
+    // both — the book drops out of the main list into the suppressed bucket and
+    // shows up on the Foreign Titles page.
+    const markForeign = async (book) => {
+        try {
+            const r = await fetch(`/api/books/${book.id}/foreign`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ foreign: true })
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            setData(prev => prev ? {
+                ...prev,
+                books: prev.books.map(b => b.id === book.id ? { ...b, foreign: true, suppressed: true } : b)
+            } : prev)
+        } catch (e) {
+            alert(`Failed to mark foreign: ${e.message}`)
         }
     }
 
@@ -1281,7 +1334,7 @@ export default function AuthorDetail() {
                                 </td>}
                                 <td>
                                     <WorkTitle workKey={b.openLibraryWorkKey} title={b.title} />
-                                    <BookActions book={b} onEdit={setEditBook} onDelete={deleteBook} onToggleSuppress={toggleSuppress} />
+                                    <BookActions book={b} onEdit={setEditBook} onDelete={deleteBook} onToggleSuppress={toggleSuppress} onMarkForeign={markForeign} />
                                     {editingSeriesId === b.id ? (
                                         <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
                                             <SeriesNamePicker
@@ -1449,7 +1502,7 @@ export default function AuthorDetail() {
                                 {series && <td></td>}
                                 <td>
                                     <WorkTitle workKey={b.openLibraryWorkKey} title={b.title} />
-                                    <BookActions book={b} onEdit={setEditBook} onDelete={deleteBook} onToggleSuppress={toggleSuppress} />
+                                    <BookActions book={b} onEdit={setEditBook} onDelete={deleteBook} onToggleSuppress={toggleSuppress} onMarkForeign={markForeign} />
                                     {editingSeriesId === b.id ? (
                                         <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
                                             <SeriesNamePicker

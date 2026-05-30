@@ -12,9 +12,11 @@ import ePub from 'epubjs'
 // path-traversal check on the server, so this component just needs the URL.
 export default function BookPreview({ fileId, format, onClose, title, srcUrl }) {
     const f = (format || '').toLowerCase()
+    const convertibleFormats = ['mobi', 'azw', 'azw3', 'fb2', 'lit', 'docx', 'odt']
+    const displayFormat = convertibleFormats.includes(f) ? 'epub' : f
     // srcUrl overrides the default /api/files/{id}/preview endpoint so the
     // same modal can preview untracked files (where there is no LBF row yet).
-    const url = srcUrl ?? `/api/files/${fileId}/preview?format=${f}`
+    const url = srcUrl ?? `/api/files/${fileId}/preview?format=${displayFormat}`
     return (
         // zIndex inline override so the preview sits ON TOP of any caller
         // that already opened a stacked modal (e.g. the Untracked browse pane
@@ -38,10 +40,11 @@ export default function BookPreview({ fileId, format, onClose, title, srcUrl }) 
                     <button onClick={onClose} className="btn-ghost" title="Close">&times;</button>
                 </div>
                 <div style={{ flex: 1, overflow: 'hidden', display: 'flex', minHeight: 0 }}>
-                    {f === 'epub' && <EpubPane url={url} />}
-                    {f === 'pdf'  && <PdfPane url={url} />}
-                    {f === 'txt'  && <TxtPane url={url} />}
-                    {!['epub', 'pdf', 'txt'].includes(f) && <UnsupportedPane format={f} />}
+                    {displayFormat === 'epub' && <EpubPane url={url} />}
+                    {displayFormat === 'pdf'  && <PdfPane url={url} />}
+                    {displayFormat === 'txt'  && <TxtPane url={url} />}
+                    {['cbz', 'zip'].includes(displayFormat) && <CbzPane fileId={fileId} />}
+                    {!['epub', 'pdf', 'txt', 'cbz', 'zip'].includes(displayFormat) && <UnsupportedPane format={f} />}
                 </div>
             </div>
         </div>
@@ -181,10 +184,93 @@ function UnsupportedPane({ format }) {
         <div style={{ padding: '1.5rem', flex: 1 }}>
             <p>In-browser preview isn't available for <code>.{format}</code> files yet.</p>
             <p className="subtle">
-                Only EPUB, PDF, and TXT render natively. To preview MOBI / AZW / LIT /
+                Only EPUB, PDF, TXT, CBZ, and Comic ZIP files render natively. To preview MOBI / AZW / LIT /
                 etc you'd need to convert via Calibre first — that's wired up for
                 reMarkable send but not yet for in-app preview.
             </p>
+        </div>
+    )
+}
+
+function CbzPane({ fileId }) {
+    const [pages, setPages] = useState(null)
+    const [pageIndex, setPageIndex] = useState(0)
+    const [error, setError] = useState(null)
+    const [loading, setLoading] = useState(true)
+
+    useEffect(() => {
+        setLoading(true)
+        setError(null)
+        fetch(`/api/files/${fileId}/cbz-pages`)
+            .then(async r => {
+                if (!r.ok) {
+                    const body = await r.json().catch(() => ({}))
+                    throw new Error(body.error || `${r.status} ${r.statusText}`)
+                }
+                return r.json()
+            })
+            .then(data => {
+                setPages(data)
+                setPageIndex(0)
+            })
+            .catch(err => {
+                setError(err.message)
+            })
+            .finally(() => {
+                setLoading(false)
+            })
+    }, [fileId])
+
+    const next = () => {
+        if (pages && pageIndex < pages.length - 1) {
+            setPageIndex(prev => prev + 1)
+        }
+    }
+
+    const prev = () => {
+        if (pageIndex > 0) {
+            setPageIndex(prev => prev - 1)
+        }
+    }
+
+    // Keyboard controls for page sliding (ArrowLeft / ArrowRight)
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            if (e.key === 'ArrowRight') next()
+            else if (e.key === 'ArrowLeft') prev()
+        }
+        window.addEventListener('keydown', handleKeyDown)
+        return () => window.removeEventListener('keydown', handleKeyDown)
+    }, [pages, pageIndex])
+
+    if (error) return <p className="error" style={{ padding: '1.5rem' }}>Failed to load archive: {error}</p>
+    if (loading) return <p className="subtle" style={{ padding: '1.5rem' }}>Loading archive contents…</p>
+    if (!pages || pages.length === 0) return <p className="subtle" style={{ padding: '1.5rem' }}>No images found in this archive.</p>
+
+    const currentPage = pages[pageIndex]
+    const imageUrl = `/api/files/${fileId}/cbz-page/${pageIndex}`
+
+    return (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', background: '#111', overflow: 'hidden', position: 'relative' }}>
+                <img
+                    alt={currentPage.name}
+                    src={imageUrl}
+                    style={{ maxHeight: '100%', maxWidth: '100%', objectFit: 'contain' }}
+                />
+
+                {/* Lazy overlay info */}
+                <div style={{ position: 'absolute', bottom: '0.5rem', left: '0.5rem', background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '0.75rem', padding: '0.2rem 0.5rem', borderRadius: '4px', maxWidth: '80%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {currentPage.name} ({Math.round(currentPage.size / 1024)} KB)
+                </div>
+            </div>
+            <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', justifyContent: 'center', padding: '0.4rem', borderTop: '1px solid var(--border)' }}>
+                <button className="btn-ghost" onClick={prev} disabled={pageIndex === 0}>← Prev</button>
+                <span style={{ fontSize: '0.9rem' }}>
+                    Page {pageIndex + 1} of {pages.length}
+                </span>
+                <button className="btn-ghost" onClick={next} disabled={pageIndex === pages.length - 1}>Next →</button>
+            </div>
         </div>
     )
 }

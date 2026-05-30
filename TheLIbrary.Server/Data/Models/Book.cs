@@ -10,6 +10,20 @@ public enum ReadStatus
     Dnf = 3
 }
 
+// Tracks a user decision about a book's language, which overrides the
+// automatic guessers (title scan + OpenLibrary language).
+public enum LanguageReview
+{
+    // No human decision yet — the auto guessers are free to flag this book.
+    None = 0,
+    // User confirmed the book really is foreign. Stays foreign + suppressed;
+    // shown at the bottom of the Foreign Titles list as already-reviewed.
+    ConfirmedForeign = 1,
+    // User confirmed the book is English. Permanently excluded from the foreign
+    // scan and never suppressed for language — a sticky "leave this alone".
+    ConfirmedEnglish = 2,
+}
+
 public class Book
 {
     public int Id { get; set; }
@@ -62,6 +76,10 @@ public class Book
     // too, so they drop out of the normal author/missing views; this separate
     // flag is what the Foreign Titles page lists and lets the user reverse.
     public bool Foreign { get; set; }
+
+    // The user's explicit language decision, if any. ConfirmedEnglish makes the
+    // book immune to the foreign scan; ConfirmedForeign marks it reviewed.
+    public LanguageReview LanguageReview { get; set; } = LanguageReview.None;
 
     // ISBN-13 (preferred) or ISBN-10, when known from imported metadata. Used
     // as a high-confidence match key in addition to NormalizedTitle.

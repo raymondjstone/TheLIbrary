@@ -116,6 +116,16 @@ public sealed class SyncService
         // its result, reducing redundant lookups under OL's rate limits.
         await ProcessAuthorsAsync(db, entries, ct);
 
+        // Phase 4: index the __unknown quarantine folder into the DB so the
+        // missing-works "find matching files" search can score those files
+        // without walking the disk on every request.
+        MutateState(s => s.Message = "Indexing unknown folder");
+        var unkResult = await UnknownFileIndexer.RescanAsync(db, roots, ct);
+        _log.LogInformation(
+            "Unknown folder index: {Seen} ebook file(s) across {Roots} root(s) ({Missing} missing); +{Added} / -{Removed}; total {Total}",
+            unkResult.EbookFilesSeen, unkResult.RootsChecked.Count, unkResult.RootsMissing.Count,
+            unkResult.Added, unkResult.Removed, unkResult.Total);
+
         MutateState(s =>
         {
             s.Phase = SyncPhase.Done;

@@ -38,6 +38,8 @@ export default function ForeignTitles() {
         }
     }
 
+    // "Not foreign" — sticky English override. The book leaves this list and
+    // the scan will never re-flag it.
     const clearForeign = async (book) => {
         setBusyIds(prev => new Set(prev).add(book.id))
         try {
@@ -54,6 +56,31 @@ export default function ForeignTitles() {
             setBusyIds(prev => { const n = new Set(prev); n.delete(book.id); return n })
         }
     }
+
+    // Toggle the "confirmed foreign" review flag. Confirmed rows stay in the
+    // list but sort to the bottom as already-reviewed.
+    const setConfirmed = async (book, confirmed) => {
+        setBusyIds(prev => new Set(prev).add(book.id))
+        try {
+            const r = await fetch(`/api/books/${book.id}/foreign/confirm`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ confirmed })
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            setRows(prev => prev.map(b => b.id === book.id ? { ...b, confirmed } : b))
+        } catch (e) {
+            alert(`Failed: ${e.message}`)
+        } finally {
+            setBusyIds(prev => { const n = new Set(prev); n.delete(book.id); return n })
+        }
+    }
+
+    // Unreviewed (auto-flagged) first, confirmed-foreign last; stable within
+    // each group by the server's author/title order.
+    const sorted = rows
+        ? [...rows].sort((a, b) => Number(a.confirmed) - Number(b.confirmed))
+        : null
 
     return (
         <section>
@@ -86,33 +113,62 @@ export default function ForeignTitles() {
                 <p className="subtle">No books flagged as foreign.</p>
             )}
 
-            {rows !== null && rows.length > 0 && (
+            {sorted !== null && sorted.length > 0 && (
                 <table className="grid">
                     <thead>
                         <tr>
+                            <th>Actions</th>
                             <th style={{ width: '1%' }}></th>
                             <th>Title</th>
                             <th>Author</th>
                             <th>Year</th>
-                            <th></th>
+                            <th>Status</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {rows.map(b => (
-                            <tr key={b.id}>
-                                <td>{bookCoverSrc(b)
-                                    ? <img alt="" loading="lazy" src={bookCoverSrc(b)} />
-                                    : null}</td>
-                                <td>{b.title}</td>
+                        {sorted.map(b => (
+                            <tr key={b.id} className={b.authorPriority >= 1 ? 'starred-row' : undefined}>
+                                <td>
+                                    <div className="row-actions">
+                                        {b.confirmed
+                                            ? <button
+                                                className="btn-outline"
+                                                disabled={busyIds.has(b.id)}
+                                                onClick={() => setConfirmed(b, false)}>
+                                                Unconfirm
+                                            </button>
+                                            : <button
+                                                disabled={busyIds.has(b.id)}
+                                                onClick={() => setConfirmed(b, true)}>
+                                                Confirm foreign
+                                            </button>}
+                                        <button
+                                            className="btn-outline"
+                                            disabled={busyIds.has(b.id)}
+                                            onClick={() => clearForeign(b)}>
+                                            Not foreign
+                                        </button>
+                                    </div>
+                                </td>
+                                <td>
+                                    {bookCoverSrc(b)
+                                        ? <img className="cover-slot cover-img" alt="" loading="lazy" src={bookCoverSrc(b)} />
+                                        : <span className="cover-slot cover-empty" />}
+                                </td>
+                                <td>
+                                    {b.title}
+                                    {b.authorPriority >= 1 && (
+                                        <span className="subtle" style={{ marginLeft: '0.4rem' }}>
+                                            {'★'.repeat(b.authorPriority)}
+                                        </span>
+                                    )}
+                                </td>
                                 <td><Link to={`/authors/${b.authorId}`}>{b.authorName}</Link></td>
                                 <td>{b.firstPublishYear ?? '—'}</td>
                                 <td style={{ whiteSpace: 'nowrap' }}>
-                                    <button
-                                        className="btn-ghost"
-                                        disabled={busyIds.has(b.id)}
-                                        onClick={() => clearForeign(b)}>
-                                        Not foreign
-                                    </button>
+                                    {b.confirmed
+                                        ? <span style={{ color: 'var(--ok)' }}>✓ Confirmed</span>
+                                        : <span className="subtle">Auto-flagged</span>}
                                 </td>
                             </tr>
                         ))}

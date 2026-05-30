@@ -252,8 +252,9 @@ public class BooksController : ControllerBase
     public sealed record ForeignRequest(bool Foreign);
 
     // Marks a single book as foreign (not in English) or clears the flag.
-    // Foreign always implies Suppressed, so the two move together: marking
-    // foreign also suppresses; clearing foreign also un-suppresses.
+    // Foreign always implies Suppressed, so the two move together. Clearing the
+    // flag ("not foreign") is a sticky decision: it records ConfirmedEnglish so
+    // the automatic foreign scan will never re-flag or re-suppress this book.
     [HttpPut("{id:int}/foreign")]
     public async Task<IActionResult> SetForeign(int id, [FromBody] ForeignRequest body, CancellationToken ct)
     {
@@ -261,24 +262,44 @@ public class BooksController : ControllerBase
         if (book is null) return NotFound();
         book.Foreign = body.Foreign;
         book.Suppressed = body.Foreign;
+        book.LanguageReview = body.Foreign ? LanguageReview.None : LanguageReview.ConfirmedEnglish;
         await _db.SaveChangesAsync(ct);
-        return Ok(new { book.Id, book.Foreign, book.Suppressed });
+        return Ok(new { book.Id, book.Foreign, book.Suppressed, LanguageReview = book.LanguageReview.ToString() });
+    }
+
+    public sealed record ConfirmForeignRequest(bool Confirmed);
+
+    // Confirms (or un-confirms) that a foreign book really is foreign. The book
+    // stays foreign + suppressed either way; this only records that a human has
+    // reviewed it, which sorts it to the bottom of the Foreign Titles list.
+    [HttpPut("{id:int}/foreign/confirm")]
+    public async Task<IActionResult> ConfirmForeign(int id, [FromBody] ConfirmForeignRequest body, CancellationToken ct)
+    {
+        var book = await _db.Books.FirstOrDefaultAsync(b => b.Id == id, ct);
+        if (book is null) return NotFound();
+        if (!book.Foreign) return BadRequest(new { error = "Book is not flagged foreign." });
+        book.LanguageReview = body.Confirmed ? LanguageReview.ConfirmedForeign : LanguageReview.None;
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { book.Id, LanguageReview = book.LanguageReview.ToString() });
     }
 
     public sealed record ForeignBookRow(
         int Id, string Title, int? FirstPublishYear, int? CoverId, string? CoverUrl,
-        int AuthorId, string AuthorName, string OpenLibraryWorkKey);
+        int AuthorId, string AuthorName, int AuthorPriority, string OpenLibraryWorkKey, bool Confirmed);
 
     // Every book currently flagged foreign, for the Foreign Titles review page.
+    // Un-reviewed (auto-flagged) books come first; user-confirmed ones last.
     [HttpGet("foreign")]
     public async Task<IReadOnlyList<ForeignBookRow>> Foreign(CancellationToken ct)
     {
         return await _db.Books.AsNoTracking()
             .Where(b => b.Foreign)
-            .OrderBy(b => b.Author.Name).ThenBy(b => b.Title)
+            .OrderBy(b => b.LanguageReview == LanguageReview.ConfirmedForeign)
+            .ThenBy(b => b.Author.Name).ThenBy(b => b.Title)
             .Select(b => new ForeignBookRow(
                 b.Id, b.Title, b.FirstPublishYear, b.CoverId, b.CoverUrl,
-                b.AuthorId, b.Author.Name, b.OpenLibraryWorkKey))
+                b.AuthorId, b.Author.Name, b.Author.Priority, b.OpenLibraryWorkKey,
+                b.LanguageReview == LanguageReview.ConfirmedForeign))
             .ToListAsync(ct);
     }
 
@@ -286,12 +307,13 @@ public class BooksController : ControllerBase
 
     // Runs the title-language guesser over every book not already flagged
     // foreign and flags (+ suppresses) the ones it is confident are not in
-    // English. Conservative by design: ambiguous titles are left untouched.
+    // English. Conservative by design: ambiguous titles are left untouched, and
+    // books the user has confirmed English are permanently skipped.
     [HttpPost("foreign/scan")]
     public async Task<ActionResult<ForeignScanResult>> ScanForeign(CancellationToken ct)
     {
         var candidates = await _db.Books
-            .Where(b => !b.Foreign)
+            .Where(b => !b.Foreign && b.LanguageReview != LanguageReview.ConfirmedEnglish)
             .Select(b => new { b.Id, b.Title })
             .ToListAsync(ct);
 
@@ -400,7 +422,9 @@ public class BooksController : ControllerBase
         string? PositionInParent,
         int BookCount,
         int OwnedCount,
-        IReadOnlyList<SeriesBookRow> Books);
+        IReadOnlyList<SeriesBookRow> Books,
+        bool GapsInSequence = false,
+        string? GapsDescription = null);
 
     public sealed record SeriesBookRow(
         int Id,
@@ -439,11 +463,52 @@ public class BooksController : ControllerBase
                     b.OpenLibraryWorkKey, b.AuthorId, b.Author.Name,
                     b.ManuallyOwned || b.LocalFiles.Any(), b.ReadStatus.ToString()))
                 .ToList();
+
+            // Calculate gaps: look for numeric representation positions in books, detect missing integers in the owned sequence.
+            // e.g. if we have owned 1, 3, then 2 is missing (and is a gap inside the sequence). Or 1, 2, 4 (missing 3).
+            // A gap exists only if we own some higher number but have missing lower numbers (that we don't own).
+            var gapsInSequence = false;
+            string? gapsDescription = null;
+
+            var parsedPosList = books
+                .Select(b => {
+                    var ok = double.TryParse(b.SeriesPosition, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var val);
+                    return new { Book = b, Valid = ok, Value = val };
+                })
+                .Where(x => x.Valid)
+                .OrderBy(x => x.Value)
+                .ToList();
+
+            if (parsedPosList.Count > 0)
+            {
+                var ownedPositions = parsedPosList.Where(x => x.Book.Owned).Select(x => x.Value).ToHashSet();
+                if (ownedPositions.Count > 0)
+                {
+                    var maxOwned = ownedPositions.Max();
+                    var missingList = new List<double>();
+                    // Look for any defined book positions up to the maximum owned position that are NOT owned
+                    foreach (var p in parsedPosList)
+                    {
+                        if (p.Value < maxOwned && !p.Book.Owned)
+                        {
+                            missingList.Add(p.Value);
+                        }
+                    }
+
+                    if (missingList.Count > 0)
+                    {
+                        gapsInSequence = true;
+                        gapsDescription = string.Join(", ", missingList.Select(v => $"#{v}"));
+                    }
+                }
+            }
+
             var parentName = s.ParentSeriesId.HasValue
                 && nameById.TryGetValue(s.ParentSeriesId.Value, out var pn) ? pn : null;
             return new SeriesEntry(s.Id, s.Name, s.PrimaryAuthorId, s.PrimaryAuthor?.Name,
                 s.ParentSeriesId, parentName, s.PositionInParent,
-                books.Count, books.Count(b => b.Owned), books);
+                books.Count, books.Count(b => b.Owned), books,
+                gapsInSequence, gapsDescription);
         }).ToList();
     }
 
@@ -467,7 +532,7 @@ public class BooksController : ControllerBase
     // Preference order — earlier = better. Matched against
     // Path.GetExtension(...).TrimStart('.').ToLowerInvariant().
     public static readonly string[] DefaultFormatPreference =
-        ["epub", "pdf", "azw3", "mobi", "azw", "fb2", "lit", "cbz", "docx", "odt", "prc", "pdb"];
+        ["epub", "pdf", "azw3", "mobi", "azw", "fb2", "lit", "cbz", "docx", "odt", "rtf", "prc", "pdb", "opf"];
 
     // Books where more than one LocalBookFile row is linked to the same Book.Id.
     // When `authorId` is provided, only that author's books are returned (used
@@ -851,9 +916,29 @@ public class BooksController : ControllerBase
             .ToList();
     }
 
+    // Manually re-indexes the __unknown quarantine folder into the UnknownFiles
+    // table (the same step sync runs as Phase 4). Returns diagnostics so it's
+    // clear which roots were checked and how many files were seen — handy when
+    // the table looks unexpectedly empty.
+    [HttpPost("unknown-files/reindex")]
+    public async Task<ActionResult<UnknownFileIndexer.RescanResult>> ReindexUnknownFiles(CancellationToken ct)
+    {
+        var locationPaths = await _db.LibraryLocations
+            .AsNoTracking()
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+
+        var result = await UnknownFileIndexer.RescanAsync(_db, locationPaths, ct);
+        return Ok(result);
+    }
+
     // -------------------------------------------------------------------------
     // File candidates & linking for missing works
     // -------------------------------------------------------------------------
+
+    // Minimum fuzzy score (0–1) for a file to be offered as a match candidate.
+    private const double FileCandidateMinScore = 0.5;
 
     public sealed record FileCandidateDto(
         // null when the candidate comes from the unknown folder (not yet in DB)
@@ -861,13 +946,14 @@ public class BooksController : ControllerBase
         string FullPath,
         string DisplayName,
         double Score,
-        // "linked" = already in LocalBookFiles for this author; "unknown" = raw file
+        // "linked" = already an unmatched LocalBookFile; "unknown" = raw file
         string Source);
 
-    // Returns up to 20 fuzzy-scored file candidates for a missing book.
-    // Sources:
-    //   1. Unmatched LocalBookFiles belonging to the same author
-    //   2. Files in the __unknown quarantine folder(s)
+    // Returns every fuzzy-scored file candidate (score >= 50%) for a missing
+    // book, best first. Purely DB-driven (no filesystem walk) — both sources are
+    // merged into a single list ordered by score:
+    //   1. Unmatched LocalBookFiles (no BookId) in ANY author folder
+    //   2. __unknown quarantine files, indexed into the DB during sync
     [HttpGet("{id:int}/file-candidates")]
     public async Task<ActionResult<IReadOnlyList<FileCandidateDto>>> GetFileCandidates(
         int id, CancellationToken ct)
@@ -880,12 +966,30 @@ public class BooksController : ControllerBase
 
         var normalizedTarget = TitleNormalizer.Normalize(book.Title);
 
+        // SQL-side pre-filter: the unmatched-file table can hold hundreds of
+        // thousands of rows, far too many to pull into memory and fuzzy-score on
+        // every request. Require the title's most distinctive (longest) word to
+        // appear as a substring of the candidate's normalized title — a cheap
+        // LIKE that slashes the row count before scoring. Titles with no word of
+        // 4+ chars (very rare) fall back to scanning everything.
+        var pivot = normalizedTarget
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Where(w => w.Length >= 4)
+            .OrderByDescending(w => w.Length)
+            .FirstOrDefault();
+        var like = pivot is null ? null : $"%{pivot}%";
+
         var candidates = new List<FileCandidateDto>();
 
-        // 1. Unmatched LocalBookFiles for this author
-        var unmatched = await _db.LocalBookFiles
-            .AsNoTracking()
-            .Where(f => f.AuthorId == book.AuthorId && f.BookId == null)
+        // 1. Every unmatched LocalBookFile, regardless of which author folder it
+        //    sits in — a file is often misfiled under the wrong author, so we
+        //    don't restrict to this book's author. The author folder is shown
+        //    in the display name when it differs, for context.
+        var lbfQuery = _db.LocalBookFiles.AsNoTracking().Where(f => f.BookId == null);
+        if (like is not null)
+            lbfQuery = lbfQuery.Where(f => f.NormalizedTitle != null && EF.Functions.Like(f.NormalizedTitle, like));
+        var unmatched = await lbfQuery
+            .Select(f => new { f.Id, f.FullPath, f.MetadataTitle, f.NormalizedTitle, f.AuthorFolder, f.AuthorId })
             .ToListAsync(ct);
 
         foreach (var f in unmatched)
@@ -894,38 +998,35 @@ public class BooksController : ControllerBase
                     : !string.IsNullOrWhiteSpace(f.NormalizedTitle) ? f.NormalizedTitle
                     : Path.GetFileNameWithoutExtension(f.FullPath);
             var score = FuzzyScore.JaroWinkler(normalizedTarget, TitleNormalizer.Normalize(raw));
-            if (score >= 0.4)
-                candidates.Add(new FileCandidateDto(f.Id, f.FullPath, Path.GetFileName(f.FullPath), score, "linked"));
+            if (score < FileCandidateMinScore) continue;
+            var fileName = Path.GetFileName(f.FullPath);
+            var display = f.AuthorId != book.AuthorId && !string.IsNullOrWhiteSpace(f.AuthorFolder)
+                ? $"{f.AuthorFolder} / {fileName}"
+                : fileName;
+            candidates.Add(new FileCandidateDto(f.Id, f.FullPath, display, score, "linked"));
         }
 
-        // 2. Files in unknown folder roots
-        var locationPaths = await _db.LibraryLocations
-            .AsNoTracking()
-            .Where(l => l.Enabled)
-            .Select(l => l.Path)
+        // 2. __unknown quarantine files, indexed into the DB during sync — a
+        //    plain DB read, no disk access on this request. Same pre-filter.
+        var ufQuery = _db.UnknownFiles.AsNoTracking();
+        if (like is not null)
+            ufQuery = ufQuery.Where(u => u.NormalizedTitle != null && EF.Functions.Like(u.NormalizedTitle, like));
+        var unknownFiles = await ufQuery
+            .Select(u => new { u.FullPath, u.FileName, u.NormalizedTitle })
             .ToListAsync(ct);
 
-        var unknownRoots = await UnknownFolderResolver.GetSourceRootsAsync(_db, locationPaths, ct);
-        foreach (var root in unknownRoots)
+        foreach (var u in unknownFiles)
         {
-            if (!Directory.Exists(root)) continue;
-            foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
-            {
-                var ext = Path.GetExtension(file).ToLowerInvariant();
-                if (!CalibreScanner.EbookExtensions.Contains(ext)) continue;
-                var nameNoExt = Path.GetFileNameWithoutExtension(file);
-                var score = FuzzyScore.JaroWinkler(normalizedTarget, TitleNormalizer.Normalize(nameNoExt));
-                if (score >= 0.4)
-                    candidates.Add(new FileCandidateDto(null, file, Path.GetFileName(file), score, "unknown"));
-            }
+            var score = FuzzyScore.JaroWinkler(normalizedTarget, u.NormalizedTitle ?? "");
+            if (score < FileCandidateMinScore) continue;
+            candidates.Add(new FileCandidateDto(null, u.FullPath, u.FileName, score, "unknown"));
         }
 
-        var top20 = candidates
+        var ordered = candidates
             .OrderByDescending(c => c.Score)
-            .Take(20)
             .ToList();
 
-        return Ok(top20);
+        return Ok(ordered);
     }
 
     public sealed record LinkFileRequest(
@@ -1012,8 +1113,15 @@ public class BooksController : ControllerBase
         if (existingFile is not null)
         {
             existingFile.BookId = book.Id;
+            // Re-home the file to the target book's author — the candidate may
+            // have been an unmatched file sitting under a different author.
+            existingFile.AuthorId = book.AuthorId;
             existingFile.ManuallyUnmatched = false;
-            if (moved) existingFile.FullPath = finalPath;
+            if (moved)
+            {
+                existingFile.FullPath = finalPath;
+                existingFile.AuthorFolder = book.Author?.Name ?? existingFile.AuthorFolder;
+            }
         }
         else
         {
@@ -1030,6 +1138,14 @@ public class BooksController : ControllerBase
                 SizeBytes = new FileInfo(finalPath).Length,
             };
             _db.LocalBookFiles.Add(newFile);
+
+            // This file came out of the __unknown quarantine — drop its index
+            // row so it stops showing up as a candidate (the next sync would
+            // also prune it, but do it now for immediacy).
+            var indexRows = await _db.UnknownFiles
+                .Where(u => u.FullPath == sourcePath)
+                .ToListAsync(ct);
+            if (indexRows.Count > 0) _db.UnknownFiles.RemoveRange(indexRows);
         }
 
         await _db.SaveChangesAsync(ct);

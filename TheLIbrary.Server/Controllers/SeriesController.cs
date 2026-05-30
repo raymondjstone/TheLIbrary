@@ -16,7 +16,9 @@ public class SeriesController : ControllerBase
     public sealed record SeriesSummary(
         int Id, string Name,
         int? PrimaryAuthorId, string? PrimaryAuthorName,
-        int? ParentSeriesId, string? ParentSeriesName, string? PositionInParent);
+        int? ParentSeriesId, string? ParentSeriesName, string? PositionInParent,
+        bool GapsInSequence = false,
+        string? GapsDescription = null);
 
     public sealed record AuthorRef(int Id, string Name);
     public sealed record ChildSeriesRef(int Id, string Name, string? PositionInParent);

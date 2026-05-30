@@ -3,17 +3,20 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using TheLibrary.Server.Data;
 
 #nullable disable
 
-namespace TheLibrary.Server.Data.Migrations
+namespace TheLIbrary.Server.Data.Migrations
 {
     [DbContext(typeof(LibraryDbContext))]
-    partial class LibraryDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260530110629_AddBookLanguageReview")]
+    partial class AddBookLanguageReview
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -598,47 +601,6 @@ namespace TheLibrary.Server.Data.Migrations
                     b.HasIndex("AuthorId");
 
                     b.ToTable("SeriesAuthors");
-                });
-
-            modelBuilder.Entity("TheLibrary.Server.Data.Models.UnknownFile", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<string>("FileName")
-                        .IsRequired()
-                        .HasMaxLength(512)
-                        .HasColumnType("nvarchar(512)");
-
-                    b.Property<string>("FullPath")
-                        .IsRequired()
-                        .HasMaxLength(2048)
-                        .HasColumnType("nvarchar(2048)");
-
-                    b.Property<DateTime>("ModifiedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("NormalizedTitle")
-                        .HasMaxLength(1024)
-                        .HasColumnType("nvarchar(1024)");
-
-                    b.Property<DateTime>("ScannedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<long>("SizeBytes")
-                        .HasColumnType("bigint");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("FullPath")
-                        .IsUnique();
-
-                    b.HasIndex("NormalizedTitle");
-
-                    b.ToTable("UnknownFiles");
                 });
 
             modelBuilder.Entity("TheLibrary.Server.Data.Models.Author", b =>

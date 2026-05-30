@@ -20,6 +20,7 @@ public class LibraryDbContext : DbContext
     public DbSet<Series> Series => Set<Series>();
     public DbSet<SeriesAuthor> SeriesAuthors => Set<SeriesAuthor>();
     public DbSet<PhysicalBookUnmatched> PhysicalBookUnmatched => Set<PhysicalBookUnmatched>();
+    public DbSet<UnknownFile> UnknownFiles => Set<UnknownFile>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -131,6 +132,12 @@ public class LibraryDbContext : DbContext
             e.Property(x => x.SeriesPos).HasMaxLength(100);
             e.Property(x => x.Isbn).HasMaxLength(20);
             e.HasIndex(x => new { x.Author, x.Title });
+        });
+
+        b.Entity<UnknownFile>(e =>
+        {
+            e.HasIndex(x => x.FullPath).IsUnique();
+            e.HasIndex(x => x.NormalizedTitle);
         });
 
         b.Entity<OpenLibraryAuthor>(e =>

@@ -400,6 +400,11 @@ function SeriesCard({ s, depth, childrenByParent, expanded, setExpanded, editing
                                 {children.length} sub-series
                             </span>
                         )}
+                        {s.gapsInSequence && (
+                            <span title={`Missing: ${s.gapsDescription}`} style={{ display: 'inline-flex', alignItems: 'center', background: 'rgba(239, 68, 68, 0.1)', color: '#ef4444', fontSize: '0.75rem', fontWeight: 500, padding: '0.1rem 0.4rem', borderRadius: '4px', marginLeft: '0.6rem' }}>
+                                gap in sequence
+                            </span>
+                        )}
                     </span>
                     <span style={{ fontSize: '0.8rem', fontWeight: 400, color: 'var(--subtle)', whiteSpace: 'nowrap' }}>
                         {s.ownedCount}/{s.bookCount} owned

@@ -20,6 +20,7 @@ import Wanted from './pages/Wanted.jsx'
 import PhysicalUnmatched from './pages/PhysicalUnmatched.jsx'
 import ManualBooks from './pages/ManualBooks.jsx'
 import ForeignTitles from './pages/ForeignTitles.jsx'
+import UnknownFiles from './pages/UnknownFiles.jsx'
 
 createRoot(document.getElementById('root')).render(
     <StrictMode>
@@ -44,6 +45,7 @@ createRoot(document.getElementById('root')).render(
                     <Route path="physical-unmatched" element={<PhysicalUnmatched />} />
                     <Route path="manual-books" element={<ManualBooks />} />
                     <Route path="foreign" element={<ForeignTitles />} />
+                    <Route path="unknown-files" element={<UnknownFiles />} />
                 </Route>
             </Routes>
         </BrowserRouter>

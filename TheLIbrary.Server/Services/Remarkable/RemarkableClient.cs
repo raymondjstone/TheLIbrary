@@ -35,7 +35,7 @@ public sealed class RemarkableClient
     private static readonly string[] ConvertibleExtensions =
     {
         ".mobi", ".azw3", ".azw", ".kf8", ".azw4", ".prc", ".pdb",
-        ".fb2", ".fbz", ".docx", ".odt", ".lit", ".cbz"
+        ".fb2", ".fbz", ".docx", ".odt", ".rtf", ".lit", ".cbz"
     };
 
     public RemarkableClient(

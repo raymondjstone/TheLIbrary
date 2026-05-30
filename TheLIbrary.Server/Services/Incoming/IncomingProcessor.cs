@@ -626,6 +626,7 @@ public sealed class IncomingProcessor
             ".lit" => LitMetadataReader.TryReadFile(file),
             ".cbz" => CbzMetadataReader.TryReadFile(file),
             ".docx" or ".odt" => DocxMetadataReader.TryReadFile(file),
+            ".opf" => OpfMetadataReader.TryReadFile(file),
             _ => null
         };
         if (m is not null && (m.Title is not null || m.Author is not null)) return m;
