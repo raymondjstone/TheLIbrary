@@ -17,6 +17,7 @@ export default function Layout() {
                     <NavLink to="/stats">Stats</NavLink>
                     <NavLink to="/duplicates">Duplicates</NavLink>
                     <NavLink to="/manual-books">Manual Books</NavLink>
+                    <NavLink to="/foreign">Foreign Titles</NavLink>
                     <NavLink to="/untracked">Untracked</NavLink>
                     <NavLink to="/sync">Sync</NavLink>
                     <NavLink to="/schedules">Schedules</NavLink>

@@ -90,6 +90,7 @@ export default function MissingWorks() {
     const [minYear, setMinYear] = useState('')
     const [maxYear, setMaxYear] = useState('')
     const [expandedCandidates, setExpandedCandidates] = useState(new Set())
+    const [collapsedAuthors, setCollapsedAuthors] = useState(new Set())
 
     useEffect(() => {
         fetch('/api/nzb-sites')
@@ -244,6 +245,19 @@ export default function MissingWorks() {
         })()
         : null
 
+    const toggleAuthor = (authorId) => {
+        setCollapsedAuthors(prev => {
+            const n = new Set(prev)
+            n.has(authorId) ? n.delete(authorId) : n.add(authorId)
+            return n
+        })
+    }
+
+    const allCollapsed = byAuthor && byAuthor.length > 0 && byAuthor.every(a => collapsedAuthors.has(a.id))
+    const toggleAllAuthors = () => {
+        setCollapsedAuthors(allCollapsed ? new Set() : new Set((byAuthor ?? []).map(a => a.id)))
+    }
+
     const toggleCandidates = (bookId) => {
         setExpandedCandidates(prev => {
             const n = new Set(prev)
@@ -306,6 +320,11 @@ export default function MissingWorks() {
                         {bulkBusy ? 'Marking…' : `Mark ${selected.size} as owned`}
                     </button>
                 )}
+                {byAuthor && byAuthor.length > 0 && (
+                    <button className="btn-ghost" onClick={toggleAllAuthors}>
+                        {allCollapsed ? 'Expand all' : 'Collapse all'}
+                    </button>
+                )}
                 <a className="btn-ghost" href="/api/books/missing/export" download="missing-works.csv"
                     style={{ textDecoration: 'none', padding: '0.3rem 0.6rem' }}>
                     ↓ Export CSV
@@ -325,25 +344,40 @@ export default function MissingWorks() {
                 </p>
             )}
 
-            {byAuthor && byAuthor.map(author => (
+            {byAuthor && byAuthor.map(author => {
+                const collapsed = collapsedAuthors.has(author.id)
+                return (
                 <div key={author.id} style={{ marginBottom: '2rem' }}>
                     <h3 style={{ margin: '0 0 0.25rem', fontWeight: 600, fontSize: '1.05rem' }}>
+                        <button
+                            className="btn-ghost"
+                            title={collapsed ? 'Expand' : 'Collapse'}
+                            style={{ marginRight: '0.4rem', fontSize: '0.8em', padding: '0.1rem 0.3rem' }}
+                            onClick={() => toggleAuthor(author.id)}>
+                            {collapsed ? '▶' : '▼'}
+                        </button>
                         <Link to={`/authors/${author.id}`}>{author.name}</Link>
                         <span className="subtle" style={{ fontWeight: 400, marginLeft: '0.5rem' }}>
                             {'★'.repeat(author.priority)}
                         </span>
-                        <button
-                            className="btn-ghost"
-                            style={{ marginLeft: '0.75rem', fontSize: '0.8em' }}
-                            onClick={() => selectAll(author.books)}>
-                            {author.books.every(b => selected.has(b.id)) ? 'Deselect all' : 'Select all'}
-                        </button>
+                        <span className="subtle" style={{ fontWeight: 400, marginLeft: '0.5rem', fontSize: '0.8em' }}>
+                            ({author.books.length})
+                        </span>
+                        {!collapsed && (
+                            <button
+                                className="btn-ghost"
+                                style={{ marginLeft: '0.75rem', fontSize: '0.8em' }}
+                                onClick={() => selectAll(author.books)}>
+                                {author.books.every(b => selected.has(b.id)) ? 'Deselect all' : 'Select all'}
+                            </button>
+                        )}
                     </h3>
-                    {nzbSites.length > 0 && (
+                    {!collapsed && nzbSites.length > 0 && (
                         <div style={{ marginBottom: '0.4rem' }}>
                             {nzbLinks(author.name, author.name)}
                         </div>
                     )}
+                    {!collapsed && (
                     <table className="grid">
                         <thead>
                                 <tr>
@@ -421,8 +455,10 @@ export default function MissingWorks() {
                                 ))}
                         </tbody>
                     </table>
+                    )}
                 </div>
-            ))}
+                )
+            })}
         </section>
     )
 }

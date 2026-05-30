@@ -57,6 +57,12 @@ public class Book
     // the user doesn't want OL refreshes to keep surfacing.
     public bool Suppressed { get; set; }
 
+    // Title looks like it is not in English (set by the language-guess scan or
+    // by hand on the Foreign Titles page). Foreign books are always Suppressed
+    // too, so they drop out of the normal author/missing views; this separate
+    // flag is what the Foreign Titles page lists and lets the user reverse.
+    public bool Foreign { get; set; }
+
     // ISBN-13 (preferred) or ISBN-10, when known from imported metadata. Used
     // as a high-confidence match key in addition to NormalizedTitle.
     [MaxLength(20)]

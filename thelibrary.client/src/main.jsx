@@ -19,6 +19,7 @@ import Series from './pages/Series.jsx'
 import Wanted from './pages/Wanted.jsx'
 import PhysicalUnmatched from './pages/PhysicalUnmatched.jsx'
 import ManualBooks from './pages/ManualBooks.jsx'
+import ForeignTitles from './pages/ForeignTitles.jsx'
 
 createRoot(document.getElementById('root')).render(
     <StrictMode>
@@ -42,6 +43,7 @@ createRoot(document.getElementById('root')).render(
                     <Route path="wanted" element={<Wanted />} />
                     <Route path="physical-unmatched" element={<PhysicalUnmatched />} />
                     <Route path="manual-books" element={<ManualBooks />} />
+                    <Route path="foreign" element={<ForeignTitles />} />
                 </Route>
             </Routes>
         </BrowserRouter>

@@ -249,6 +249,69 @@ public class BooksController : ControllerBase
         return Ok(new { book.Id, book.Suppressed });
     }
 
+    public sealed record ForeignRequest(bool Foreign);
+
+    // Marks a single book as foreign (not in English) or clears the flag.
+    // Foreign always implies Suppressed, so the two move together: marking
+    // foreign also suppresses; clearing foreign also un-suppresses.
+    [HttpPut("{id:int}/foreign")]
+    public async Task<IActionResult> SetForeign(int id, [FromBody] ForeignRequest body, CancellationToken ct)
+    {
+        var book = await _db.Books.FirstOrDefaultAsync(b => b.Id == id, ct);
+        if (book is null) return NotFound();
+        book.Foreign = body.Foreign;
+        book.Suppressed = body.Foreign;
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { book.Id, book.Foreign, book.Suppressed });
+    }
+
+    public sealed record ForeignBookRow(
+        int Id, string Title, int? FirstPublishYear, int? CoverId, string? CoverUrl,
+        int AuthorId, string AuthorName, string OpenLibraryWorkKey);
+
+    // Every book currently flagged foreign, for the Foreign Titles review page.
+    [HttpGet("foreign")]
+    public async Task<IReadOnlyList<ForeignBookRow>> Foreign(CancellationToken ct)
+    {
+        return await _db.Books.AsNoTracking()
+            .Where(b => b.Foreign)
+            .OrderBy(b => b.Author.Name).ThenBy(b => b.Title)
+            .Select(b => new ForeignBookRow(
+                b.Id, b.Title, b.FirstPublishYear, b.CoverId, b.CoverUrl,
+                b.AuthorId, b.Author.Name, b.OpenLibraryWorkKey))
+            .ToListAsync(ct);
+    }
+
+    public sealed record ForeignScanResult(int Scanned, int Flagged);
+
+    // Runs the title-language guesser over every book not already flagged
+    // foreign and flags (+ suppresses) the ones it is confident are not in
+    // English. Conservative by design: ambiguous titles are left untouched.
+    [HttpPost("foreign/scan")]
+    public async Task<ActionResult<ForeignScanResult>> ScanForeign(CancellationToken ct)
+    {
+        var candidates = await _db.Books
+            .Where(b => !b.Foreign)
+            .Select(b => new { b.Id, b.Title })
+            .ToListAsync(ct);
+
+        var flagIds = candidates
+            .Where(b => TitleLanguageGuesser.IsLikelyNonEnglish(b.Title))
+            .Select(b => b.Id)
+            .ToList();
+
+        if (flagIds.Count > 0)
+        {
+            await _db.Books
+                .Where(b => flagIds.Contains(b.Id))
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(b => b.Foreign, true)
+                    .SetProperty(b => b.Suppressed, true), ct);
+        }
+
+        return Ok(new ForeignScanResult(candidates.Count, flagIds.Count));
+    }
+
     public sealed record SeriesRequest(string? SeriesName, string? Position);
 
     [HttpPut("{id:int}/series")]
@@ -667,6 +730,7 @@ public class BooksController : ControllerBase
         return await _db.Books
             .AsNoTracking()
             .Where(b => b.Author.Priority >= 1
+                     && !b.Suppressed
                      && !b.ManuallyOwned
                      && !b.LocalFiles.Any())
             .OrderByDescending(b => b.Wanted)
@@ -759,6 +823,7 @@ public class BooksController : ControllerBase
         var rows = await _db.Books
             .AsNoTracking()
             .Where(b => (!starredOnly || b.Author.Priority >= 1)
+                     && !b.Suppressed
                      && b.FirstPublishYear != null
                      && b.FirstPublishYear >= cutoffYear)
             .Select(b => new
