@@ -76,44 +76,20 @@ export default function ForeignTitles() {
         }
     }
 
-    // Unreviewed (auto-flagged) first, confirmed-foreign last; stable within
-    // each group by the server's author/title order.
-    const sorted = rows
-        ? [...rows].sort((a, b) => Number(a.confirmed) - Number(b.confirmed))
-        : null
+    const unconfirmed = rows ? rows.filter(b => !b.confirmed) : []
+    const confirmed   = rows ? rows.filter(b =>  b.confirmed) : []
 
-    return (
-        <section>
-            <div className="toolbar">
-                <h2 style={{ margin: 0, fontWeight: 600 }}>Foreign Titles</h2>
-                <span className="count" style={{ color: 'var(--subtle)', marginLeft: 'auto' }}>
-                    {rows ? `${rows.length} book${rows.length === 1 ? '' : 's'}` : ''}
+    const BookTable = ({ books, caption }) => (
+        <>
+            <h3 style={{ marginTop: '1.5rem' }}>
+                {caption}
+                <span className="count" style={{ color: 'var(--subtle)', marginLeft: '0.5rem', fontWeight: 400, fontSize: '0.9em' }}>
+                    {books.length} book{books.length === 1 ? '' : 's'}
                 </span>
-                <button className="btn-ghost" onClick={scan} disabled={scanning}>
-                    {scanning ? 'Scanning…' : 'Scan library'}
-                </button>
-                <button className="btn-ghost" onClick={load}>Refresh</button>
-            </div>
-            <p className="subtle">
-                Books whose titles look like they are not in English. These are also
-                suppressed, so they stay out of the author and missing-works views.
-                Clearing a book here marks it English again and un-suppresses it.
-            </p>
-
-            {scanResult && (
-                <p className="subtle">
-                    Scanned {scanResult.scanned} book{scanResult.scanned === 1 ? '' : 's'},
-                    flagged {scanResult.flagged} new as foreign.
-                </p>
-            )}
-
-            {error && <p className="error">{error}</p>}
-            {rows === null && !error && <p className="subtle">Loading…</p>}
-            {rows !== null && rows.length === 0 && !error && (
-                <p className="subtle">No books flagged as foreign.</p>
-            )}
-
-            {sorted !== null && sorted.length > 0 && (
+            </h3>
+            {books.length === 0
+                ? <p className="subtle">None.</p>
+                : (
                 <table className="grid">
                     <thead>
                         <tr>
@@ -122,11 +98,10 @@ export default function ForeignTitles() {
                             <th>Title</th>
                             <th>Author</th>
                             <th>Year</th>
-                            <th>Status</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {sorted.map(b => (
+                        {books.map(b => (
                             <tr key={b.id} className={b.authorPriority >= 1 ? 'starred-row' : undefined}>
                                 <td>
                                     <div className="row-actions">
@@ -165,15 +140,50 @@ export default function ForeignTitles() {
                                 </td>
                                 <td><Link to={`/authors/${b.authorId}`}>{b.authorName}</Link></td>
                                 <td>{b.firstPublishYear ?? '—'}</td>
-                                <td style={{ whiteSpace: 'nowrap' }}>
-                                    {b.confirmed
-                                        ? <span style={{ color: 'var(--ok)' }}>✓ Confirmed</span>
-                                        : <span className="subtle">Auto-flagged</span>}
-                                </td>
                             </tr>
                         ))}
                     </tbody>
                 </table>
+            )}
+        </>
+    )
+
+    return (
+        <section>
+            <div className="toolbar">
+                <h2 style={{ margin: 0, fontWeight: 600 }}>Foreign Titles</h2>
+                <span className="count" style={{ color: 'var(--subtle)', marginLeft: 'auto' }}>
+                    {rows ? `${rows.length} book${rows.length === 1 ? '' : 's'}` : ''}
+                </span>
+                <button className="btn-ghost" onClick={scan} disabled={scanning}>
+                    {scanning ? 'Scanning…' : 'Scan library'}
+                </button>
+                <button className="btn-ghost" onClick={load}>Refresh</button>
+            </div>
+            <p className="subtle">
+                Books whose titles look like they are not in English. These are also
+                suppressed, so they stay out of the author and missing-works views.
+                Clearing a book here marks it English again and un-suppresses it.
+            </p>
+
+            {scanResult && (
+                <p className="subtle">
+                    Scanned {scanResult.scanned} book{scanResult.scanned === 1 ? '' : 's'},
+                    flagged {scanResult.flagged} new as foreign.
+                </p>
+            )}
+
+            {error && <p className="error">{error}</p>}
+            {rows === null && !error && <p className="subtle">Loading…</p>}
+            {rows !== null && rows.length === 0 && !error && (
+                <p className="subtle">No books flagged as foreign.</p>
+            )}
+
+            {rows !== null && rows.length > 0 && (
+                <>
+                    <BookTable books={unconfirmed} caption="Unconfirmed (auto-flagged)" />
+                    <BookTable books={confirmed}   caption="Confirmed foreign" />
+                </>
             )}
         </section>
     )

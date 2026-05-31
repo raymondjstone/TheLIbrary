@@ -16,6 +16,7 @@ export default function Layout() {
                     <NavLink to="/series">Series</NavLink>
                     <NavLink to="/stats">Stats</NavLink>
                     <NavLink to="/duplicates">Duplicates</NavLink>
+                    <NavLink to="/archived">Archived Files</NavLink>
                     <NavLink to="/manual-books">Manual Books</NavLink>
                     <NavLink to="/foreign">Foreign Titles</NavLink>
                     <NavLink to="/untracked">Untracked</NavLink>

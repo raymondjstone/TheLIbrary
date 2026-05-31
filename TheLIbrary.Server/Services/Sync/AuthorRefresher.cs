@@ -284,10 +284,18 @@ public sealed class AuthorRefresher
             // codes aggregated over all editions). Only starred authors reach
             // here with non-English works — the non-starred query is eng-only.
             // A work with language data that doesn't include English has no
-            // English edition, so flag (and suppress) it. Missing language data
-            // is left unflagged; the title guesser is the fallback for those.
-            var isForeign = doc.Language is { Count: > 0 } langs
-                && !langs.Any(l => string.Equals(l, "eng", StringComparison.OrdinalIgnoreCase));
+            // English edition, so flag (and suppress) it. When OL has no
+            // language data at all (very common), fall back to the title guesser
+            // so clearly non-English titles are still caught.
+            bool isForeign;
+            if (doc.Language is { Count: > 0 } langs)
+            {
+                isForeign = !langs.Any(l => string.Equals(l, "eng", StringComparison.OrdinalIgnoreCase));
+            }
+            else
+            {
+                isForeign = TitleLanguageGuesser.IsLikelyNonEnglish(doc.Title);
+            }
 
             _db.Books.Add(new Book
             {

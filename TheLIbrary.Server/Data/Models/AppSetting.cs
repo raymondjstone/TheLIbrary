@@ -65,4 +65,8 @@ public static class AppSettingKeys
     // must be present for notifications to fire; unset = feature disabled.
     public const string PushoverAppToken = "PushoverAppToken";
     public const string PushoverUserKey = "PushoverUserKey";
+
+    // Folder name (relative to each library root) used when archiving duplicate
+    // files from the Duplicates page. Defaults to "__archive" when not set.
+    public const string DedupeArchiveFolder = "DedupeArchiveFolder";
 }

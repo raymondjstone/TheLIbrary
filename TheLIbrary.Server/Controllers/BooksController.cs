@@ -696,8 +696,27 @@ public class BooksController : ControllerBase
     private static string? FormatOf(string fullPath)
     {
         if (string.IsNullOrWhiteSpace(fullPath)) return null;
+
+        // Fast path: FullPath is a direct file (flat layout).
         var ext = Path.GetExtension(fullPath).TrimStart('.').ToLowerInvariant();
-        return string.IsNullOrEmpty(ext) ? null : ext;
+        if (!string.IsNullOrEmpty(ext)) return ext;
+
+        // Calibre layout: FullPath is a directory — find the best readable file inside it.
+        if (!Directory.Exists(fullPath)) return null;
+        try
+        {
+            var preferred = DefaultFormatPreference;
+            // Return the format of whichever file in the directory ranks highest.
+            return Directory.EnumerateFiles(fullPath)
+                .Select(f => Path.GetExtension(f).TrimStart('.').ToLowerInvariant())
+                .Where(e => !string.IsNullOrEmpty(e))
+                .OrderBy(e => PreferenceRank(e, preferred))
+                .FirstOrDefault();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private async Task<string[]> GetFormatPreferenceAsync(CancellationToken ct)

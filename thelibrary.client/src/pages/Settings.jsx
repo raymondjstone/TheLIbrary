@@ -48,6 +48,9 @@ export default function Settings() {
     const [duplicateFormatPreference, setDuplicateFormatPreference] = useState(null)
     const [duplicateFormatEdit, setDuplicateFormatEdit] = useState('epub;pdf;azw3;mobi;azw;fb2;lit;cbz;docx;odt;rtf;prc;pdb;opf')
     const [duplicateFormatSaving, setDuplicateFormatSaving] = useState(false)
+    const [archiveFolder, setArchiveFolder] = useState({ folderName: '__archive' })
+    const [archiveFolderEdit, setArchiveFolderEdit] = useState('__archive')
+    const [archiveFolderSaving, setArchiveFolderSaving] = useState(false)
 
     const load = async () => {
         // Independent loads — a failing endpoint (e.g. pending migration) must
@@ -151,6 +154,14 @@ export default function Settings() {
             const body = await r.json()
             setDuplicateFormatPreference(body)
             setDuplicateFormatEdit((body.formats ?? []).join(';'))
+        } catch (e) { setError(prev => prev ?? String(e)) }
+
+        try {
+            const r = await fetch('/api/settings/archive-folder')
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setArchiveFolder(body)
+            setArchiveFolderEdit(body.folderName ?? '__archive')
         } catch (e) { setError(prev => prev ?? String(e)) }
     }
 
@@ -295,6 +306,26 @@ export default function Settings() {
             setError(String(e.message ?? e))
         } finally {
             setDuplicateFormatSaving(false)
+        }
+    }
+
+    const saveArchiveFolder = async () => {
+        setError(null)
+        setArchiveFolderSaving(true)
+        try {
+            const r = await fetch('/api/settings/archive-folder', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ folderName: archiveFolderEdit.trim() || '__archive' }),
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setArchiveFolder(body)
+            setArchiveFolderEdit(body.folderName)
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setArchiveFolderSaving(false)
         }
     }
 
@@ -804,6 +835,27 @@ export default function Settings() {
                 </button>
                 <span className="subtle">
                     {(duplicateFormatPreference?.formats ?? []).join(' > ') || 'using defaults'}
+                </span>
+            </div>
+
+            <h2 style={{ marginTop: '1.5rem' }}>Dedupe archive folder</h2>
+            <p className="subtle">
+                Folder name (relative to each library root) where extra files are moved when you
+                use <em>Archive extras</em> on the Duplicates page. Defaults to <code>__archive</code>.
+                View and restore archived files on the{' '}
+                <a href="/archived">Archived Files</a> page.
+            </p>
+            <div className="toolbar">
+                <input
+                    style={{ minWidth: 220 }}
+                    value={archiveFolderEdit}
+                    onChange={e => setArchiveFolderEdit(e.target.value)}
+                    placeholder="__archive" />
+                <button onClick={saveArchiveFolder} disabled={archiveFolderSaving}>
+                    {archiveFolderSaving ? 'Saving…' : 'Save'}
+                </button>
+                <span className="subtle">
+                    current: <code>{archiveFolder.folderName || '__archive'}</code>
                 </span>
             </div>
 

@@ -17,6 +17,7 @@ public class JobsController : ControllerBase
     private readonly OpenLibraryMetadataCacheService _metadataCache;
     private readonly UnknownFolderFlattenerService _flattenUnknown;
     private readonly UnknownAuthorAdoptionService _adoptUnknownAuthors;
+    private readonly StarredAuthorRefreshService _refreshStarred;
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly OpenLibraryRateLimiter _rateLimiter;
@@ -31,6 +32,7 @@ public class JobsController : ControllerBase
         OpenLibraryMetadataCacheService metadataCache,
         UnknownFolderFlattenerService flattenUnknown,
         UnknownAuthorAdoptionService adoptUnknownAuthors,
+        StarredAuthorRefreshService refreshStarred,
         BackgroundTaskCoordinator coordinator,
         IHostApplicationLifetime lifetime,
         OpenLibraryRateLimiter rateLimiter,
@@ -44,6 +46,7 @@ public class JobsController : ControllerBase
         _metadataCache = metadataCache;
         _flattenUnknown = flattenUnknown;
         _adoptUnknownAuthors = adoptUnknownAuthors;
+        _refreshStarred = refreshStarred;
         _coordinator = coordinator;
         _lifetime = lifetime;
         _rateLimiter = rateLimiter;
@@ -72,6 +75,7 @@ public class JobsController : ControllerBase
             metadataCache = new { isRunning = _metadataCache.IsRunning, message = _metadataCache.CurrentMessage },
             flattenUnknown = new { isRunning = _flattenUnknown.IsRunning, message = _flattenUnknown.CurrentMessage },
             adoptUnknownAuthors = new { isRunning = _adoptUnknownAuthors.IsRunning, message = _adoptUnknownAuthors.CurrentMessage },
+            refreshStarred = new { isRunning = _refreshStarred.IsRunning, message = _refreshStarred.CurrentMessage },
         });
     }
 
@@ -135,6 +139,14 @@ public class JobsController : ControllerBase
     public IActionResult StartAdoptUnknownAuthors()
     {
         if (!_adoptUnknownAuthors.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("refresh-starred/start")]
+    public IActionResult StartRefreshStarred()
+    {
+        if (!_refreshStarred.TryStart(_lifetime.ApplicationStopping, out var err))
             return Conflict(new { error = err });
         return Accepted();
     }

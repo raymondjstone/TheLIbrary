@@ -499,6 +499,31 @@ public class SettingsController : ControllerBase
         return new DuplicateFormatPreferenceDto(cleaned);
     }
 
+    public sealed record ArchiveFolderDto(string FolderName);
+
+    [HttpGet("archive-folder")]
+    public async Task<ArchiveFolderDto> GetArchiveFolder(CancellationToken ct)
+    {
+        var row = await _db.AppSettings.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Key == AppSettingKeys.DedupeArchiveFolder, ct);
+        return new ArchiveFolderDto(string.IsNullOrWhiteSpace(row?.Value) ? "__archive" : row!.Value.Trim());
+    }
+
+    [HttpPut("archive-folder")]
+    public async Task<ActionResult<ArchiveFolderDto>> SetArchiveFolder(
+        [FromBody] ArchiveFolderDto body, CancellationToken ct)
+    {
+        var name = body.FolderName?.Trim() ?? "";
+        if (string.IsNullOrWhiteSpace(name))
+            return BadRequest(new { error = "Folder name cannot be empty." });
+        // Prevent path traversal
+        if (name.Contains('/') || name.Contains('\\') || name.Contains(".."))
+            return BadRequest(new { error = "Folder name must be a simple name with no path separators." });
+        await UpsertSettingAsync(AppSettingKeys.DedupeArchiveFolder, name, ct);
+        await _db.SaveChangesAsync(ct);
+        return new ArchiveFolderDto(name);
+    }
+
     private static int ReadInt(IReadOnlyDictionary<string, string> rows, string key, int fallback)
         => rows.TryGetValue(key, out var v) && int.TryParse(v, out var n) && n >= 0 ? n : fallback;
 
