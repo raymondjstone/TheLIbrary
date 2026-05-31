@@ -113,7 +113,7 @@ public class SettingsControllerIntegrationTests
         using var client = factory.CreateClient();
 
         var put = await client.PutAsJsonAsync("/api/settings/refresh-limits",
-            new SettingsController.RefreshLimitsDto(50, 25));
+            new SettingsController.RefreshLimitsDto(50, 25, 0));
         Assert.Equal(HttpStatusCode.OK, put.StatusCode);
 
         var fresh = await client.GetFromJsonAsync<SettingsController.RefreshLimitsDto>(
@@ -139,7 +139,7 @@ public class SettingsControllerIntegrationTests
         using var factory = new LibraryApiFactory();
         using var client = factory.CreateClient();
         var response = await client.PutAsJsonAsync("/api/settings/refresh-limits",
-            new SettingsController.RefreshLimitsDto(-1, 100));
+            new SettingsController.RefreshLimitsDto(-1, 100, 0));
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
@@ -149,7 +149,7 @@ public class SettingsControllerIntegrationTests
         using var factory = new LibraryApiFactory();
         using var client = factory.CreateClient();
         var put = await client.PutAsJsonAsync("/api/settings/refresh-limits",
-            new SettingsController.RefreshLimitsDto(0, 0));
+            new SettingsController.RefreshLimitsDto(0, 0, 0));
         Assert.Equal(HttpStatusCode.OK, put.StatusCode);
         var dto = await put.Content.ReadFromJsonAsync<SettingsController.RefreshLimitsDto>();
         Assert.Equal(0, dto!.MaxAuthorsPerRun);

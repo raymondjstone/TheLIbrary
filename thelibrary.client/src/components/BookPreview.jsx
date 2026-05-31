@@ -43,7 +43,7 @@ export default function BookPreview({ fileId, format, onClose, title, srcUrl }) 
                     {displayFormat === 'epub' && <EpubPane url={url} />}
                     {displayFormat === 'pdf'  && <PdfPane url={url} />}
                     {displayFormat === 'txt'  && <TxtPane url={url} />}
-                    {['cbz', 'zip'].includes(displayFormat) && <CbzPane fileId={fileId} />}
+                    {['cbz', 'zip'].includes(displayFormat) && <CbzPane fileId={fileId} srcUrl={srcUrl} />}
                     {!['epub', 'pdf', 'txt', 'cbz', 'zip'].includes(displayFormat) && <UnsupportedPane format={f} />}
                 </div>
             </div>
@@ -182,26 +182,36 @@ function TxtPane({ url }) {
 function UnsupportedPane({ format }) {
     return (
         <div style={{ padding: '1.5rem', flex: 1 }}>
-            <p>In-browser preview isn't available for <code>.{format}</code> files yet.</p>
+            <p>In-browser preview isn't available for <code>.{format}</code> files.</p>
             <p className="subtle">
-                Only EPUB, PDF, TXT, CBZ, and Comic ZIP files render natively. To preview MOBI / AZW / LIT /
-                etc you'd need to convert via Calibre first — that's wired up for
-                reMarkable send but not yet for in-app preview.
+                Supported formats: EPUB, PDF, TXT, CBZ, Comic ZIP, and any Calibre-convertible
+                format (MOBI, AZW, AZW3, FB2, LIT, DOCX, ODT).
             </p>
         </div>
     )
 }
 
-function CbzPane({ fileId }) {
+function CbzPane({ fileId, srcUrl }) {
     const [pages, setPages] = useState(null)
     const [pageIndex, setPageIndex] = useState(0)
     const [error, setError] = useState(null)
     const [loading, setLoading] = useState(true)
 
+    // For tracked files use the dedicated cbz-pages endpoint (which also serves
+    // individual page images). For untracked files fall back to the streaming
+    // preview URL so we can at least show a raw-bytes error rather than a broken
+    // /api/files/undefined endpoint.
+    const pagesUrl = fileId ? `/api/files/${fileId}/cbz-pages` : null
+
     useEffect(() => {
+        if (!pagesUrl) {
+            setError('CBZ page-by-page preview is only available for tracked library files. Use the main file preview link to download.')
+            setLoading(false)
+            return
+        }
         setLoading(true)
         setError(null)
-        fetch(`/api/files/${fileId}/cbz-pages`)
+        fetch(pagesUrl)
             .then(async r => {
                 if (!r.ok) {
                     const body = await r.json().catch(() => ({}))

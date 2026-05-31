@@ -17,6 +17,7 @@ public sealed class OpenLibraryMetadataCacheService
     private readonly IWebHostEnvironment _env;
     private readonly ILogger<OpenLibraryMetadataCacheService> _log;
     private volatile bool _isRunning;
+    private volatile string? _currentMessage;
     private OpenLibraryMetadataCacheSummary? _lastResult;
 
     public OpenLibraryMetadataCacheService(
@@ -36,6 +37,7 @@ public sealed class OpenLibraryMetadataCacheService
     }
 
     public bool IsRunning => _isRunning;
+    public string? CurrentMessage => _currentMessage;
     public OpenLibraryMetadataCacheSummary? LastResult => _lastResult;
 
     public bool TryStart(CancellationToken hostCt, out string? error)
@@ -53,13 +55,14 @@ public sealed class OpenLibraryMetadataCacheService
             try { _lastResult = await RunAsync(hostCt); }
             catch (OperationCanceledException) when (hostCt.IsCancellationRequested) { }
             catch (Exception ex) { _log.LogError(ex, "OpenLibrary metadata cache failed"); }
-            finally { _isRunning = false; _coordinator.Release(); }
+            finally { _isRunning = false; _currentMessage = null; _coordinator.Release(); }
         }, hostCt);
         return true;
     }
 
     private async Task<OpenLibraryMetadataCacheSummary> RunAsync(CancellationToken ct)
     {
+        _currentMessage = "Loading books to cache";
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
 
@@ -81,6 +84,7 @@ public sealed class OpenLibraryMetadataCacheService
         foreach (var book in candidates)
         {
             ct.ThrowIfCancellationRequested();
+            _currentMessage = $"Caching metadata {booksUpdated + 1}/{candidates.Count}: {book.Title}";
             try
             {
                 var work = await _ol.FetchWorkAsync(book.OpenLibraryWorkKey, ct);
@@ -122,6 +126,7 @@ public sealed class OpenLibraryMetadataCacheService
         }
 
         await db.SaveChangesAsync(ct);
+        _currentMessage = $"Done — {booksUpdated} book(s) updated, {coversCached} cover(s) cached";
         return new OpenLibraryMetadataCacheSummary(booksUpdated, coversCached);
     }
 }

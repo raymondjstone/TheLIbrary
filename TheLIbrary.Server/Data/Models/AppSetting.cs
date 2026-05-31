@@ -40,6 +40,9 @@ public static class AppSettingKeys
     //                             soonest-due authors to refresh early.
     public const string RefreshMaxAuthorsPerRun = "RefreshMaxAuthorsPerRun";
     public const string RefreshEarlyWhenNoneDue = "RefreshEarlyWhenNoneDue";
+    // Maximum number of days ahead of their NextFetchAt an author may be taken
+    // early. 0 = no limit (take any author regardless of how far out they are).
+    public const string RefreshEarlyMaxDaysAhead = "RefreshEarlyMaxDaysAhead";
 
     // Default per-author works-refresh cadence buckets, used when an author
     // does not have RefreshIntervalDays set explicitly.

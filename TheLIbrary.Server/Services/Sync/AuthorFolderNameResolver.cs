@@ -11,6 +11,41 @@ namespace TheLibrary.Server.Services.Sync;
 // in (rename happens on the next refresh / migration run).
 public static class AuthorFolderNameResolver
 {
+    // Efficient batch version of FindCollisionGroup: groups all authors in O(n)
+    // by normalised name, then runs the linking check only within each tiny
+    // same-name bucket instead of scanning all authors for every author.
+    // Callers that need every collision group should prefer this over calling
+    // FindCollisionGroup per-author to avoid O(n²) behaviour on large libraries.
+    public static IReadOnlyList<IReadOnlyList<Author>> FindAllCollisionGroups(
+        IReadOnlyList<Author> allAuthors)
+    {
+        // Bucket by normalised name — single O(n) pass.
+        var buckets = allAuthors
+            .Where(a => !string.IsNullOrWhiteSpace(a.Name))
+            .GroupBy(a => TitleNormalizer.NormalizeAuthor(a.Name!))
+            .Where(g => g.Count() >= 2);
+
+        var seenReps = new HashSet<int>();
+        var groups   = new List<IReadOnlyList<Author>>();
+
+        foreach (var bucket in buckets)
+        {
+            var members = bucket.ToList();
+            foreach (var a in members)
+            {
+                // FindCollisionGroup operates within `members` (k ≤ handful),
+                // so the inner scan is O(k²) ≈ O(1) in practice.
+                var group = FindCollisionGroup(a, members);
+                if (group.Count < 2) continue;
+                var rep = group.Min(x => x.Id);
+                if (!seenReps.Add(rep)) continue;
+                if (group.Any(x => string.IsNullOrWhiteSpace(x.OpenLibraryKey))) continue;
+                groups.Add(group);
+            }
+        }
+        return groups;
+    }
+
     // Returns the desired folder leaf for `author`. Caller is responsible for
     // any sanitisation of filesystem-illegal characters.
     public static string Resolve(Author author, IReadOnlyList<Author> allAuthors)

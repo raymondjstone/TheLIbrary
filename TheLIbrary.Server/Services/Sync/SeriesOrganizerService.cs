@@ -29,6 +29,7 @@ public sealed class SeriesOrganizerService
     private readonly IFileSystem _fs;
     private readonly ILogger<SeriesOrganizerService> _log;
     private volatile bool _isRunning;
+    private volatile string? _currentMessage;
 
     public SeriesOrganizerService(
         IServiceScopeFactory scopeFactory,
@@ -43,6 +44,7 @@ public sealed class SeriesOrganizerService
     }
 
     public bool IsRunning => _isRunning;
+    public string? CurrentMessage => _currentMessage;
 
     internal string MoveSingleFileForTests(LocalBookFile file, string targetDir)
     {
@@ -103,9 +105,9 @@ public sealed class SeriesOrganizerService
         _ = Task.Run(async () =>
         {
             try { await RunAsync(hostCt); }
-            catch (OperationCanceledException) when (hostCt.IsCancellationRequested) { }
-            catch (Exception ex) { _log.LogError(ex, "Series organizer failed"); }
-            finally { _isRunning = false; _coordinator.Release(); }
+                catch (OperationCanceledException) when (hostCt.IsCancellationRequested) { }
+                catch (Exception ex) { _log.LogError(ex, "Series organizer failed"); }
+                finally { _isRunning = false; _currentMessage = null; _coordinator.Release(); }
         }, hostCt);
         return true;
     }
@@ -113,6 +115,7 @@ public sealed class SeriesOrganizerService
     private async Task RunAsync(CancellationToken ct)
     {
         _log.LogInformation("Series organizer starting");
+        _currentMessage = "Starting";
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
 
@@ -150,6 +153,7 @@ public sealed class SeriesOrganizerService
         });
 
         _log.LogInformation("Series organizer: {Count} LocalBookFile record(s) to evaluate", files.Count);
+        _currentMessage = $"Evaluating {files.Count} file(s)";
 
         // Track current FullPath for every record so we can detect unique-index
         // conflicts before hitting the DB. Updated as records change.
@@ -530,6 +534,8 @@ public sealed class SeriesOrganizerService
                 }
 
                 moved++;
+                if (moved % 50 == 0)
+                    _currentMessage = $"Moved {moved} file(s) — {skipped} skipped, {errors} error(s)";
             }
             catch (Exception ex)
             {
@@ -542,6 +548,7 @@ public sealed class SeriesOrganizerService
             "Series organizer done. Moved={Moved} AlreadyCorrect={AlreadyCorrect} " +
             "NotFound={NotFound} NoLocation={NoLocation} NullContainer={NullContainer} Errors={Errors}",
             moved, cntAlreadyCorrect, cntNotFound, cntNoLocation, cntNullContainer, errors);
+        _currentMessage = $"Done — moved {moved}, skipped {skipped}, {errors} error(s)";
     }
 
     // Strips the \\server\share prefix from a UNC path (\\server\share\rest or

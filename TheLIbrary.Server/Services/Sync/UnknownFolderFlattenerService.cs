@@ -24,6 +24,7 @@ public sealed class UnknownFolderFlattenerService
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly ILogger<UnknownFolderFlattenerService> _log;
     private volatile bool _isRunning;
+    private volatile string? _currentMessage;
     private UnknownFolderFlattenSummary? _lastResult;
 
     public UnknownFolderFlattenerService(
@@ -37,6 +38,7 @@ public sealed class UnknownFolderFlattenerService
     }
 
     public bool IsRunning => _isRunning;
+    public string? CurrentMessage => _currentMessage;
     public UnknownFolderFlattenSummary? LastResult => _lastResult;
 
     public bool TryStart(CancellationToken hostCt, out string? error)
@@ -54,7 +56,7 @@ public sealed class UnknownFolderFlattenerService
             try { _lastResult = await RunAsync(hostCt); }
             catch (OperationCanceledException) when (hostCt.IsCancellationRequested) { }
             catch (Exception ex) { _log.LogError(ex, "Flatten __unknown job failed"); }
-            finally { _isRunning = false; _coordinator.Release(); }
+            finally { _isRunning = false; _currentMessage = null; _coordinator.Release(); }
         }, hostCt);
         return true;
     }
@@ -62,6 +64,7 @@ public sealed class UnknownFolderFlattenerService
     private async Task<UnknownFolderFlattenSummary> RunAsync(CancellationToken ct)
     {
         _log.LogInformation("Flatten __unknown job starting");
+        _currentMessage = "Scanning __unknown roots";
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
 
@@ -84,6 +87,7 @@ public sealed class UnknownFolderFlattenerService
             {
                 ct.ThrowIfCancellationRequested();
                 authorFoldersScanned++;
+                _currentMessage = $"Flattening folder {authorFoldersScanned}: {Path.GetFileName(authorDir)}";
                 var (moved, removed) = FlattenAuthorFolder(authorDir, pathRewrites);
                 filesMoved += moved;
                 dirsRemoved += removed;
@@ -114,6 +118,7 @@ public sealed class UnknownFolderFlattenerService
         _log.LogInformation(
             "Flatten __unknown job done. AuthorFolders={Folders} Files={Files} DirsRemoved={Dirs} DbRows={Rows}",
             authorFoldersScanned, filesMoved, dirsRemoved, dbRowsUpdated);
+        _currentMessage = $"Done — {filesMoved} file(s) moved, {dirsRemoved} dir(s) removed";
 
         return summary;
     }

@@ -34,6 +34,7 @@ public sealed class SameNameAuthorService
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly ILogger<SameNameAuthorService> _log;
     private volatile bool _isRunning;
+    private volatile string? _currentMessage;
     private SameNameAuthorSummary? _lastResult;
 
     public SameNameAuthorService(
@@ -47,6 +48,7 @@ public sealed class SameNameAuthorService
     }
 
     public bool IsRunning => _isRunning;
+    public string? CurrentMessage => _currentMessage;
     public SameNameAuthorSummary? LastResult => _lastResult;
 
     internal static SameNameAuthorSummary SummarizeForTests(
@@ -104,7 +106,7 @@ public sealed class SameNameAuthorService
             try { _lastResult = await RunAsync(hostCt); }
             catch (OperationCanceledException) when (hostCt.IsCancellationRequested) { }
             catch (Exception ex) { _log.LogError(ex, "Same-name author job failed"); }
-            finally { _isRunning = false; _coordinator.Release(); }
+            finally { _isRunning = false; _currentMessage = null; _coordinator.Release(); }
         }, hostCt);
         return true;
     }
@@ -112,6 +114,7 @@ public sealed class SameNameAuthorService
     private async Task<SameNameAuthorSummary> RunAsync(CancellationToken ct)
     {
         _log.LogInformation("Same-name author job starting");
+        _currentMessage = "Loading authors";
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
 
@@ -148,6 +151,7 @@ public sealed class SameNameAuthorService
         // One indexed query against the local OL authors catalogue: every
         // catalogue record that shares a normalized name with a tracked author.
         var nameList = trackedNames.ToList();
+        _currentMessage = $"Querying catalogue for {trackedNames.Count} name(s)";
         var catalogMatches = await db.OpenLibraryAuthors.AsNoTracking()
             .Where(o => nameList.Contains(o.NormalizedName))
             .Select(o => new { o.OlKey, o.Name, o.NormalizedName })
@@ -197,6 +201,7 @@ public sealed class SameNameAuthorService
         _log.LogInformation(
             "Same-name author job done. Tracked names={Names}, catalogue matches={Matches}, added {Added}",
             trackedNames.Count, catalogMatches.Count, added);
+        _currentMessage = $"Done — added {added} author(s)";
 
         return new SameNameAuthorSummary(authors.Count, trackedNames.Count, added, addedNames, warnings);
     }

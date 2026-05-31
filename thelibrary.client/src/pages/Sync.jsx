@@ -12,16 +12,19 @@ export default function Sync() {
     const [state, setState] = useState(null)
     const [error, setError] = useState(null)
     const [incoming, setIncoming] = useState(null)
+    const [jobs, setJobs] = useState(null)
     const timer = useRef(null)
 
     const poll = async () => {
         try {
-            const [s, i] = await Promise.all([
+            const [s, i, j] = await Promise.all([
                 fetch('/api/sync/status').then(r => r.ok ? r.json() : Promise.reject(r.statusText)),
                 fetch('/api/incoming/state').then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch('/api/jobs/status').then(r => r.ok ? r.json() : null).catch(() => null),
             ])
             setState(s)
             if (i) setIncoming(i)
+            if (j) setJobs(j)
         } catch (e) { setError(String(e)) }
     }
 
@@ -80,6 +83,26 @@ export default function Sync() {
     return (
         <section>
             <h2>Sync</h2>
+
+            {jobs ? (
+                <div style={{ marginBottom: '0.75rem' }}>
+                    {(() => {
+                        const rate = jobs.openLibraryRatePerSecond
+                        const tier = jobs.openLibraryRateTier
+                        const demoted = tier?.startsWith('demoted')
+                        const identified = tier?.startsWith('identified')
+                        const color = demoted ? '#c0392b' : identified ? '#27ae60' : '#e67e22'
+                        const label = demoted ? '⚠️' : identified ? '✓' : 'ℹ️'
+                        return (
+                            <span title={tier} style={{ fontSize: '0.9em', color }}>
+                                {label} OpenLibrary rate: <strong>{rate}/s</strong>
+                                <span className="subtle" style={{ marginLeft: '0.5rem' }}>({tier})</span>
+                            </span>
+                        )
+                    })()}
+                </div>
+            ) : null}
+
             <p>Scans Calibre, resolves authors on OpenLibrary, fetches English works (filters variants and pre-1930-only authors), and matches local files.</p>
 
             <div className="toolbar">
@@ -167,15 +190,58 @@ export default function Sync() {
                     <div><strong>Errors:</strong> {incoming.errors}</div>
                     {incoming.startedAt ? <div><strong>Started:</strong> {new Date(incoming.startedAt).toLocaleString()}</div> : null}
                     {incoming.finishedAt ? <div><strong>Finished:</strong> {new Date(incoming.finishedAt).toLocaleString()}</div> : null}
-                    {incoming.error ? <div className="error"><strong>Error:</strong> {incoming.error}</div> : null}
-                    {incoming.log?.length ? (
-                        <details open={incomingRunning}>
-                            <summary>Log ({incoming.log.length} entries)</summary>
-                            <pre style={{ maxHeight: 300, overflow: 'auto' }}>{incoming.log.join('\n')}</pre>
-                        </details>
-                    ) : null}
-                </div>
-            ) : null}
-        </section>
+                        {incoming.error ? <div className="error"><strong>Error:</strong> {incoming.error}</div> : null}
+                                {incoming.log?.length ? (
+                                    <details open={incomingRunning}>
+                                        <summary>Log ({incoming.log.length} entries)</summary>
+                                        <pre style={{ maxHeight: 300, overflow: 'auto' }}>{incoming.log.join('\n')}</pre>
+                                    </details>
+                                ) : null}
+                            </div>
+                        ) : null}
+
+                        {jobs ? (() => {
+                                            const jobList = [
+                                                { key: 'organizer',          label: 'Organise series',       endpoint: '/api/jobs/organizer/start' },
+                                                { key: 'unzip',              label: 'Unzip archives',         endpoint: '/api/jobs/unzip/start' },
+                                                { key: 'disambiguator',      label: 'Disambiguate folders',  endpoint: '/api/jobs/disambiguator/start' },
+                                                { key: 'sameNames',          label: 'Same-name authors',     endpoint: '/api/jobs/same-names/start' },
+                                                { key: 'physicalStars',      label: 'Star physical authors', endpoint: '/api/jobs/physical-stars/start' },
+                                                { key: 'metadataCache',      label: 'Cache OL metadata',     endpoint: '/api/jobs/metadata-cache/start' },
+                                                { key: 'flattenUnknown',     label: 'Flatten __unknown',     endpoint: '/api/jobs/flatten-unknown/start' },
+                                                { key: 'adoptUnknownAuthors',label: 'Adopt unknown authors', endpoint: '/api/jobs/adopt-unknown-authors/start' },
+                                            ]
+                                            const anyJobRunning = !!jobs.activeJob
+                                            return (
+                                                <div className="sync-status" style={{ marginTop: '1rem' }}>
+                                                    <h3>Background jobs</h3>
+                                                    {jobs.activeJob ? <div><strong>Running:</strong> {jobs.activeJob}</div> : null}
+                                                    <div className="toolbar" style={{ flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+                                                        {jobList.map(({ key, label, endpoint }) => {
+                                                            const j = jobs[key]
+                                                            const isRunning = j?.isRunning
+                                                            return (
+                                                                <button key={key}
+                                                                    onClick={() => post(endpoint)}
+                                                                    disabled={anyJobRunning || running}>
+                                                                    {isRunning ? `${label}…` : label}
+                                                                </button>
+                                                            )
+                                                        })}
+                                                    </div>
+                                                    {jobList.filter(j => jobs[j.key]?.isRunning || jobs[j.key]?.message).map(({ key, label }) => {
+                                                        const j = jobs[key]
+                                                        return (
+                                                            <div key={key}>
+                                                                <strong>{label}:</strong>{' '}
+                                                                {j.isRunning ? <span className="running-indicator">⏳ </span> : null}
+                                                                {j.message || (j.isRunning ? 'Running…' : '')}
+                                                            </div>
+                                                        )
+                                                    })}
+                                                </div>
+                                            )
+                                        })() : null}
+                    </section>
     )
 }

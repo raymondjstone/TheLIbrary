@@ -1088,10 +1088,12 @@ public sealed class SyncService
                 // Operational limits, read fresh from the DB each run (Settings page).
                 var limits = await db.AppSettings
                     .Where(s => s.Key == AppSettingKeys.RefreshMaxAuthorsPerRun
-                             || s.Key == AppSettingKeys.RefreshEarlyWhenNoneDue)
+                             || s.Key == AppSettingKeys.RefreshEarlyWhenNoneDue
+                             || s.Key == AppSettingKeys.RefreshEarlyMaxDaysAhead)
                     .ToDictionaryAsync(s => s.Key, s => s.Value, hostCt);
-                int maxPerRun = ReadIntSetting(limits, AppSettingKeys.RefreshMaxAuthorsPerRun, 0);
-                int maxEarly  = ReadIntSetting(limits, AppSettingKeys.RefreshEarlyWhenNoneDue, 200);
+                int maxPerRun    = ReadIntSetting(limits, AppSettingKeys.RefreshMaxAuthorsPerRun, 0);
+                int maxEarly     = ReadIntSetting(limits, AppSettingKeys.RefreshEarlyWhenNoneDue, 200);
+                int earlyMaxDays = ReadIntSetting(limits, AppSettingKeys.RefreshEarlyMaxDaysAhead, 0);
 
                 // Authors actually due, oldest first. Pending authors always
                 // count as due — Status=Pending means the row has never been
@@ -1112,11 +1114,22 @@ public sealed class SyncService
                 // still does useful work. The Pending filter above ensures
                 // we never fall into the early branch while pending items
                 // are still unprocessed.
+                // If earlyMaxDays > 0, only authors due within that many days
+                // are eligible for early refreshes.
                 int earlyCount = 0;
                 if (authorIds.Count == 0 && maxEarly > 0)
                 {
-                    authorIds = await db.Authors
-                        .Where(a => a.NextFetchAt > now && a.Status != AuthorStatus.Pending)
+                    var earlyDeadline = earlyMaxDays > 0
+                        ? now.AddDays(earlyMaxDays)
+                        : (DateTime?)null;
+
+                    var earlyQuery = db.Authors
+                        .Where(a => a.NextFetchAt > now && a.Status != AuthorStatus.Pending);
+
+                    if (earlyDeadline.HasValue)
+                        earlyQuery = earlyQuery.Where(a => a.NextFetchAt <= earlyDeadline.Value);
+
+                    authorIds = await earlyQuery
                         .OrderBy(a => a.NextFetchAt)
                         .Select(a => a.Id)
                         .Take(maxEarly)

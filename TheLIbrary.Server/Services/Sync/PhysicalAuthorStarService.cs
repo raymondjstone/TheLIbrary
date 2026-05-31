@@ -15,6 +15,7 @@ public sealed class PhysicalAuthorStarService
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly ILogger<PhysicalAuthorStarService> _log;
     private volatile bool _isRunning;
+    private volatile string? _currentMessage;
     private PhysicalAuthorStarSummary? _lastResult;
 
     public PhysicalAuthorStarService(
@@ -28,6 +29,7 @@ public sealed class PhysicalAuthorStarService
     }
 
     public bool IsRunning => _isRunning;
+    public string? CurrentMessage => _currentMessage;
     public PhysicalAuthorStarSummary? LastResult => _lastResult;
 
     public bool TryStart(CancellationToken hostCt, out string? error)
@@ -45,7 +47,7 @@ public sealed class PhysicalAuthorStarService
             try { _lastResult = await RunAsync(hostCt); }
             catch (OperationCanceledException) when (hostCt.IsCancellationRequested) { }
             catch (Exception ex) { _log.LogError(ex, "Physical-author star job failed"); }
-            finally { _isRunning = false; _coordinator.Release(); }
+            finally { _isRunning = false; _currentMessage = null; _coordinator.Release(); }
         }, hostCt);
         return true;
     }
@@ -70,6 +72,7 @@ public sealed class PhysicalAuthorStarService
     private async Task<PhysicalAuthorStarSummary> RunAsync(CancellationToken ct)
     {
         _log.LogInformation("Physical-author star job starting");
+        _currentMessage = "Loading authors";
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
 
@@ -81,6 +84,7 @@ public sealed class PhysicalAuthorStarService
         if (targetIds.Count == 0)
         {
             _log.LogInformation("Physical-author star job found no authors to update");
+            _currentMessage = "Done — no authors to update";
             return new PhysicalAuthorStarSummary(0);
         }
 
@@ -89,6 +93,7 @@ public sealed class PhysicalAuthorStarService
             .ExecuteUpdateAsync(s => s.SetProperty(a => a.Priority, _ => 1), ct);
 
         _log.LogInformation("Physical-author star job set 1 star on {Count} author(s)", targetIds.Count);
+        _currentMessage = $"Done — updated {targetIds.Count} author(s)";
         return new PhysicalAuthorStarSummary(targetIds.Count);
     }
 }

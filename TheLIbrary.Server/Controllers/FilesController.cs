@@ -39,19 +39,63 @@ public class FilesController : ControllerBase
             .FirstOrDefaultAsync(f => f.Id == fileId, ct);
         if (lbf is null) return NotFound(new { error = "File record not found" });
 
-        // Try converting MOBI, AZW, AZW3, FB2, LIT etc. on-the-fly to EPUB.
-        var ext = Path.GetExtension(lbf.FullPath).TrimStart('.').ToLowerInvariant();
-        var supportedConversions = new[] { "mobi", "azw", "azw3", "fb2", "lit", "docx", "odt", "cbz", "zip" };
-        if (supportedConversions.Contains(ext) && (format.Equals("epub", StringComparison.OrdinalIgnoreCase) || format.Equals(ext, StringComparison.OrdinalIgnoreCase)))
+        // Resolve the actual source file. lbf.FullPath may be a directory (Calibre
+        // layout) or a direct file path (flat layout). For conversion we need a file.
+        var supportedConversions = new[] { "mobi", "azw", "azw3", "fb2", "lit", "docx", "odt" };
+        var fmt = format.ToLowerInvariant();
+
+        string? conversionSource = null;
+        if (fmt == "epub")
+        {
+            // Client always requests format=epub for convertible types.
+            // Check if storedPath itself is a convertible file, or find one inside the directory.
+            var storedExt = Path.GetExtension(lbf.FullPath).TrimStart('.').ToLowerInvariant();
+            if (supportedConversions.Contains(storedExt) && System.IO.File.Exists(lbf.FullPath))
+            {
+                conversionSource = lbf.FullPath;
+            }
+            else if (System.IO.Directory.Exists(lbf.FullPath))
+            {
+                try
+                {
+                    conversionSource = System.IO.Directory.EnumerateFiles(lbf.FullPath)
+                        .FirstOrDefault(f => supportedConversions.Contains(
+                            Path.GetExtension(f).TrimStart('.').ToLowerInvariant()));
+                }
+                catch { /* ignore enumeration errors; conversionSource stays null */ }
+            }
+        }
+        else if (supportedConversions.Contains(fmt))
+        {
+            // Direct request for a convertible extension (e.g. format=mobi).
+            var storedExt = Path.GetExtension(lbf.FullPath).TrimStart('.').ToLowerInvariant();
+            if (storedExt == fmt && System.IO.File.Exists(lbf.FullPath))
+            {
+                conversionSource = lbf.FullPath;
+            }
+            else if (System.IO.Directory.Exists(lbf.FullPath))
+            {
+                try
+                {
+                    conversionSource = System.IO.Directory.EnumerateFiles(lbf.FullPath)
+                        .FirstOrDefault(f => string.Equals(
+                            Path.GetExtension(f).TrimStart('.'), fmt,
+                            StringComparison.OrdinalIgnoreCase));
+                }
+                catch { /* ignore */ }
+            }
+        }
+
+        if (conversionSource is not null)
         {
             try
             {
-                var convertedPath = await _converter.ConvertToEpubAsync(lbf.FullPath, ct);
+                var convertedPath = await _converter.ConvertToEpubAsync(conversionSource, ct);
                 if (System.IO.File.Exists(convertedPath))
                 {
                     var bytes = await System.IO.File.ReadAllBytesAsync(convertedPath, ct);
                     try { System.IO.File.Delete(convertedPath); } catch { /* best effort */ }
-                    Response.Headers["Content-Disposition"] = $"inline; filename=\"{Path.GetFileNameWithoutExtension(lbf.FullPath)}.epub\"";
+                    Response.Headers["Content-Disposition"] = $"inline; filename=\"{Path.GetFileNameWithoutExtension(conversionSource)}.epub\"";
                     return File(bytes, "application/epub+zip");
                 }
             }

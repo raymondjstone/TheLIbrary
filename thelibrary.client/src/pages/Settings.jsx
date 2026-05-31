@@ -40,7 +40,7 @@ export default function Settings() {
     const [olEdit, setOlEdit] = useState({ appName: '', contactEmail: '' })
     const [olSaving, setOlSaving] = useState(false)
     const [refreshLimits, setRefreshLimits] = useState(null)
-    const [refreshLimitsEdit, setRefreshLimitsEdit] = useState({ maxAuthorsPerRun: 0, maxEarlyWhenNoneDue: 200 })
+    const [refreshLimitsEdit, setRefreshLimitsEdit] = useState({ maxAuthorsPerRun: 0, maxEarlyWhenNoneDue: 200, maxEarlyDaysAhead: 0 })
     const [refreshLimitsSaving, setRefreshLimitsSaving] = useState(false)
     const [refreshCadence, setRefreshCadence] = useState(null)
     const [refreshCadenceEdit, setRefreshCadenceEdit] = useState({ recentDays: 2, midDays: 14, dormantDays: 28, oldOrEmptyDays: 60 })
@@ -432,9 +432,10 @@ export default function Settings() {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    maxAuthorsPerRun: Number(refreshLimitsEdit.maxAuthorsPerRun) || 0,
-                    maxEarlyWhenNoneDue: Number(refreshLimitsEdit.maxEarlyWhenNoneDue) || 0,
-                }),
+                        maxAuthorsPerRun: Number(refreshLimitsEdit.maxAuthorsPerRun) || 0,
+                        maxEarlyWhenNoneDue: Number(refreshLimitsEdit.maxEarlyWhenNoneDue) || 0,
+                        maxEarlyDaysAhead: Number(refreshLimitsEdit.maxEarlyDaysAhead) || 0,
+                    }),
             })
             const body = await r.json().catch(() => ({}))
             if (!r.ok) throw new Error(body.error || r.statusText)
@@ -442,6 +443,7 @@ export default function Settings() {
             setRefreshLimitsEdit({
                 maxAuthorsPerRun: body.maxAuthorsPerRun,
                 maxEarlyWhenNoneDue: body.maxEarlyWhenNoneDue,
+                maxEarlyDaysAhead: body.maxEarlyDaysAhead,
             })
         } catch (e) {
             setError(String(e.message ?? e))
@@ -718,6 +720,8 @@ export default function Settings() {
                 {' '}<strong>Pull early when none due</strong> — when no author is
                 actually due, this many of the soonest-due authors are refreshed
                 early so the run still does useful work (0 disables early pulls).
+                {' '}<strong>Max days to take early</strong> — only authors due within
+                this many days are eligible for early refresh (0 = no limit).
             </p>
             <div className="toolbar" style={{ flexWrap: 'wrap' }}>
                 <label>Max authors per run{' '}
@@ -730,6 +734,11 @@ export default function Settings() {
                         value={refreshLimitsEdit.maxEarlyWhenNoneDue}
                         onChange={e => setRefreshLimitsEdit(p => ({ ...p, maxEarlyWhenNoneDue: e.target.value }))} />
                 </label>
+                <label>Max days to take early{' '}
+                    <input type="number" min="0" style={{ width: 90 }}
+                        value={refreshLimitsEdit.maxEarlyDaysAhead}
+                        onChange={e => setRefreshLimitsEdit(p => ({ ...p, maxEarlyDaysAhead: e.target.value }))} />
+                </label>
                 <button onClick={saveRefreshLimits} disabled={refreshLimitsSaving}>
                     {refreshLimitsSaving ? 'Saving…' : 'Save'}
                 </button>
@@ -737,6 +746,7 @@ export default function Settings() {
                     <span className="subtle">
                         active: {refreshLimits.maxAuthorsPerRun === 0 ? 'no cap' : `${refreshLimits.maxAuthorsPerRun}/run`}
                         {', '}{refreshLimits.maxEarlyWhenNoneDue} early
+                        {refreshLimits.maxEarlyDaysAhead > 0 ? ` within ${refreshLimits.maxEarlyDaysAhead}d` : ''}
                     </span>
                 )}
             </div>

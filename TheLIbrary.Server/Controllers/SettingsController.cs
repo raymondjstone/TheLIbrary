@@ -399,7 +399,7 @@ public class SettingsController : ControllerBase
         return new OpenLibraryIdentityDto(ol.AppName, ol.ContactEmail, ol.IsIdentified, ol.UserAgent);
     }
 
-    public sealed record RefreshLimitsDto(int MaxAuthorsPerRun, int MaxEarlyWhenNoneDue);
+    public sealed record RefreshLimitsDto(int MaxAuthorsPerRun, int MaxEarlyWhenNoneDue, int MaxEarlyDaysAhead);
     public sealed record RefreshCadenceDto(int RecentDays, int MidDays, int DormantDays, int OldOrEmptyDays);
     public sealed record DuplicateFormatPreferenceDto(string[] Formats);
 
@@ -410,26 +410,30 @@ public class SettingsController : ControllerBase
     {
         var rows = await _db.AppSettings
             .Where(s => s.Key == AppSettingKeys.RefreshMaxAuthorsPerRun
-                     || s.Key == AppSettingKeys.RefreshEarlyWhenNoneDue)
+                     || s.Key == AppSettingKeys.RefreshEarlyWhenNoneDue
+                     || s.Key == AppSettingKeys.RefreshEarlyMaxDaysAhead)
             .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
         return new RefreshLimitsDto(
             ReadInt(rows, AppSettingKeys.RefreshMaxAuthorsPerRun, 0),
-            ReadInt(rows, AppSettingKeys.RefreshEarlyWhenNoneDue, 200));
+            ReadInt(rows, AppSettingKeys.RefreshEarlyWhenNoneDue, 200),
+            ReadInt(rows, AppSettingKeys.RefreshEarlyMaxDaysAhead, 0));
     }
 
     [HttpPut("refresh-limits")]
     public async Task<ActionResult<RefreshLimitsDto>> SetRefreshLimits(
         [FromBody] RefreshLimitsDto body, CancellationToken ct)
     {
-        if (body.MaxAuthorsPerRun < 0 || body.MaxEarlyWhenNoneDue < 0)
+        if (body.MaxAuthorsPerRun < 0 || body.MaxEarlyWhenNoneDue < 0 || body.MaxEarlyDaysAhead < 0)
             return BadRequest(new { error = "Values cannot be negative." });
 
         await UpsertSettingAsync(AppSettingKeys.RefreshMaxAuthorsPerRun,
             body.MaxAuthorsPerRun.ToString(), ct);
         await UpsertSettingAsync(AppSettingKeys.RefreshEarlyWhenNoneDue,
             body.MaxEarlyWhenNoneDue.ToString(), ct);
+        await UpsertSettingAsync(AppSettingKeys.RefreshEarlyMaxDaysAhead,
+            body.MaxEarlyDaysAhead.ToString(), ct);
         await _db.SaveChangesAsync(ct);
-        return new RefreshLimitsDto(body.MaxAuthorsPerRun, body.MaxEarlyWhenNoneDue);
+        return new RefreshLimitsDto(body.MaxAuthorsPerRun, body.MaxEarlyWhenNoneDue, body.MaxEarlyDaysAhead);
     }
 
     [HttpGet("refresh-cadence")]

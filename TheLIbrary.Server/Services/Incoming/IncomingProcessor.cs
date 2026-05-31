@@ -155,9 +155,45 @@ public sealed class IncomingProcessor
             // a weird permission blip) doesn't abort the entire run.
             try
             {
-            // Covers and junk files aren't books — delete them immediately.
-            var remaining = new List<string>(filesInDir.Count);
+            // Extract any .zip/.rar archives inline so their contents get
+            // matched in the same pass. The extracted files land back in the
+            // same folder so the folder-layout author signal is preserved.
+            // After extraction the archive itself is deleted.
+            var allFiles = new List<string>(filesInDir);
+            var knownPaths = new HashSet<string>(filesInDir, StringComparer.OrdinalIgnoreCase);
             foreach (var f in filesInDir)
+            {
+                if (!CalibreScanner.ArchiveExtensions.Contains(
+                        Path.GetExtension(f).ToLowerInvariant()))
+                    continue;
+                try
+                {
+                    Sync.UnzipService.ExtractArchive(f, dir);
+                    DeleteAndWait(f);
+                    allFiles.Remove(f);
+                    var opts = new EnumerationOptions
+                    {
+                        RecurseSubdirectories = false,
+                        IgnoreInaccessible = true,
+                        AttributesToSkip = FileAttributes.ReparsePoint
+                    };
+                    var extracted = _fs.EnumerateFiles(dir, "*", opts)
+                        .Where(e => !knownPaths.Contains(e))
+                        .ToList();
+                    foreach (var e in extracted) knownPaths.Add(e);
+                    allFiles.AddRange(extracted);
+                    Report(null, $"extracted archive: {f} ({extracted.Count} file(s))");
+                }
+                catch (Exception ex)
+                {
+                    errors++;
+                    Report(null, $"error extracting {f}: {ex.Message}");
+                }
+            }
+
+            // Covers and junk files aren't books — delete them immediately.
+            var remaining = new List<string>(allFiles.Count);
+            foreach (var f in allFiles)
             {
                 var fext = Path.GetExtension(f).ToLowerInvariant();
                 var fname = Path.GetFileName(f);

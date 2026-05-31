@@ -39,6 +39,7 @@ public sealed class UnknownAuthorAdoptionService
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly ILogger<UnknownAuthorAdoptionService> _log;
     private volatile bool _isRunning;
+    private volatile string? _currentMessage;
     private UnknownAuthorAdoptionSummary? _lastResult;
 
     public UnknownAuthorAdoptionService(
@@ -52,6 +53,7 @@ public sealed class UnknownAuthorAdoptionService
     }
 
     public bool IsRunning => _isRunning;
+    public string? CurrentMessage => _currentMessage;
     public UnknownAuthorAdoptionSummary? LastResult => _lastResult;
 
     // Exposed for unit testing the pure name/key parse.
@@ -75,7 +77,7 @@ public sealed class UnknownAuthorAdoptionService
             try { _lastResult = await RunAsync(hostCt); }
             catch (OperationCanceledException) when (hostCt.IsCancellationRequested) { }
             catch (Exception ex) { _log.LogError(ex, "Adopt-unknown-authors job failed"); }
-            finally { _isRunning = false; _coordinator.Release(); }
+            finally { _isRunning = false; _currentMessage = null; _coordinator.Release(); }
         }, hostCt);
         return true;
     }
@@ -83,6 +85,7 @@ public sealed class UnknownAuthorAdoptionService
     private async Task<UnknownAuthorAdoptionSummary> RunAsync(CancellationToken ct)
     {
         _log.LogInformation("Adopt-unknown-authors job starting");
+        _currentMessage = "Loading settings";
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
 
@@ -136,6 +139,7 @@ public sealed class UnknownAuthorAdoptionService
                 var (namePart, olKey) = ParseSuffixedFolder(folderName);
                 if (namePart is null || olKey is null) continue;   // not a "_OLkey" folder
                 suffixedFound++;
+                _currentMessage = $"Processing {folderName} ({authorsAdded} added, {foldersReturned} returned)";
 
                 // 1. Add the author from the OL catalogue if no row owns the key.
                 if (!trackedKeys.Contains(olKey))
@@ -187,6 +191,7 @@ public sealed class UnknownAuthorAdoptionService
         _log.LogInformation(
             "Adopt-unknown-authors job done. Suffixed folders={Found} Added={Added} Returned={Returned}",
             suffixedFound, authorsAdded, foldersReturned);
+        _currentMessage = $"Done — {authorsAdded} author(s) added, {foldersReturned} folder(s) returned";
         return summary;
     }
 

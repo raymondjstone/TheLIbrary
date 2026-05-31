@@ -31,6 +31,7 @@ public sealed class UnzipService
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly ILogger<UnzipService> _log;
     private volatile bool _isRunning;
+    private volatile string? _currentMessage;
 
     public UnzipService(
         IServiceScopeFactory scopeFactory,
@@ -43,6 +44,7 @@ public sealed class UnzipService
     }
 
     public bool IsRunning => _isRunning;
+    public string? CurrentMessage => _currentMessage;
 
     public bool TryStart(CancellationToken hostCt, out string? error)
     {
@@ -58,7 +60,7 @@ public sealed class UnzipService
             try { await RunAsync(hostCt); }
             catch (OperationCanceledException) when (hostCt.IsCancellationRequested) { }
             catch (Exception ex) { _log.LogError(ex, "Unzip job failed"); }
-            finally { _isRunning = false; _coordinator.Release(); }
+            finally { _isRunning = false; _currentMessage = null; _coordinator.Release(); }
         }, hostCt);
         return true;
     }
@@ -66,6 +68,7 @@ public sealed class UnzipService
     private async Task RunAsync(CancellationToken ct)
     {
         _log.LogInformation("Unzip job starting");
+        _currentMessage = "Starting";
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
 
@@ -115,6 +118,7 @@ public sealed class UnzipService
 
         _log.LogInformation("Unzip job: {Count} record(s) to scan, incoming: {Incoming}",
             files.Count, incomingPath);
+        _currentMessage = $"Scanning {files.Count} archive record(s)";
 
         int extracted = 0, skipped = 0, errors = 0;
 
@@ -152,6 +156,7 @@ public sealed class UnzipService
 
                 extracted++;
                 _log.LogInformation("Unzip [{Id}]: done", file.Id);
+                _currentMessage = $"Extracted {extracted} archive(s)";
             }
             catch (Exception ex)
             {
@@ -202,6 +207,7 @@ public sealed class UnzipService
         _log.LogInformation(
             "Unzip job done. Extracted={Extracted} Skipped={Skipped} Errors={Errors}",
             extracted, skipped, errors);
+        _currentMessage = $"Done — extracted {extracted}, {errors} error(s)";
     }
 
     // Walk up from `startPath`'s parent removing each directory once it's
@@ -227,7 +233,7 @@ public sealed class UnzipService
         }
     }
 
-    private static void ExtractArchive(string archivePath, string destinationDir)
+    internal static void ExtractArchive(string archivePath, string destinationDir)
     {
         // SharpCompress 0.48 renamed ArchiveFactory.Open → OpenArchive and made
         // ReaderOptions a required parameter. The factory still auto-detects the
