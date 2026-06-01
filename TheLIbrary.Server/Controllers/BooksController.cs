@@ -529,10 +529,10 @@ public class BooksController : ControllerBase
         string? RecommendedFormat,
         IReadOnlyList<string> Paths);  // kept for backwards compatibility with older clients
 
-    // Preference order — earlier = better. Matched against
-    // Path.GetExtension(...).TrimStart('.').ToLowerInvariant().
+    // Preference order — earlier = better. Shared with the Archived Files page so
+    // "best copy to keep" and "best copy to restore" rank formats identically.
     public static readonly string[] DefaultFormatPreference =
-        ["epub", "azw3", "mobi", "pdf", "azw", "fb2", "lit", "cbz", "docx", "odt", "rtf", "prc", "pdb", "opf"];
+        TheLibrary.Server.Services.FormatPreference.Default;
 
     // Books where more than one LocalBookFile row is linked to the same Book.Id.
     // When `authorId` is provided, only that author's books are returned (used

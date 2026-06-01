@@ -2,6 +2,7 @@ using System.IO.Compression;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
+using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.Sync;
 
@@ -18,6 +19,27 @@ public class FilesController : ControllerBase
     {
         _db = db;
         _converter = converter;
+    }
+
+    // Enabled library roots PLUS the dedupe archive folder when it is a full path
+    // outside the library — so archived files (on the Archived Files page) can be
+    // previewed without tripping the "outside library locations" guard.
+    private async Task<List<string>> GetPreviewRootsAsync(CancellationToken ct)
+    {
+        var roots = await _db.LibraryLocations.AsNoTracking()
+            .Where(l => l.Enabled)
+            .Select(l => l.Path)
+            .ToListAsync(ct);
+        var archive = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.DedupeArchiveFolder)
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync(ct);
+        if (!string.IsNullOrWhiteSpace(archive))
+        {
+            var a = archive.Trim().Replace('\\', '/').TrimEnd('/');
+            if (a.Contains('/')) roots.Add(a); // absolute archive path → allow it too
+        }
+        return roots;
     }
 
     // Streams a LocalBookFile's actual bytes for in-browser preview. Supported
@@ -105,10 +127,7 @@ public class FilesController : ControllerBase
             }
         }
 
-        var roots = await _db.LibraryLocations.AsNoTracking()
-            .Where(l => l.Enabled)
-            .Select(l => l.Path)
-            .ToListAsync(ct);
+        var roots = await GetPreviewRootsAsync(ct);
 
         var resolution = FilePreviewResolver.Resolve(lbf.FullPath, format, roots);
         if (resolution.Ok is null)
@@ -172,10 +191,7 @@ public class FilesController : ControllerBase
             }
         }
 
-        var roots = await _db.LibraryLocations.AsNoTracking()
-            .Where(l => l.Enabled)
-            .Select(l => l.Path)
-            .ToListAsync(ct);
+        var roots = await GetPreviewRootsAsync(ct);
 
         var canonical = Path.GetFullPath(lbf.FullPath);
         var belongs = roots.Any(r => canonical.StartsWith(Path.GetFullPath(r), StringComparison.OrdinalIgnoreCase));

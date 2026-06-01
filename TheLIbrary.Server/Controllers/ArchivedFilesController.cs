@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services;
 using TheLibrary.Server.Services.IO;
 
 namespace TheLibrary.Server.Controllers;
@@ -19,19 +20,22 @@ public class ArchivedFilesController : ControllerBase
         _fs = fs;
     }
 
-    public sealed record ArchivedFileDto(
+    public sealed record ArchivedFileItem(
         int Id,
-        string FullPath,
-        string? AuthorFolder,
-        string? TitleFolder,
+        string Path,
         string? Format,
         long SizeBytes);
 
-    public sealed record ArchivedFilesPageDto(
-        int TotalCount,
-        int Page,
-        int PageSize,
-        IReadOnlyList<ArchivedFileDto> Items);
+    // One book's worth of archived files, mirroring the Duplicates page shape so
+    // the client can render and act on them identically. RecommendedFormat is the
+    // best copy to restore, using the same ranking as the dedupe "keep" choice.
+    public sealed record ArchivedGroup(
+        int? BookId,
+        string Title,
+        int? AuthorId,
+        string AuthorName,
+        IReadOnlyList<ArchivedFileItem> Files,
+        string? RecommendedFormat);
 
     public sealed record RestoreResult(int Restored, IReadOnlyList<string> Warnings);
 
@@ -58,44 +62,63 @@ public class ArchivedFilesController : ControllerBase
     }
 
     /// <summary>
-    /// Returns paged list of LocalBookFiles that live inside any of the
-    /// configured library roots under the archive leaf folder.
-    /// GET /api/archived-files?page=0&pageSize=25
+    /// Returns archived LocalBookFiles grouped by book (mirroring the Duplicates
+    /// page), each with the recommended copy to restore. GET /api/archived-files
     /// </summary>
     [HttpGet]
-    public async Task<ArchivedFilesPageDto> GetArchivedFiles(
-        [FromQuery] int page = 0,
-        [FromQuery] int pageSize = 25,
-        CancellationToken ct = default)
+    public async Task<IReadOnlyList<ArchivedGroup>> GetArchivedFiles(CancellationToken ct = default)
     {
-        pageSize = Math.Clamp(pageSize, 1, 200);
-        page = Math.Max(0, page);
-
         var archiveSetting = await _db.AppSettings.AsNoTracking()
             .FirstOrDefaultAsync(s => s.Key == AppSettingKeys.DedupeArchiveFolder, ct);
         var archiveLeaf = GetArchiveLeaf(archiveSetting?.Value);
-        var query = _db.LocalBookFiles.AsNoTracking().Where(ArchiveMatch(archiveLeaf));
+        var preference = await FormatPreference.LoadAsync(_db, ct);
 
-        var total = await query.CountAsync(ct);
-
-        var rows = await query
-            .OrderBy(f => f.AuthorFolder)
-            .ThenBy(f => f.TitleFolder)
-            .Skip(page * pageSize)
-            .Take(pageSize)
-            .Select(f => new ArchivedFileDto(
+        var rows = await _db.LocalBookFiles.AsNoTracking()
+            .Where(ArchiveMatch(archiveLeaf))
+            .Select(f => new
+            {
                 f.Id,
                 f.FullPath,
+                f.BookId,
                 f.AuthorFolder,
                 f.TitleFolder,
-                null, // format resolved below
-                f.SizeBytes))
+                f.SizeBytes,
+                BookTitle = f.Book != null ? f.Book.Title : null,
+                BookAuthorId = f.Book != null ? (int?)f.Book.AuthorId : null,
+                BookAuthorName = f.Book != null ? f.Book.Author.Name : null,
+            })
             .ToListAsync(ct);
 
-        // Resolve file format from extension or Calibre folder scan.
-        var items = rows.Select(r => r with { Format = FormatOf(r.FullPath) }).ToList();
+        // Group by the linked book when there is one; otherwise fall back to the
+        // author + title folder so loose archived files still cluster sensibly.
+        var groups = rows
+            .GroupBy(r => r.BookId.HasValue
+                ? $"b:{r.BookId.Value}"
+                : $"f:{r.AuthorFolder}{r.TitleFolder}")
+            .Select(g =>
+            {
+                var first = g.First();
+                var files = g
+                    .Select(r => new ArchivedFileItem(r.Id, r.FullPath, FormatOf(r.FullPath), r.SizeBytes))
+                    .OrderBy(x => FormatPreference.Rank(x.Format, preference))
+                    .ToList();
+                var recommended = files
+                    .Select(x => x.Format)
+                    .Where(fmt => fmt is not null)
+                    .OrderBy(fmt => FormatPreference.Rank(fmt, preference))
+                    .FirstOrDefault();
+                var title = first.BookId.HasValue
+                    ? (first.BookTitle ?? first.TitleFolder ?? "(untitled)")
+                    : (first.TitleFolder ?? "(untitled)");
+                var authorName = (first.BookId.HasValue ? first.BookAuthorName : null)
+                    ?? first.AuthorFolder ?? "";
+                return new ArchivedGroup(
+                    first.BookId, title, first.BookAuthorId, authorName, files, recommended);
+            })
+            .OrderBy(grp => grp.AuthorName).ThenBy(grp => grp.Title)
+            .ToList();
 
-        return new ArchivedFilesPageDto(total, page, pageSize, items);
+        return groups;
     }
 
     /// <summary>
@@ -208,18 +231,9 @@ public class ArchivedFilesController : ControllerBase
             return Directory.EnumerateFiles(fullPath)
                 .Select(f => Path.GetExtension(f).TrimStart('.').ToLowerInvariant())
                 .Where(e => !string.IsNullOrEmpty(e))
-                .OrderBy(e => PreferenceRank(e))
+                .OrderBy(e => FormatPreference.Rank(e, FormatPreference.Default))
                 .FirstOrDefault();
         }
         catch { return null; }
-    }
-
-    private static readonly string[] _formatPref =
-        ["epub", "pdf", "azw3", "mobi", "azw", "fb2", "lit", "cbz", "docx", "odt", "rtf"];
-
-    private static int PreferenceRank(string ext)
-    {
-        var idx = Array.IndexOf(_formatPref, ext);
-        return idx < 0 ? 999 : idx;
     }
 }
