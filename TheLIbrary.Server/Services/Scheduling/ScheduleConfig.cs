@@ -31,13 +31,14 @@ public static class ScheduleJobIds
     public const string CacheOpenLibraryMetadata = "cache-openlibrary-metadata";
     public const string FlattenUnknown = "flatten-unknown";
     public const string AdoptUnknownAuthors = "adopt-unknown-authors";
+    public const string ArchiveForeign = "archive-foreign";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
         Sync, Seed, AuthorUpdates, Incoming, ReprocessUnknown, RefreshWorks,
         OrganizeSeries, Unzip, DisambiguateFolders, SameNameAuthors,
         StarPhysicalAuthors, CacheOpenLibraryMetadata, FlattenUnknown,
-        AdoptUnknownAuthors
+        AdoptUnknownAuthors, ArchiveForeign
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -61,5 +62,8 @@ public static class ScheduleJobIds
             [CacheOpenLibraryMetadata] = new() { Cron = "30 10 * * *", Enabled = true },
             [FlattenUnknown] = new() { Cron = "0 9 * * *", Enabled = false },
             [AdoptUnknownAuthors] = new() { Cron = "0 8 * * *", Enabled = true },
+            // Archive files of confirmed-foreign titles into the dedupe archive
+            // folder — once a day at 23:00, enabled by default.
+            [ArchiveForeign] = new() { Cron = "0 23 * * *", Enabled = true },
         };
 }

@@ -532,14 +532,14 @@ public class BooksController : ControllerBase
     // Preference order — earlier = better. Matched against
     // Path.GetExtension(...).TrimStart('.').ToLowerInvariant().
     public static readonly string[] DefaultFormatPreference =
-        ["epub", "pdf", "azw3", "mobi", "azw", "fb2", "lit", "cbz", "docx", "odt", "rtf", "prc", "pdb", "opf"];
+        ["epub", "azw3", "mobi", "pdf", "azw", "fb2", "lit", "cbz", "docx", "odt", "rtf", "prc", "pdb", "opf"];
 
     // Books where more than one LocalBookFile row is linked to the same Book.Id.
     // When `authorId` is provided, only that author's books are returned (used
     // for the per-author drilldown on the author detail page).
     [HttpGet("duplicates")]
     public async Task<IReadOnlyList<DuplicateGroup>> Duplicates(
-        CancellationToken ct, [FromQuery] int? authorId = null)
+        CancellationToken ct, [FromQuery] int? authorId = null, [FromQuery] bool starredOnly = false)
     {
         var preference = await GetFormatPreferenceAsync(ct);
         var query = _db.LocalBookFiles
@@ -547,6 +547,31 @@ public class BooksController : ControllerBase
             .Where(f => f.BookId != null);
         if (authorId is int aid)
             query = query.Where(f => f.AuthorId == aid);
+        // Starred = priority author (Priority >= 1), matching the rest of the app.
+        if (starredOnly)
+            query = query.Where(f => f.Author != null && f.Author.Priority >= 1);
+
+        // Exclude files that already live under the archive folder, otherwise a
+        // book whose extras were archived (rows kept, only FullPath changed)
+        // would keep showing up as a duplicate group with nothing changed.
+        var archiveStored = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.DedupeArchiveFolder)
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync(ct);
+        // Match on '/' explicitly (stored paths are forward-slash on the Linux
+        // mount), not Path.DirectorySeparatorChar which is '\' on a Windows host.
+        var archiveLeaf = (string.IsNullOrWhiteSpace(archiveStored) ? "__archive" : archiveStored.Trim())
+            .Replace('\\', '/').TrimEnd('/');
+        if (archiveLeaf.Contains('/'))
+        {
+            var prefix = archiveLeaf + "/";
+            query = query.Where(f => !f.FullPath.StartsWith(prefix));
+        }
+        else
+        {
+            var segment = "/" + archiveLeaf + "/";
+            query = query.Where(f => !f.FullPath.Contains(segment));
+        }
 
         var groups = await query
             .GroupBy(f => f.BookId!.Value)
@@ -614,7 +639,22 @@ public class BooksController : ControllerBase
             .Where(l => l.Enabled)
             .Select(l => l.Path)
             .ToListAsync(ct);
-        var archiveLeaf = string.IsNullOrWhiteSpace(body.ArchiveFolderName) ? "__archive" : body.ArchiveFolderName.Trim();
+
+        // Prefer whatever the client sent, but fall back to the persisted
+        // DedupeArchiveFolder setting, then finally "__archive".
+        string archiveLeaf;
+        if (!string.IsNullOrWhiteSpace(body.ArchiveFolderName))
+        {
+            archiveLeaf = body.ArchiveFolderName.Trim();
+        }
+        else
+        {
+            var stored = await _db.AppSettings.AsNoTracking()
+                .Where(s => s.Key == AppSettingKeys.DedupeArchiveFolder)
+                .Select(s => s.Value)
+                .FirstOrDefaultAsync(ct);
+            archiveLeaf = string.IsNullOrWhiteSpace(stored) ? "__archive" : stored.Trim();
+        }
         var deleted = 0;
         var archived = 0;
 
@@ -661,7 +701,15 @@ public class BooksController : ControllerBase
 
             var libRoot = location.TrimEnd('\\', '/');
             var relative = file.FullPath[libRoot.Length..].TrimStart('\\', '/');
-            var destPath = Path.Combine(libRoot, archiveLeaf, relative);
+            // archiveLeaf may be a simple folder name (nested inside each library
+            // root) or a full absolute path (one fixed archive location). Either
+            // way the file's library-relative subfolders are preserved underneath.
+            // A value containing a separator is a full path (forward-slash based,
+            // to match the Linux mount regardless of the host OS this runs on).
+            var destBase = (archiveLeaf.Contains('/') || archiveLeaf.Contains('\\'))
+                ? archiveLeaf.Replace('\\', '/')
+                : Path.Combine(libRoot, archiveLeaf);
+            var destPath = Path.Combine(destBase, relative);
             var destDir = Path.GetDirectoryName(destPath);
 
             try
@@ -697,26 +745,29 @@ public class BooksController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(fullPath)) return null;
 
+        // Calibre layout: FullPath is a directory — find the best readable file inside it.
+        // Check this BEFORE the extension fast-path because folder names like "My Book v1.5"
+        // or "Title (2)" would otherwise fool Path.GetExtension into returning ".5" or ".2".
+        if (Directory.Exists(fullPath))
+        {
+            try
+            {
+                var preferred = DefaultFormatPreference;
+                return Directory.EnumerateFiles(fullPath)
+                    .Select(f => Path.GetExtension(f).TrimStart('.').ToLowerInvariant())
+                    .Where(e => !string.IsNullOrEmpty(e))
+                    .OrderBy(e => PreferenceRank(e, preferred))
+                    .FirstOrDefault();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         // Fast path: FullPath is a direct file (flat layout).
         var ext = Path.GetExtension(fullPath).TrimStart('.').ToLowerInvariant();
-        if (!string.IsNullOrEmpty(ext)) return ext;
-
-        // Calibre layout: FullPath is a directory — find the best readable file inside it.
-        if (!Directory.Exists(fullPath)) return null;
-        try
-        {
-            var preferred = DefaultFormatPreference;
-            // Return the format of whichever file in the directory ranks highest.
-            return Directory.EnumerateFiles(fullPath)
-                .Select(f => Path.GetExtension(f).TrimStart('.').ToLowerInvariant())
-                .Where(e => !string.IsNullOrEmpty(e))
-                .OrderBy(e => PreferenceRank(e, preferred))
-                .FirstOrDefault();
-        }
-        catch
-        {
-            return null;
-        }
+        return string.IsNullOrEmpty(ext) ? null : ext;
     }
 
     private async Task<string[]> GetFormatPreferenceAsync(CancellationToken ct)

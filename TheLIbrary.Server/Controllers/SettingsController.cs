@@ -516,9 +516,14 @@ public class SettingsController : ControllerBase
         var name = body.FolderName?.Trim() ?? "";
         if (string.IsNullOrWhiteSpace(name))
             return BadRequest(new { error = "Folder name cannot be empty." });
-        // Prevent path traversal
-        if (name.Contains('/') || name.Contains('\\') || name.Contains(".."))
-            return BadRequest(new { error = "Folder name must be a simple name with no path separators." });
+        // Prevent path traversal regardless of form.
+        if (name.Contains(".."))
+            return BadRequest(new { error = "Folder name must not contain '..'." });
+        // Two accepted forms: a simple leaf name (created inside each library
+        // root) or a full absolute path (a single fixed archive location).
+        // Anything in between — a relative path with separators — is rejected.
+        if (!Path.IsPathFullyQualified(name) && (name.Contains('/') || name.Contains('\\')))
+            return BadRequest(new { error = "Use either a simple folder name or a full absolute path." });
         await UpsertSettingAsync(AppSettingKeys.DedupeArchiveFolder, name, ct);
         await _db.SaveChangesAsync(ct);
         return new ArchiveFolderDto(name);

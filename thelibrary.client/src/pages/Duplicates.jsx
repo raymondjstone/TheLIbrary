@@ -11,12 +11,21 @@ export default function Duplicates() {
     const [error, setError] = useState(null)
     const [selected, setSelected] = useState({})
     const [archiveFolder, setArchiveFolder] = useState('__archive')
+    const [rmConnected, setRmConnected] = useState(false)
+    const [sendBusyIds, setSendBusyIds] = useState(new Set())
+    const [sendNotice, setSendNotice] = useState(null)
+    const [sortByCount, setSortByCount] = useState(false)
+    const [starredOnly, setStarredOnly] = useState(false)
 
     useEffect(() => {
         fetch('/api/settings/archive-folder')
             .then(r => r.ok ? r.json() : null)
             .then(body => { if (body?.folderName) setArchiveFolder(body.folderName) })
             .catch(() => {})
+        fetch('/api/remarkable/status')
+            .then(r => r.ok ? r.json() : null)
+            .then(s => setRmConnected(!!s?.connected))
+            .catch(() => setRmConnected(false))
     }, [])
     const [busyAction, setBusyAction] = useState(null)
     const [page, setPage] = useState(0)
@@ -32,9 +41,10 @@ export default function Duplicates() {
 
     const load = () => {
         setError(null)
-        const url = authorIdFromQuery
-            ? `/api/books/duplicates?authorId=${encodeURIComponent(authorIdFromQuery)}`
-            : '/api/books/duplicates'
+        const qs = new URLSearchParams()
+        if (authorIdFromQuery) qs.set('authorId', authorIdFromQuery)
+        if (starredOnly) qs.set('starredOnly', 'true')
+        const url = `/api/books/duplicates${qs.toString() ? `?${qs}` : ''}`
         fetch(url)
             .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
             .then(result => {
@@ -51,7 +61,24 @@ export default function Duplicates() {
             .catch(e => setError(String(e)))
     }
 
-    useEffect(load, [authorIdFromQuery])
+    useEffect(load, [authorIdFromQuery, starredOnly])
+
+    const sendToRemarkable = async (fileId, fmt, bookTitle) => {
+        setSendNotice(null)
+        setError(null)
+        const convert = fmt && !['epub', 'pdf'].includes(fmt.toLowerCase())
+        setSendBusyIds(prev => new Set(prev).add(fileId))
+        try {
+            const r = await fetch(`/api/remarkable/send/${fileId}`, { method: 'POST' })
+            const body = await r.json().catch(() => null)
+            if (!r.ok) throw new Error(body?.error ?? r.statusText)
+            setSendNotice(`Sent "${body?.title ?? bookTitle ?? 'file'}" to reMarkable.`)
+        } catch (e) {
+            setError(`${convert ? 'Convert & send' : 'Send'} failed: ${e.message ?? e}`)
+        } finally {
+            setSendBusyIds(prev => { const n = new Set(prev); n.delete(fileId); return n })
+        }
+    }
 
     const toggle = (id) => setSelected(prev => ({ ...prev, [id]: !prev[id] }))
 
@@ -108,8 +135,21 @@ export default function Duplicates() {
     const previewableFormats = new Set(['epub', 'pdf', 'txt', 'mobi', 'azw', 'azw3', 'fb2', 'lit', 'docx', 'odt', 'cbz', 'cbr'])
     const canPreview = (fmt) => fmt && previewableFormats.has(fmt.toLowerCase())
 
-    const totalPages = data ? Math.ceil(data.length / PAGE_SIZE) : 0
-    const pageData = data ? data.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE) : []
+    // Derive format from path extension if the server didn't supply one.
+    const resolveFormat = (f) => {
+        if (f.format) return f.format.toLowerCase()
+        if (!f.path) return null
+        const ext = f.path.split('.').pop()?.toLowerCase()
+        return ext && ext.length <= 5 && ext !== f.path.toLowerCase() ? ext : null
+    }
+
+    // Optionally surface the highest-value targets first (most copies to clean up).
+    const fileCount = (g) => (g.files ?? g.paths ?? []).length
+    const sortedData = data && sortByCount
+        ? [...data].sort((a, b) => fileCount(b) - fileCount(a))
+        : data
+    const totalPages = sortedData ? Math.ceil(sortedData.length / PAGE_SIZE) : 0
+    const pageData = sortedData ? sortedData.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE) : []
 
     return (
         <section>
@@ -146,24 +186,20 @@ export default function Duplicates() {
             }}>
                 <strong>How this works:</strong> Each row is one book that has more than one local file.
                 The file marked <span style={{ color: 'var(--accent, #3b82f6)', fontWeight: 600 }}>★ KEEP</span> is
-                the best copy (epub beats pdf beats mobi etc.). All other files in the same group are
+                the best copy (epub beats mobi beats pdf etc.). All other files in the same group are
                 labelled <span style={{ color: 'var(--subtle)', fontWeight: 600 }}>EXTRA</span> — they are
                 the ones pre-ticked for removal.{' '}
                 <strong>Ticking a checkbox marks that file for removal.</strong>{' '}
                 Use <em>Archive selected</em> to move files to a holding folder (safe, reversible) or{' '}
                 <em>Delete selected</em> to permanently remove them from disk.
-                Click the <strong>👁</strong> icon next to any file to preview it before deciding.
+                Click the format badge (e.g. <strong>epub</strong>) next to any file to preview it before deciding.
             </div>
 
             <div className="toolbar" style={{ marginBottom: '0.75rem', flexWrap: 'wrap' }}>
                 <span className="subtle">{selectedIds.length} file{selectedIds.length === 1 ? '' : 's'} marked for removal</span>
                 <button className="btn-ghost" onClick={selectAllExtras}>Select all extras</button>
                 <button className="btn-ghost" onClick={() => setSelected({})}>Deselect all</button>
-                <input
-                    value={archiveFolder}
-                    onChange={e => setArchiveFolder(e.target.value)}
-                    placeholder="Archive folder"
-                    style={{ minWidth: '12rem' }} />
+                <span className="subtle">Archive folder: <code>{archiveFolder}</code></span>
                 <button onClick={() => applyAction('archive')} disabled={busyAction !== null || selectedIds.length === 0}>
                     {busyAction === 'archive' ? 'Archiving…' : 'Archive selected'}
                 </button>
@@ -172,7 +208,26 @@ export default function Duplicates() {
                 </button>
             </div>
 
+            <div className="toolbar" style={{ marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={sortByCount}
+                        onChange={e => { setSortByCount(e.target.checked); setPage(0) }} />
+                    <span className="subtle">Sort by most copies first</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={starredOnly}
+                        onChange={e => setStarredOnly(e.target.checked)} />
+                    <span className="subtle">Starred authors only</span>
+                </label>
+                {!rmConnected && (
+                    <span className="subtle" title="Pair a reMarkable on the Settings page to enable sending">
+                        reMarkable not paired
+                    </span>
+                )}
+            </div>
+
             {error && <p className="error">{error}</p>}
+            {sendNotice && <p className="subtle" style={{ color: 'var(--accent)' }}>{sendNotice}</p>}
             {data === null && !error && <p>Loading…</p>}
             {data !== null && data.length === 0 && !error && (
                 <p className="subtle">No duplicates found. All matched works have exactly one local copy.</p>
@@ -226,6 +281,7 @@ export default function Duplicates() {
                                         <td>
                                             {(g.files ?? g.paths.map((p, i) => ({ path: p, format: null, id: i }))).map(f => {
                                                 const isKeeper = f.id === keep
+                                                const fmt = resolveFormat(f)
                                                 return (
                                                     <div key={f.id} style={{
                                                         display: 'flex',
@@ -238,19 +294,36 @@ export default function Duplicates() {
                                                         textDecoration: selected[f.id] ? 'line-through' : 'none',
                                                         marginBottom: '0.15rem',
                                                     }}>
-                                                        {f.format && (
-                                                            <span className="filetype-tag" style={{ marginRight: '0.1rem' }}>
-                                                                {f.format}
-                                                            </span>
-                                                        )}
+                                                        {fmt
+                                                            ? canPreview(fmt)
+                                                                ? (
+                                                                    <button
+                                                                        className="filetype-tag"
+                                                                        style={{ marginRight: '0.1rem', cursor: 'pointer', border: 'none', background: 'var(--accent-muted, #dbeafe)', color: 'var(--accent, #1d4ed8)', fontWeight: 700, borderRadius: '3px', padding: '0 0.35rem', fontSize: '0.72rem', fontFamily: 'monospace' }}
+                                                                        title={`Preview as ${fmt.toUpperCase()}`}
+                                                                        onClick={() => setPreview({ fileId: f.id, format: fmt, title: g.title })}>
+                                                                        {fmt}
+                                                                    </button>
+                                                                )
+                                                                : (
+                                                                    <span className="filetype-tag" style={{ marginRight: '0.1rem' }}>
+                                                                        {fmt}
+                                                                    </span>
+                                                                )
+                                                            : null
+                                                        }
                                                         <span style={{ flex: 1 }}>{f.path}</span>
-                                                        {canPreview(f.format) && (
+                                                        {/* g.files present => f.id is a real LocalBookFile id, so it can be sent. */}
+                                                        {rmConnected && g.files && (
                                                             <button
                                                                 className="btn-ghost"
-                                                                style={{ fontSize: '0.75rem', padding: '0 0.3rem', lineHeight: 1.4, fontFamily: 'sans-serif' }}
-                                                                title="Preview this file"
-                                                                onClick={() => setPreview({ fileId: f.id, format: f.format, title: g.title })}>
-                                                                👁
+                                                                style={{ fontSize: '0.7rem', padding: '0 0.4rem', whiteSpace: 'nowrap' }}
+                                                                disabled={sendBusyIds.has(f.id)}
+                                                                title={fmt && !['epub', 'pdf'].includes(fmt)
+                                                                    ? 'Convert via Calibre and send to reMarkable'
+                                                                    : 'Send this file to reMarkable'}
+                                                                onClick={() => sendToRemarkable(f.id, fmt, g.title)}>
+                                                                {sendBusyIds.has(f.id) ? 'Sending…' : 'Send to rM'}
                                                             </button>
                                                         )}
                                                     </div>
@@ -264,7 +337,6 @@ export default function Duplicates() {
                                                 return (
                                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
                                                         <button
-                                                            className="btn-ghost"
                                                             style={{ fontSize: '0.78rem' }}
                                                             disabled={busyAction !== null}
                                                             title="Archive all extra copies of this book"

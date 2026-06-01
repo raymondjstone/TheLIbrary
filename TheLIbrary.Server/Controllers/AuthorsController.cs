@@ -1128,6 +1128,12 @@ public class AuthorsController : ControllerBase
             ? Path.Combine(root, targetFolder, Path.GetFileName(sourcePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)))
             : Path.Combine(root, targetFolder, relative.Replace('/', Path.DirectorySeparatorChar));
 
+        // Already in the right place — don't move onto self (otherwise the
+        // UniqueFilePath/UniqueDirectoryPath collision check below would see the
+        // existing entry and pointlessly rename it to "_2").
+        if (FsPath.SameLocation(sourcePath, destPath))
+            return sourcePath;
+
         if (System.IO.File.Exists(sourcePath))
         {
             var destDir = Path.GetDirectoryName(destPath);
@@ -1297,6 +1303,14 @@ public class AuthorsController : ControllerBase
 
         var remainder = relative[(firstSep + 1)..];
         var destPath = Path.Combine(libRoot, targetFolder, remainder);
+
+        // Already in the target author folder — don't move onto self (otherwise
+        // UniqueFilePath would see the existing file and rename it to "_2").
+        if (FsPath.SameLocation(oldPath, destPath))
+        {
+            file.FullPath = oldPath;
+            return;
+        }
 
         if (System.IO.File.Exists(oldPath))
         {
@@ -1636,7 +1650,11 @@ public class AuthorsController : ControllerBase
             {
                 if (destDir is not null) Directory.CreateDirectory(destDir);
 
-                if (System.IO.File.Exists(file.FullPath))
+                if (FsPath.SameLocation(file.FullPath, destPath))
+                {
+                    // Already in the canonical folder — don't move onto self.
+                }
+                else if (System.IO.File.Exists(file.FullPath))
                 {
                     var finalDest = UniqueFile(destPath);
                     System.IO.File.Move(file.FullPath, finalDest);

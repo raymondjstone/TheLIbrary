@@ -50,7 +50,7 @@ public sealed class SeriesOrganizerService
     {
         _fs.CreateDirectory(targetDir);
         var destPath = DestinationPath(targetDir, file.FullPath);
-        if (!string.Equals(file.FullPath, destPath, StringComparison.OrdinalIgnoreCase))
+        if (!FsPath.SameLocation(file.FullPath, destPath))
             _fs.MoveFile(file.FullPath, destPath, overwrite: false);
         file.FullPath = destPath;
         file.TitleFolder = Path.GetFileNameWithoutExtension(destPath);
@@ -138,7 +138,18 @@ public sealed class SeriesOrganizerService
             .Select(a => new { a.Id, a.Priority })
             .ToDictionaryAsync(a => a.Id, a => a.Priority, ct);
 
+        // Only organise files that belong to a tracked Book. Unmatched files
+        // (no BookId) are the majority of the library; reorganising them by
+        // filename-guessed series was the bulk of the work and isn't this job's
+        // purpose — the matching/incoming flows own those files. Leaving them out
+        // cuts the set from the whole library down to matched books.
+        // No tracking: every write in this job goes through ExecuteUpdate/
+        // ExecuteDelete, so change-tracking snapshots for 100k+ entities would be
+        // pure overhead (and would let an unrelated SaveChanges flush half-mutated
+        // records). We mutate the in-memory copies only to keep pathIndex current.
         var files = await db.LocalBookFiles
+            .AsNoTracking()
+            .Where(f => f.BookId != null)
             .Include(f => f.Book).ThenInclude(b => b!.Series)
             .ToListAsync(ct);
 
@@ -152,14 +163,22 @@ public sealed class SeriesOrganizerService
             return string.Compare(x.FullPath, y.FullPath, StringComparison.OrdinalIgnoreCase);
         });
 
-        _log.LogInformation("Series organizer: {Count} LocalBookFile record(s) to evaluate", files.Count);
+        _log.LogInformation("Series organizer: {Count} matched file(s) to evaluate", files.Count);
         _currentMessage = $"Evaluating {files.Count} file(s)";
 
-        // Track current FullPath for every record so we can detect unique-index
-        // conflicts before hitting the DB. Updated as records change.
+        // Conflict index over EVERY record (matched or not), loaded as a
+        // lightweight id+path projection — cheap in memory, no per-file disk I/O.
+        // This way a matched file's move still detects a path collision with an
+        // unmatched record, and directory-record sweeps still skip files owned by
+        // unmatched records instead of dragging them along.
         var pathIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var f in files)
+        foreach (var f in await db.LocalBookFiles.Select(f => new { f.Id, f.FullPath }).ToListAsync(ct))
             pathIndex.TryAdd(f.FullPath, f.Id);
+
+        // Settled-record signatures to persist, flushed in batches so the
+        // first run (which fingerprints every folder once) doesn't do 10k+
+        // single-row UPDATE round-trips.
+        var sigUpdates = new List<(int Id, string Sig)>();
 
         int moved = 0, skipped = 0, errors = 0;
         int cntNoLocation = 0, cntNotFound = 0, cntAlreadyCorrect = 0, cntNullContainer = 0;
@@ -291,18 +310,72 @@ public sealed class SeriesOrganizerService
                 ? authorDir
                 : Path.Combine(authorDir, SanitizeFolderName(seriesName));
 
-            string? sourceContainer;
-            string? primaryEbook;
+            // Settled-record skip — the strongest lever for repeat runs. If we
+            // already confirmed THIS record (same path, fingerprint and target)
+            // is correctly placed, skip it with ZERO disk access. The signature
+            // self-invalidates whenever the scanner re-fingerprints the file, the
+            // file moves, or its target series/author changes.
+            var organizedSig = ComputeOrganizedSig(file, targetDir);
+            if (string.Equals(file.OrganizedSig, organizedSig, StringComparison.Ordinal))
+            {
+                cntAlreadyCorrect++;
+                skipped++;
+                continue;
+            }
 
-            if (File.Exists(effectivePath))
+            // Fast path — the dominant cost of this job is a per-file stat on the
+            // mounted /Books disk, multiplied by 365k+ records. A record that
+            // points to a FILE already sitting directly in its target directory
+            // needs neither a move nor any disk access: we can decide that from
+            // the stored path string alone and skip, so the run actually finishes
+            // (and reaches lower-priority authors) instead of stat-ing every file.
+            var ext0 = Path.GetExtension(effectivePath);
+            bool isFileRecord = CalibreScanner.EbookExtensions.Contains(ext0, StringComparer.OrdinalIgnoreCase)
+                             || CalibreScanner.ArchiveExtensions.Contains(ext0, StringComparer.OrdinalIgnoreCase);
+            if (isFileRecord)
+            {
+                var currentParent = Path.GetDirectoryName(effectivePath);
+                if (currentParent is not null && FsPath.SameLocation(currentParent, targetDir))
+                {
+                    cntAlreadyCorrect++;
+                    skipped++;
+                    continue;
+                }
+            }
+
+            string? sourceContainer = null;
+            string? primaryEbook = null;
+            bool recordIsDirectory = false;
+            // Immediate children of a directory record, listed ONCE here and reused
+            // for the subdir/flatten check below. ~38% of matched records are classic
+            // title/series FOLDERS, and per-record disk I/O on the /Books mount is
+            // what makes this job slow — so we probe each path with a single
+            // round-trip, ordered by what the stored path looks like.
+            string[]? dirEntries = null;
+
+            if (isFileRecord && File.Exists(effectivePath))
             {
                 sourceContainer = Path.GetDirectoryName(effectivePath);
                 primaryEbook = effectivePath;
             }
-            else if (Directory.Exists(effectivePath))
+            else if (!isFileRecord && (dirEntries = TryListDirectory(effectivePath)) is not null)
             {
+                recordIsDirectory = true;
                 sourceContainer = effectivePath;
-                primaryEbook = PrimaryEbook(effectivePath);
+                primaryEbook = PickEbookFromEntries(dirEntries);
+            }
+            else if (File.Exists(effectivePath))
+            {
+                // Extensionless file, or one whose extension we don't track.
+                sourceContainer = Path.GetDirectoryName(effectivePath);
+                primaryEbook = effectivePath;
+            }
+            else if ((dirEntries = TryListDirectory(effectivePath)) is not null)
+            {
+                // A file-extension record that is actually a directory on disk.
+                recordIsDirectory = true;
+                sourceContainer = effectivePath;
+                primaryEbook = PickEbookFromEntries(dirEntries);
             }
             else
             {
@@ -322,33 +395,41 @@ public sealed class SeriesOrganizerService
 
             // Already in the right directory — update FullPath from folder→file or
             // from stale UNC→container path, unless subdirs still need flattening.
-            if (string.Equals(sourceContainer, targetDir, StringComparison.OrdinalIgnoreCase))
+            // Compare by normalized location rather than raw string so separator or
+            // normalization differences can never falsely re-trigger a move.
+            if (FsPath.SameLocation(sourceContainer, targetDir))
             {
                 bool hasSubdirFiles = false;
                 // Only look for title-subfolder remnants when the DB record still
                 // points to a directory (old Calibre layout). If the record already
                 // points to a specific file, there is nothing for THIS record to
-                // flatten — scanning targetDir would falsely trigger on unrelated
-                // sibling series subfolders (e.g. a no-series file in authorDir
-                // seeing the series folders of other books).
-                bool recordIsDirectory = !File.Exists(effectivePath) && Directory.Exists(effectivePath);
+                // flatten. recordIsDirectory was determined by the single listing
+                // above — no extra stat here.
                 if (recordIsDirectory)
                 {
-                    try
+                    // Reuse that listing: only pay for the recursive scan when an
+                    // entry could be a subfolder (no file extension). A settled
+                    // folder of ebook files needs no further disk access at all.
+                    bool maybeSubdirs = dirEntries is not null
+                        && dirEntries.Any(e => string.IsNullOrEmpty(Path.GetExtension(e)));
+                    if (maybeSubdirs)
                     {
-                        hasSubdirFiles = Directory.EnumerateDirectories(targetDir).Any() &&
-                            Directory.EnumerateFiles(targetDir, "*", SearchOption.AllDirectories)
-                                .Any(f => !string.Equals(
-                                    Path.GetDirectoryName(f), targetDir,
-                                    StringComparison.OrdinalIgnoreCase));
+                        try
+                        {
+                            hasSubdirFiles = Directory.EnumerateDirectories(sourceContainer).Any() &&
+                                Directory.EnumerateFiles(sourceContainer, "*", SearchOption.AllDirectories)
+                                    .Any(f => !string.Equals(
+                                        Path.GetDirectoryName(f), sourceContainer,
+                                        StringComparison.OrdinalIgnoreCase));
+                        }
+                        catch { }
                     }
-                    catch { }
                 }
 
                 if (!hasSubdirFiles)
                 {
                     var wantPath = primaryEbook ?? effectivePath;
-                    if (!string.Equals(file.FullPath, wantPath, StringComparison.OrdinalIgnoreCase))
+                    if (!FsPath.SameLocation(file.FullPath, wantPath))
                     {
                         if (pathIndex.TryGetValue(wantPath, out var conflictId) && conflictId != file.Id)
                         {
@@ -375,6 +456,16 @@ public sealed class SeriesOrganizerService
                             file.TitleFolder = fpTitle;
                             pathIndex[wantPath] = file.Id;
                         }
+                    }
+                    else
+                    {
+                        // Stays a correctly-placed directory record and nothing
+                        // changed — mark it settled so the next run skips it with
+                        // no disk access at all (these metadata/empty folders were
+                        // the per-run cost that the fast path can't cover).
+                        sigUpdates.Add((file.Id, organizedSig));
+                        if (sigUpdates.Count >= 2000)
+                            await FlushSigUpdatesAsync(db, sigUpdates, ct);
                     }
                     cntAlreadyCorrect++;
                     skipped++;
@@ -458,10 +549,10 @@ public sealed class SeriesOrganizerService
                     }
 
                     var destPath = DestinationPath(targetDir, src);
-                    if (!string.Equals(src, destPath, StringComparison.OrdinalIgnoreCase))
+                    if (!FsPath.SameLocation(src, destPath))
                         File.Move(src, destPath);
 
-                    if (string.Equals(src, primaryEbook, StringComparison.OrdinalIgnoreCase))
+                    if (FsPath.SameLocation(src, primaryEbook))
                         newPrimary = destPath;
 
                     if (CalibreScanner.EbookExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase))
@@ -490,7 +581,7 @@ public sealed class SeriesOrganizerService
                     filesToMove.Count, sourceContainer, targetDir);
 
                 var newPath = newPrimary ?? (primaryEbook is null ? targetDir : null);
-                if (newPath is not null && !string.Equals(file.FullPath, newPath, StringComparison.OrdinalIgnoreCase))
+                if (newPath is not null && !FsPath.SameLocation(file.FullPath, newPath))
                 {
                     if (pathIndex.TryGetValue(newPath, out var conflictId) && conflictId != file.Id)
                     {
@@ -544,11 +635,51 @@ public sealed class SeriesOrganizerService
             }
         }
 
+        await FlushSigUpdatesAsync(db, sigUpdates, ct);
+
         _log.LogInformation(
             "Series organizer done. Moved={Moved} AlreadyCorrect={AlreadyCorrect} " +
             "NotFound={NotFound} NoLocation={NoLocation} NullContainer={NullContainer} Errors={Errors}",
             moved, cntAlreadyCorrect, cntNotFound, cntNoLocation, cntNullContainer, errors);
         _currentMessage = $"Done — moved {moved}, skipped {skipped}, {errors} error(s)";
+    }
+
+    // Stable signature of a record's organised state. Recomputed each run; when
+    // it matches the stored value the record is skipped with no disk access. Any
+    // change the scanner records (path, fingerprint) or a target-folder change
+    // flips the hash, so it can never wrongly skip a record that needs moving.
+    private static string ComputeOrganizedSig(LocalBookFile file, string targetDir)
+    {
+        var raw = $"{file.FullPath}\u0001{file.ModifiedAt.Ticks}\u0001{file.SizeBytes}\u0001{targetDir}";
+        var hash = System.Security.Cryptography.SHA1.HashData(System.Text.Encoding.UTF8.GetBytes(raw));
+        return Convert.ToHexString(hash);
+    }
+
+    // Persists settled-record signatures in batches via a single VALUES join per
+    // batch, so a first run over a large library doesn't issue one UPDATE per row.
+    private static async Task FlushSigUpdatesAsync(
+        LibraryDbContext db, List<(int Id, string Sig)> updates, CancellationToken ct)
+    {
+        if (updates.Count == 0) return;
+        const int batchSize = 700; // 2 params/row, well under SQL Server's 2100 limit
+        for (var start = 0; start < updates.Count; start += batchSize)
+        {
+            var batch = updates.GetRange(start, Math.Min(batchSize, updates.Count - start));
+            var sb = new System.Text.StringBuilder(
+                "UPDATE lbf SET OrganizedSig = v.Sig FROM LocalBookFiles lbf JOIN (VALUES ");
+            var args = new object[batch.Count * 2];
+            for (var j = 0; j < batch.Count; j++)
+            {
+                if (j > 0) sb.Append(',');
+                sb.Append(System.Globalization.CultureInfo.InvariantCulture,
+                    $"(CAST({{{j * 2}}} AS int), CAST({{{j * 2 + 1}}} AS nvarchar(40)))");
+                args[j * 2] = batch[j].Id;
+                args[j * 2 + 1] = batch[j].Sig;
+            }
+            sb.Append(") AS v(Id, Sig) ON lbf.Id = v.Id");
+            await db.Database.ExecuteSqlRawAsync(sb.ToString(), args, ct);
+        }
+        updates.Clear();
     }
 
     // Strips the \\server\share prefix from a UNC path (\\server\share\rest or
@@ -621,19 +752,26 @@ public sealed class SeriesOrganizerService
         }
     }
 
-    // Returns the primary ebook file inside a folder (epub preferred, then pdf, then any).
-    private static string? PrimaryEbook(string folder)
+    // Lists a directory's immediate children in a single round-trip, returning
+    // null if the path is not a directory (or can't be read). One disk call that
+    // doubles as the existence/type probe AND the content listing.
+    private static string[]? TryListDirectory(string path)
     {
-        try
-        {
-            var files = Directory.EnumerateFiles(folder)
-                .Where(f => CalibreScanner.EbookExtensions.Contains(Path.GetExtension(f)))
-                .ToList();
-            return files.FirstOrDefault(f => Path.GetExtension(f).Equals(".epub", StringComparison.OrdinalIgnoreCase))
-                ?? files.FirstOrDefault(f => Path.GetExtension(f).Equals(".pdf", StringComparison.OrdinalIgnoreCase))
-                ?? files.FirstOrDefault();
-        }
+        try { return Directory.GetFileSystemEntries(path); }
         catch { return null; }
+    }
+
+    // Picks the primary ebook from a pre-read directory listing (epub preferred,
+    // then pdf, then any) — no disk access. Subfolders never carry an ebook
+    // extension, so filtering the entries by extension is safe.
+    private static string? PickEbookFromEntries(IReadOnlyList<string> entries)
+    {
+        var ebooks = entries
+            .Where(f => CalibreScanner.EbookExtensions.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase))
+            .ToList();
+        return ebooks.FirstOrDefault(f => Path.GetExtension(f).Equals(".epub", StringComparison.OrdinalIgnoreCase))
+            ?? ebooks.FirstOrDefault(f => Path.GetExtension(f).Equals(".pdf", StringComparison.OrdinalIgnoreCase))
+            ?? ebooks.FirstOrDefault();
     }
 
     internal static string SanitizeFolderName(string name)

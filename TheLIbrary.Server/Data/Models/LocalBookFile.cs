@@ -51,4 +51,12 @@ public class LocalBookFile
     // the existing single-FK navigation property.
     [MaxLength(500)]
     public string? AdditionalBookIds { get; set; }
+
+    // Set by the series organiser once it has confirmed this record is correctly
+    // placed. A hash of (FullPath, ModifiedAt, SizeBytes, target folder); on the
+    // next run the organiser recomputes that hash and, if it matches, skips the
+    // record with NO disk access. It self-invalidates whenever the scanner
+    // re-fingerprints the file, the file moves, or its target series changes.
+    [MaxLength(40)]
+    public string? OrganizedSig { get; set; }
 }

@@ -37,7 +37,11 @@ export default function BookPreview({ fileId, format, onClose, title, srcUrl }) 
                             {title ? `— ${title}` : ''} ({f})
                         </span>
                     </h3>
-                    <button onClick={onClose} className="btn-ghost" title="Close">&times;</button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        {/* Only tracked library files (fileId, not an untracked srcUrl) can be sent. */}
+                        {fileId != null && !srcUrl && <SendToRemarkableButton fileId={fileId} title={title} />}
+                        <button onClick={onClose} className="btn-ghost" title="Close">&times;</button>
+                    </div>
                 </div>
                 <div style={{ flex: 1, overflow: 'hidden', display: 'flex', minHeight: 0 }}>
                     {displayFormat === 'epub' && <EpubPane url={url} />}
@@ -48,6 +52,53 @@ export default function BookPreview({ fileId, format, onClose, title, srcUrl }) 
                 </div>
             </div>
         </div>
+    )
+}
+
+// Self-contained "Send to reMarkable" control for the preview header. Checks
+// pairing status on mount and POSTs to the same endpoint the rest of the app
+// uses; the server handles Calibre conversion for non-epub/pdf formats.
+function SendToRemarkableButton({ fileId, title }) {
+    const [connected, setConnected] = useState(null)
+    const [busy, setBusy] = useState(false)
+    const [notice, setNotice] = useState(null)
+    const [error, setError] = useState(null)
+
+    useEffect(() => {
+        let cancelled = false
+        fetch('/api/remarkable/status')
+            .then(r => r.ok ? r.json() : null)
+            .then(s => { if (!cancelled) setConnected(!!s?.connected) })
+            .catch(() => { if (!cancelled) setConnected(false) })
+        return () => { cancelled = true }
+    }, [])
+
+    // Hide entirely until we know there's a paired device.
+    if (!connected) return null
+
+    const send = async () => {
+        setBusy(true); setError(null); setNotice(null)
+        try {
+            const r = await fetch(`/api/remarkable/send/${fileId}`, { method: 'POST' })
+            const body = await r.json().catch(() => null)
+            if (!r.ok) throw new Error(body?.error ?? r.statusText)
+            setNotice(`Sent "${body?.title ?? title ?? 'file'}" to reMarkable.`)
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    return (
+        <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            {notice && <span className="subtle" style={{ fontSize: '0.8rem', color: 'var(--accent)' }}>{notice}</span>}
+            {error && <span className="error" style={{ fontSize: '0.8rem' }}>{error}</span>}
+            <button onClick={send} disabled={busy}
+                    title="Convert if needed and send this file to your paired reMarkable">
+                {busy ? 'Sending…' : 'Send to reMarkable'}
+            </button>
+        </span>
     )
 }
 

@@ -334,6 +334,45 @@ public sealed class AuthorRefresher
                 "Promoted {Count} manually-added book(s) to OpenLibrary works for '{Name}'",
                 promoted, author.Name);
 
+        // Re-run the title-language guesser over EVERY stored book for this
+        // author, not just the ones fetched this run. This catches titles that
+        // pre-date the foreign-language feature and ones where OpenLibrary's
+        // language metadata wrongly claimed an English edition (so the import
+        // path never consulted the guesser). User-confirmed English books are
+        // left untouched, and we only ever add flags — never clear them.
+        //
+        // This catalog-wide rescan is a one-time backfill: once an author has
+        // been refreshed on/after the cutoff, all its books have already been
+        // through the guesser, so we skip it on later refreshes. LastSyncedAt
+        // here still holds the PREVIOUS run's timestamp (it's updated further
+        // below), so the first refresh on/after the cutoff still runs the scan.
+        var foreignRecheckCutoff = new DateTime(2026, 6, 5, 0, 0, 0, DateTimeKind.Utc);
+        if (author.LastSyncedAt is null || author.LastSyncedAt < foreignRecheckCutoff)
+        {
+            var foreignCandidates = await _db.Books
+                .Where(b => b.AuthorId == author.Id
+                    && !b.Foreign
+                    && b.LanguageReview != LanguageReview.ConfirmedEnglish)
+                .Select(b => new { b.Id, b.Title })
+                .ToListAsync(ct);
+            var newlyForeignIds = foreignCandidates
+                .Where(b => TitleLanguageGuesser.IsLikelyNonEnglish(b.Title))
+                .Select(b => b.Id)
+                .ToList();
+            if (newlyForeignIds.Count > 0)
+            {
+                await _db.Books
+                    .Where(b => newlyForeignIds.Contains(b.Id))
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(b => b.Foreign, true)
+                        .SetProperty(b => b.Suppressed, true), ct);
+                _log.LogInformation(
+                    "Flagged {Count} non-English title(s) for '{Name}' during refresh",
+                    newlyForeignIds.Count, author.Name);
+                onMessage?.Invoke($"Flagged {newlyForeignIds.Count} non-English title(s) as foreign");
+            }
+        }
+
         // Exclusion rules evaluated over all stored books for idempotency.
         var years = await _db.Books
             .Where(b => b.AuthorId == author.Id && b.FirstPublishYear != null)

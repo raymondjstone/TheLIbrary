@@ -11,6 +11,7 @@ const labels = {
     'cache-openlibrary-metadata': 'Cache OpenLibrary covers and subjects',
     'flatten-unknown': 'Flatten __unknown subfolders (off by default)',
     'adopt-unknown-authors': 'Adopt _OLkey folders from __unknown → add author + return to incoming',
+    'archive-foreign': 'Archive files of confirmed-foreign titles into the dedupe archive folder',
 }
 
 const fmtNextRun = (iso) => {

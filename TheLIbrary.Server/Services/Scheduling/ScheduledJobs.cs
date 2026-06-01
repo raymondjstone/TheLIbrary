@@ -29,6 +29,7 @@ public sealed class ScheduledJobs
     private readonly OpenLibraryMetadataCacheService _metadataCache;
     private readonly UnknownFolderFlattenerService _flattenUnknown;
     private readonly UnknownAuthorAdoptionService _adoptUnknownAuthors;
+    private readonly ForeignArchiveService _archiveForeign;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -44,13 +45,14 @@ public sealed class ScheduledJobs
         OpenLibraryMetadataCacheService metadataCache,
         UnknownFolderFlattenerService flattenUnknown,
         UnknownAuthorAdoptionService adoptUnknownAuthors,
+        ForeignArchiveService archiveForeign,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
     {
         _sync = sync; _incoming = incoming; _organizer = organizer; _unzip = unzip;
         _disambiguator = disambiguator; _sameNames = sameNames; _physicalStars = physicalStars; _metadataCache = metadataCache;
-        _flattenUnknown = flattenUnknown; _adoptUnknownAuthors = adoptUnknownAuthors;
+        _flattenUnknown = flattenUnknown; _adoptUnknownAuthors = adoptUnknownAuthors; _archiveForeign = archiveForeign;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -148,6 +150,12 @@ public sealed class ScheduledJobs
         ScheduleJobIds.AdoptUnknownAuthors, manualTrigger,
         ct => _adoptUnknownAuthors.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _adoptUnknownAuthors.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunArchiveForeign(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.ArchiveForeign, manualTrigger,
+        ct => _archiveForeign.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _archiveForeign.IsRunning);
 
     internal Task RunWithPollingForTests(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,

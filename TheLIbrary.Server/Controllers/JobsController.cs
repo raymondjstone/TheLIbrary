@@ -18,6 +18,7 @@ public class JobsController : ControllerBase
     private readonly UnknownFolderFlattenerService _flattenUnknown;
     private readonly UnknownAuthorAdoptionService _adoptUnknownAuthors;
     private readonly StarredAuthorRefreshService _refreshStarred;
+    private readonly ForeignArchiveService _archiveForeign;
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly OpenLibraryRateLimiter _rateLimiter;
@@ -33,6 +34,7 @@ public class JobsController : ControllerBase
         UnknownFolderFlattenerService flattenUnknown,
         UnknownAuthorAdoptionService adoptUnknownAuthors,
         StarredAuthorRefreshService refreshStarred,
+        ForeignArchiveService archiveForeign,
         BackgroundTaskCoordinator coordinator,
         IHostApplicationLifetime lifetime,
         OpenLibraryRateLimiter rateLimiter,
@@ -47,6 +49,7 @@ public class JobsController : ControllerBase
         _flattenUnknown = flattenUnknown;
         _adoptUnknownAuthors = adoptUnknownAuthors;
         _refreshStarred = refreshStarred;
+        _archiveForeign = archiveForeign;
         _coordinator = coordinator;
         _lifetime = lifetime;
         _rateLimiter = rateLimiter;
@@ -76,6 +79,7 @@ public class JobsController : ControllerBase
             flattenUnknown = new { isRunning = _flattenUnknown.IsRunning, message = _flattenUnknown.CurrentMessage },
             adoptUnknownAuthors = new { isRunning = _adoptUnknownAuthors.IsRunning, message = _adoptUnknownAuthors.CurrentMessage },
             refreshStarred = new { isRunning = _refreshStarred.IsRunning, message = _refreshStarred.CurrentMessage },
+            archiveForeign = new { isRunning = _archiveForeign.IsRunning, message = _archiveForeign.CurrentMessage },
         });
     }
 
@@ -147,6 +151,14 @@ public class JobsController : ControllerBase
     public IActionResult StartRefreshStarred()
     {
         if (!_refreshStarred.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("archive-foreign/start")]
+    public IActionResult StartArchiveForeign()
+    {
+        if (!_archiveForeign.TryStart(_lifetime.ApplicationStopping, out var err))
             return Conflict(new { error = err });
         return Accepted();
     }

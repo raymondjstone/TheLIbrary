@@ -132,6 +132,7 @@ export default function Settings() {
             setRefreshLimitsEdit({
                 maxAuthorsPerRun: body.maxAuthorsPerRun,
                 maxEarlyWhenNoneDue: body.maxEarlyWhenNoneDue,
+                maxEarlyDaysAhead: body.maxEarlyDaysAhead,
             })
         } catch (e) { setError(prev => prev ?? String(e)) }
 
@@ -840,8 +841,10 @@ export default function Settings() {
 
             <h2 style={{ marginTop: '1.5rem' }}>Dedupe archive folder</h2>
             <p className="subtle">
-                Folder name (relative to each library root) where extra files are moved when you
-                use <em>Archive extras</em> on the Duplicates page. Defaults to <code>__archive</code>.
+                Where extra files are moved when you use <em>Archive extras</em> on the Duplicates page.
+                Use a simple folder name (created inside each library root, e.g. <code>__archive</code>)
+                or a full absolute path (e.g. <code>D:\Archive</code>) for one fixed location.
+                Defaults to <code>__archive</code>.
                 View and restore archived files on the{' '}
                 <a href="/archived">Archived Files</a> page.
             </p>

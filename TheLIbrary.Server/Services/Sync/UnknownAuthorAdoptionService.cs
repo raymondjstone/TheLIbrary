@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
+using TheLibrary.Server.Services.IO;
 using TheLibrary.Server.Services.Scheduling;
 
 namespace TheLibrary.Server.Services.Sync;
@@ -200,6 +201,9 @@ public sealed class UnknownAuthorAdoptionService
     // back to a recursive copy + delete in that case.
     private static void MoveDirectory(string src, string dest)
     {
+        // Guard against a self-move: the EXDEV fallback below would otherwise
+        // copy the folder onto itself and then delete the source, destroying it.
+        if (FsPath.SameLocation(src, dest)) return;
         try
         {
             Directory.Move(src, dest);

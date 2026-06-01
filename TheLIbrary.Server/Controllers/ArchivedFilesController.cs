@@ -38,6 +38,25 @@ public class ArchivedFilesController : ControllerBase
     private static string GetArchiveLeaf(string? val)
         => string.IsNullOrWhiteSpace(val) ? "__archive" : val.Trim();
 
+    // Predicate that matches files living under the archive folder. Stored paths
+    // are always forward-slash (the library is on a Linux mount), so we match on
+    // '/' explicitly rather than Path.DirectorySeparatorChar — which is '\' when
+    // this code runs on a Windows host and would never match the stored paths.
+    // The setting is either a simple leaf name ("__archive", matched as a path
+    // component) or a full absolute path ("/Books/TheLibrary_Archive", matched as
+    // a prefix). Anything containing a separator is treated as the latter.
+    private static System.Linq.Expressions.Expression<Func<LocalBookFile, bool>> ArchiveMatch(string archiveLeaf)
+    {
+        var leaf = archiveLeaf.Replace('\\', '/').TrimEnd('/');
+        if (leaf.Contains('/'))
+        {
+            var prefix = leaf + "/";
+            return f => f.FullPath.StartsWith(prefix);
+        }
+        var segment = "/" + leaf + "/";
+        return f => f.FullPath.Contains(segment);
+    }
+
     /// <summary>
     /// Returns paged list of LocalBookFiles that live inside any of the
     /// configured library roots under the archive leaf folder.
@@ -55,15 +74,7 @@ public class ArchivedFilesController : ControllerBase
         var archiveSetting = await _db.AppSettings.AsNoTracking()
             .FirstOrDefaultAsync(s => s.Key == AppSettingKeys.DedupeArchiveFolder, ct);
         var archiveLeaf = GetArchiveLeaf(archiveSetting?.Value);
-
-        // Segment separator ensures we match the folder name as a path component
-        // and not as a substring inside another folder name (e.g. "__archive2").
-        var sep = Path.DirectorySeparatorChar;
-        var archiveSegment = $"{sep}{archiveLeaf}{sep}";
-
-        var query = _db.LocalBookFiles
-            .AsNoTracking()
-            .Where(f => f.FullPath.Contains(archiveSegment));
+        var query = _db.LocalBookFiles.AsNoTracking().Where(ArchiveMatch(archiveLeaf));
 
         var total = await query.CountAsync(ct);
 
