@@ -529,6 +529,39 @@ public class SettingsController : ControllerBase
         return new ArchiveFolderDto(name);
     }
 
+    public sealed record CoverHoverDto(bool Enabled, double Scale);
+
+    [HttpGet("cover-hover")]
+    public async Task<CoverHoverDto> GetCoverHover(CancellationToken ct)
+    {
+        var rows = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.CoverHoverEnabled || s.Key == AppSettingKeys.CoverHoverScale)
+            .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
+        var enabled = rows.TryGetValue(AppSettingKeys.CoverHoverEnabled, out var e)
+            && string.Equals(e, "true", StringComparison.OrdinalIgnoreCase);
+        var scale = rows.TryGetValue(AppSettingKeys.CoverHoverScale, out var sv)
+            && double.TryParse(sv, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var s)
+            ? s : 1.0;
+        return new CoverHoverDto(enabled, ClampScale(scale));
+    }
+
+    [HttpPut("cover-hover")]
+    public async Task<ActionResult<CoverHoverDto>> SetCoverHover([FromBody] CoverHoverDto body, CancellationToken ct)
+    {
+        var scale = ClampScale(body.Scale);
+        await UpsertSettingAsync(AppSettingKeys.CoverHoverEnabled, body.Enabled ? "true" : "false", ct);
+        await UpsertSettingAsync(AppSettingKeys.CoverHoverScale,
+            scale.ToString(System.Globalization.CultureInfo.InvariantCulture), ct);
+        await _db.SaveChangesAsync(ct);
+        return new CoverHoverDto(body.Enabled, scale);
+    }
+
+    // 1 = default size, up to 4 = quadruple. Anything out of range (or unset)
+    // snaps back to a sane value.
+    private static double ClampScale(double scale)
+        => double.IsFinite(scale) ? Math.Clamp(scale, 1.0, 4.0) : 1.0;
+
     private static int ReadInt(IReadOnlyDictionary<string, string> rows, string key, int fallback)
         => rows.TryGetValue(key, out var v) && int.TryParse(v, out var n) && n >= 0 ? n : fallback;
 

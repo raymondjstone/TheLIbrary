@@ -1326,7 +1326,7 @@ export default function AuthorDetail() {
                             <tr className={b.owned ? '' : 'missing'}>
                                 <td>
                                     {bookCoverSrc(b)
-                                        ? <img alt="" loading="lazy" src={bookCoverSrc(b)} />
+                                        ? <img className="cover-img" alt="" loading="lazy" src={bookCoverSrc(b)} />
                                         : null}
                                 </td>
                                 {series && <td style={{ textAlign: 'center', fontWeight: 600, fontSize: '0.85rem', color: 'var(--subtle)', whiteSpace: 'nowrap' }}>
@@ -1496,7 +1496,7 @@ export default function AuthorDetail() {
                             <tr className={b.owned ? '' : 'missing'}>
                                 <td>
                                     {bookCoverSrc(b)
-                                        ? <img alt="" loading="lazy" src={bookCoverSrc(b)} />
+                                        ? <img className="cover-img" alt="" loading="lazy" src={bookCoverSrc(b)} />
                                         : null}
                                 </td>
                                 {series && <td></td>}

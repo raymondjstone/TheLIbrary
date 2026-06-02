@@ -69,4 +69,12 @@ public static class AppSettingKeys
     // Folder name (relative to each library root) used when archiving duplicate
     // files from the Duplicates page. Defaults to "__archive" when not set.
     public const string DedupeArchiveFolder = "DedupeArchiveFolder";
+
+    // When "true", hovering any cover thumbnail shows a large pop-up preview of
+    // the cover. UI-only preference; unset/anything-but-"true" = disabled.
+    public const string CoverHoverEnabled = "CoverHoverEnabled";
+
+    // Size multiplier for the cover-hover pop-up. 1 = default, 2 = double all
+    // dimensions, etc. Stored invariant-culture; unset/invalid = 1.
+    public const string CoverHoverScale = "CoverHoverScale";
 }

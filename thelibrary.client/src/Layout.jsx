@@ -1,9 +1,11 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import './App.css'
+import CoverHoverLayer from './components/CoverHoverLayer.jsx'
 
 export default function Layout() {
     return (
         <div className="layout">
+            <CoverHoverLayer />
             <header className="topbar">
                 <h1 className="brand">The Library</h1>
                 <nav>

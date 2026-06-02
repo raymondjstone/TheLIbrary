@@ -67,7 +67,7 @@ export default function ManualBooks() {
                         {rows.map(b => (
                             <tr key={b.id}>
                                 <td>{bookCoverSrc(b)
-                                    ? <img alt="" loading="lazy" src={bookCoverSrc(b)} />
+                                    ? <img className="cover-img" alt="" loading="lazy" src={bookCoverSrc(b)} />
                                     : null}</td>
                                 <td>{b.title}</td>
                                 <td><Link to={`/authors/${b.authorId}`}>{b.authorName}</Link></td>

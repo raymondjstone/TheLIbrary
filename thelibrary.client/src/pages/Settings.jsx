@@ -51,6 +51,9 @@ export default function Settings() {
     const [archiveFolder, setArchiveFolder] = useState({ folderName: '__archive' })
     const [archiveFolderEdit, setArchiveFolderEdit] = useState('__archive')
     const [archiveFolderSaving, setArchiveFolderSaving] = useState(false)
+    const [coverHover, setCoverHover] = useState(false)
+    const [coverHoverScale, setCoverHoverScale] = useState(1)
+    const [coverHoverSaving, setCoverHoverSaving] = useState(false)
 
     const load = async () => {
         // Independent loads — a failing endpoint (e.g. pending migration) must
@@ -164,6 +167,41 @@ export default function Settings() {
             setArchiveFolder(body)
             setArchiveFolderEdit(body.folderName ?? '__archive')
         } catch (e) { setError(prev => prev ?? String(e)) }
+
+        try {
+            const r = await fetch('/api/settings/cover-hover')
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setCoverHover(!!body.enabled)
+            setCoverHoverScale(body.scale > 0 ? body.scale : 1)
+        } catch (e) { setError(prev => prev ?? String(e)) }
+    }
+
+    const saveCoverHover = async (enabled, scale) => {
+        const prevEnabled = coverHover, prevScale = coverHoverScale
+        setCoverHover(enabled)              // optimistic
+        setCoverHoverScale(scale)
+        setCoverHoverSaving(true)
+        try {
+            const r = await fetch('/api/settings/cover-hover', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled, scale }),
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json().catch(() => ({ enabled, scale }))
+            // Echo the server-clamped values and tell the global layer to react.
+            setCoverHover(!!body.enabled)
+            setCoverHoverScale(body.scale > 0 ? body.scale : scale)
+            window.dispatchEvent(new CustomEvent('cover-hover-changed',
+                { detail: { enabled: !!body.enabled, scale: body.scale > 0 ? body.scale : scale } }))
+        } catch (e) {
+            setError(String(e.message ?? e))
+            setCoverHover(prevEnabled)      // revert on failure
+            setCoverHoverScale(prevScale)
+        } finally {
+            setCoverHoverSaving(false)
+        }
     }
 
     useEffect(() => { load() }, [])
@@ -860,6 +898,35 @@ export default function Settings() {
                 <span className="subtle">
                     current: <code>{archiveFolder.folderName || '__archive'}</code>
                 </span>
+            </div>
+
+            <h2 style={{ marginTop: '1.5rem' }}>Cover hover preview</h2>
+            <p className="subtle">
+                When on, hovering any book cover thumbnail (anywhere except the in-book
+                preview) pops up a large preview of that cover.
+            </p>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                <input
+                    type="checkbox"
+                    checked={coverHover}
+                    disabled={coverHoverSaving}
+                    onChange={e => saveCoverHover(e.target.checked, coverHoverScale)} />
+                <span>Show a large cover pop-up on hover</span>
+                {coverHoverSaving && <span className="subtle">Saving…</span>}
+            </label>
+            <div className="toolbar" style={{ marginTop: '0.5rem' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span>Pop-up size</span>
+                    <input
+                        type="number"
+                        min="1" max="4" step="0.1"
+                        value={coverHoverScale}
+                        disabled={coverHoverSaving || !coverHover}
+                        onChange={e => setCoverHoverScale(Number(e.target.value))}
+                        onBlur={e => saveCoverHover(coverHover, Math.min(4, Math.max(1, Number(e.target.value) || 1)))}
+                        style={{ width: '5rem' }} />
+                    <span className="subtle">× (1 = default, 2 = double; 1–4)</span>
+                </label>
             </div>
 
             <h2 style={{ marginTop: '1.5rem' }}>reMarkable sync</h2>
