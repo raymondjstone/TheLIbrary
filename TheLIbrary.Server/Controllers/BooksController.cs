@@ -283,6 +283,20 @@ public class BooksController : ControllerBase
         return Ok(new { book.Id, LanguageReview = book.LanguageReview.ToString() });
     }
 
+    public sealed record ConfirmAllForeignResult(int Confirmed);
+
+    // Marks every currently foreign-but-unconfirmed book as confirmed foreign in
+    // one shot — the "Confirm all listed as foreign" action on the review page.
+    [HttpPost("foreign/confirm-all")]
+    public async Task<ActionResult<ConfirmAllForeignResult>> ConfirmAllForeign(CancellationToken ct)
+    {
+        var confirmed = await _db.Books
+            .Where(b => b.Foreign && b.LanguageReview != LanguageReview.ConfirmedForeign)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(b => b.LanguageReview, LanguageReview.ConfirmedForeign), ct);
+        return Ok(new ConfirmAllForeignResult(confirmed));
+    }
+
     public sealed record ForeignBookRow(
         int Id, string Title, int? FirstPublishYear, int? CoverId, string? CoverUrl,
         int AuthorId, string AuthorName, int AuthorPriority, string OpenLibraryWorkKey, bool Confirmed);
