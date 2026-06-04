@@ -49,12 +49,13 @@ local files at all as a pure author/works tracker and wishlist.
 | Series | `/series` | Hierarchical series tree with owned/total progress bars; create new series; inline edit of name, primary author, additional authors, parent series, and reading order position; deep-linkable via `?q=SeriesName` |
 | Stats | `/stats` | KPI cards, books-read-by-year chart, top genres, per-author coverage, file-format breakdown chart, files-acquired-by-month chart |
 | Duplicates | `/duplicates` | Books matched to more than one local file folder |
+| Damaged | `/damaged` | Ebook files the integrity job couldn't open/convert, or that have fewer than 20 pages — with per-row **Recheck** and an on-demand **Check now**. See [Book integrity check](#book-integrity-check) |
 | Manual Books | `/manual-books` | Every manually-added book (works not on OpenLibrary), with inline edit and delete |
 | Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket (with one-click "Try matching all" against the current watchlist). The browse pane drills into a folder, previews EPUB/PDF/TXT files in-place, matches a single file to an OpenLibrary work, and deletes files/folders (disk + DB) — and stays open after matching when other files remain |
 | Unmatched physical | `/physical-unmatched` | Editable list of physical-books-import rows that couldn't be matched; "Re-run matching" re-tries the whole list against the current library |
 | Sync | `/sync` | Live sync dashboard with phase tracking and progress |
 | Schedules | `/schedules` | Cron expressions and enabled/disabled flags for background jobs; per-job last-N-run history panel |
-| Settings | `/settings` | Library locations, incoming folder, custom quarantine (`__unknown`) folder override, Pushover credentials (+ "Send test"), ignored folders, blacklist, NZB sites, reMarkable pairing, Goodreads + physical-books import |
+| Settings | `/settings` | Library locations, incoming folder, custom quarantine (`__unknown`) folder override, Pushover credentials (+ "Send test"), ignored folders, blacklist, NZB sites, reMarkable pairing, book integrity check (max files per run), Goodreads + physical-books import |
 
 ## How it works
 
@@ -745,6 +746,41 @@ transaction.
 Enable it on the **Schedules** page (`flatten-unknown` job, default cron
 `0 9 * * *`) — or run it once manually via **Run now**.
 
+## Book integrity check
+
+Off by default. The `check-integrity` job opens every matched ebook file and
+verifies it's actually readable and substantial — catching truncated downloads,
+corrupt archives, DRM-locked files, and near-empty placeholders that otherwise
+sit in the library looking fine.
+
+For each in-scope file (a `LocalBookFile` linked to a book whose extension is an
+ebook format — `epub`, `pdf`, `mobi`, `azw`/`azw3`, `fb2`, `cbz`/`cbr`, `lit`,
+`djvu`, `doc`/`docx`, `rtf`, `txt`) the check is:
+
+- **PDF** — opened with PdfPig; the real page count must be ≥ 20.
+- **EPUB** — the zip, `container.xml`, OPF package and spine must all parse, and
+  the spine's combined text must estimate to ≥ 20 pages. EPUB has no fixed page
+  count, so pages are estimated from readable text length at **~1,024 characters
+  per page** (the figure Calibre/Adobe use); markup is stripped before counting.
+- **Everything else** (MOBI / AZW3 / FB2 / CBZ / …) — converted to EPUB with
+  Calibre's `ebook-convert` first, then the EPUB check is applied. A conversion
+  failure marks the file damaged. If Calibre isn't configured the file is
+  *skipped* (left for a later run) rather than wrongly flagged.
+
+Any file that can't be opened/converted, or falls short of 20 pages, is flagged
+and listed on the **Damaged** page (`/damaged`) with the reason, page count,
+size, and a per-row **Recheck** action (which re-queues it for the next run). The
+page also has a **Check now** button to start the job on demand.
+
+**Incremental and cheap to re-run.** A file is only (re)checked when its folder
+fingerprint (`LocalBookFile.SizeBytes`) differs from the value stored at its last
+check, or it has never been checked — a DB-only comparison, so the candidate scan
+does no disk I/O on the library mount. Each run processes at most **Max books
+tested per run** files (Settings page, default 200), working through the backlog
+over successive runs; **starred-author books (priority ≥ 1) are checked first**,
+matching how every other job prioritises flagged authors. Enable or schedule it
+on the **Schedules** page (`check-integrity`, default cron `0 12 * * *`).
+
 ## Goodreads import
 
 Export your library from Goodreads (**My Books → Import/Export → Export
@@ -915,6 +951,7 @@ on every startup.
 | `star-physical-authors` | `0 10 * * *` | Give 1 star to any author with at least one manually-owned physical book whose current star rating is 0 |
 | `cache-openlibrary-metadata` | `30 10 * * *` | Backfill missing subjects and cache large OpenLibrary covers for existing books |
 | `flatten-unknown` | `0 9 * * *` (disabled by default) | Flatten any subfolders inside each quarantine author folder so each contains only files. See [Flatten-unknown job](#flatten-unknown-job) |
+| `check-integrity` | `0 12 * * *` (disabled by default) | Open/convert every matched ebook file and flag any that won't open or have fewer than 20 pages onto the Damaged page. See [Book integrity check](#book-integrity-check) |
 
 Hangfire runs with `WorkerCount=1`, and all background work also passes through
 a single `BackgroundTaskCoordinator`, so a manual UI run and a cron tick can't

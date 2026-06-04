@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 
 const NZB_EXAMPLES = [
     { name: 'NZBGeek',    urlTemplate: 'https://nzbgeek.info/geekseek.php?browseincludewords={SearchTerm}&c=7020' },
@@ -58,6 +59,9 @@ export default function Settings() {
     const [coverCacheEdit, setCoverCacheEdit] = useState('')
     const [coverCacheBatch, setCoverCacheBatch] = useState(1000)
     const [coverCacheSaving, setCoverCacheSaving] = useState(false)
+    const [integrityMax, setIntegrityMax] = useState(200)
+    const [integritySaved, setIntegritySaved] = useState(null)
+    const [integritySaving, setIntegritySaving] = useState(false)
 
     const load = async () => {
         // Independent loads — a failing endpoint (e.g. pending migration) must
@@ -188,6 +192,34 @@ export default function Settings() {
             setCoverCacheEdit(body.path ?? '')
             setCoverCacheBatch(body.batchSize > 0 ? body.batchSize : 1000)
         } catch (e) { setError(prev => prev ?? String(e)) }
+
+        try {
+            const r = await fetch('/api/settings/integrity')
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setIntegrityMax(body.maxBooksPerRun > 0 ? body.maxBooksPerRun : 200)
+            setIntegritySaved(body.maxBooksPerRun)
+        } catch (e) { setError(prev => prev ?? String(e)) }
+    }
+
+    const saveIntegrity = async () => {
+        setIntegritySaving(true)
+        setError(null)
+        try {
+            const r = await fetch('/api/settings/integrity', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ maxBooksPerRun: Math.max(1, Number(integrityMax) || 200) }),
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setIntegrityMax(body.maxBooksPerRun)
+            setIntegritySaved(body.maxBooksPerRun)
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setIntegritySaving(false)
+        }
     }
 
     const saveCoverCacheFolder = async () => {
@@ -819,6 +851,34 @@ export default function Settings() {
                     {coverCacheSaving ? 'Saving…' : 'Save folder & count'}
                 </button>
                 <span className="subtle">Saves both the folder and the per-run count.</span>
+            </div>
+
+            <h2 style={{ marginTop: '1.5rem' }}>Book integrity check</h2>
+            <p className="subtle">
+                The <strong>Check book integrity</strong> job (enable it on the{' '}
+                <Link to="/schedules">Schedules</Link> page) opens every matched ebook
+                file — converting non-EPUB/PDF formats via Calibre — and flags any that
+                won't open or have fewer than 20 pages. Flagged files appear on the{' '}
+                <Link to="/damaged">Damaged</Link> page. The check is heavy, so each run
+                processes at most this many files; already-checked files are skipped
+                until their size changes.
+            </p>
+            <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <span>Max books tested per run</span>
+                    <input
+                        type="number"
+                        min="1" max="100000" step="50"
+                        value={integrityMax}
+                        onChange={e => setIntegrityMax(Number(e.target.value))}
+                        style={{ width: '7rem' }} />
+                </label>
+                <button onClick={saveIntegrity} disabled={integritySaving}>
+                    {integritySaving ? 'Saving…' : 'Save'}
+                </button>
+                <span className="subtle">
+                    Default 200.{integritySaved != null && <> Saved: <code>{integritySaved}</code>.</>}
+                </span>
             </div>
 
             <h2 style={{ marginTop: '1.5rem' }}>Pushover new-book alerts</h2>

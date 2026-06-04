@@ -5,6 +5,7 @@ using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.OpenLibrary;
 using TheLibrary.Server.Services.Pushover;
+using TheLibrary.Server.Services.Sync;
 
 namespace TheLibrary.Server.Controllers;
 
@@ -616,6 +617,33 @@ public class SettingsController : ControllerBase
         var libraryPath = await _db.LibraryLocations.AsNoTracking()
             .Where(l => l.Enabled).Select(l => l.Path).FirstOrDefaultAsync(ct);
         return new CoverCacheFolderDto(path, CoverCacheResolver.DefaultFor(libraryPath, _env), IsWritable(path), batch);
+    }
+
+    public sealed record IntegritySettingsDto(int MaxBooksPerRun);
+    public sealed record IntegritySettingsUpdate(int? MaxBooksPerRun);
+
+    [HttpGet("integrity")]
+    public async Task<IntegritySettingsDto> GetIntegritySettings(CancellationToken ct)
+    {
+        var raw = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.IntegrityMaxBooksPerRun)
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync(ct);
+        var max = int.TryParse(raw, out var n) && n > 0 ? n : BookIntegrityService.DefaultMaxBooksPerRun;
+        return new IntegritySettingsDto(max);
+    }
+
+    [HttpPut("integrity")]
+    public async Task<ActionResult<IntegritySettingsDto>> SetIntegritySettings(
+        [FromBody] IntegritySettingsUpdate body, CancellationToken ct)
+    {
+        var requested = body.MaxBooksPerRun ?? 0;
+        var max = Math.Clamp(
+            requested <= 0 ? BookIntegrityService.DefaultMaxBooksPerRun : requested, 1, 100_000);
+        await UpsertSettingAsync(AppSettingKeys.IntegrityMaxBooksPerRun,
+            max.ToString(System.Globalization.CultureInfo.InvariantCulture), ct);
+        await _db.SaveChangesAsync(ct);
+        return new IntegritySettingsDto(max);
     }
 
     // Best-effort write check: can we create the directory and a temp file there?

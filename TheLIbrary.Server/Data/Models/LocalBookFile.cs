@@ -59,4 +59,26 @@ public class LocalBookFile
     // re-fingerprints the file, the file moves, or its target series changes.
     [MaxLength(40)]
     public string? OrganizedSig { get; set; }
+
+    // --- Integrity check (see BookIntegrityService) -----------------------
+    // The value of SizeBytes when the integrity check last ran. Null = never
+    // checked. The job re-checks a file only when this differs from the
+    // current SizeBytes (i.e. the scanner re-fingerprinted the folder) or is
+    // null — a DB-only comparison so the per-run candidate scan does no disk
+    // I/O on the NAS mount.
+    public long? IntegrityCheckedSize { get; set; }
+
+    // null = not yet checked, true = opened/converted fine with >= the minimum
+    // page count, false = damaged (couldn't open/convert, or too few pages).
+    public bool? IntegrityOk { get; set; }
+
+    // Human-readable reason the file is damaged; shown on the Damaged page.
+    [MaxLength(1000)]
+    public string? IntegrityError { get; set; }
+
+    // Page count discovered during the check (real pages for PDF, estimated
+    // from text length for EPUB). Null when the check couldn't get that far.
+    public int? IntegrityPages { get; set; }
+
+    public DateTime? IntegrityCheckedAt { get; set; }
 }

@@ -33,13 +33,14 @@ public static class ScheduleJobIds
     public const string AdoptUnknownAuthors = "adopt-unknown-authors";
     public const string ArchiveForeign = "archive-foreign";
     public const string MergeLinkedAuthors = "merge-linked-authors";
+    public const string CheckIntegrity = "check-integrity";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
         Sync, Seed, AuthorUpdates, Incoming, ReprocessUnknown, RefreshWorks,
         OrganizeSeries, Unzip, DisambiguateFolders, SameNameAuthors,
         StarPhysicalAuthors, CacheOpenLibraryMetadata, FlattenUnknown,
-        AdoptUnknownAuthors, ArchiveForeign, MergeLinkedAuthors
+        AdoptUnknownAuthors, ArchiveForeign, MergeLinkedAuthors, CheckIntegrity
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -69,5 +70,9 @@ public static class ScheduleJobIds
             // Fully merge user-linked duplicate authors into their canonical.
             // Only touches explicit links, so safe to run daily.
             [MergeLinkedAuthors] = new() { Cron = "0 5 * * *", Enabled = true },
+            // Open/convert each ebook file and verify it has enough pages.
+            // Heavy (PDF parse / Calibre conversion) and capped per run, so it
+            // ships disabled — the user opts in on the Schedules page.
+            [CheckIntegrity] = new() { Cron = "0 12 * * *", Enabled = false },
         };
 }

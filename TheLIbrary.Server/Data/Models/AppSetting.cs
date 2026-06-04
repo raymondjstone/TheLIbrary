@@ -85,4 +85,10 @@ public static class AppSettingKeys
 
     // How many books the "Cache OL metadata" job processes per run. Unset = 1000.
     public const string CacheMetadataBatchSize = "CacheMetadataBatchSize";
+
+    // How many files the "Check book integrity" job opens/converts per run.
+    // The check is heavy (PDF parse / Calibre conversion) so it runs in capped
+    // batches; already-checked files are skipped until their size changes.
+    // Unset = BookIntegrityService.DefaultMaxBooksPerRun.
+    public const string IntegrityMaxBooksPerRun = "IntegrityMaxBooksPerRun";
 }

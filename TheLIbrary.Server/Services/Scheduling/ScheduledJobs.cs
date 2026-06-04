@@ -31,6 +31,7 @@ public sealed class ScheduledJobs
     private readonly UnknownAuthorAdoptionService _adoptUnknownAuthors;
     private readonly ForeignArchiveService _archiveForeign;
     private readonly LinkedAuthorMergeService _mergeLinkedAuthors;
+    private readonly BookIntegrityService _integrity;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -48,6 +49,7 @@ public sealed class ScheduledJobs
         UnknownAuthorAdoptionService adoptUnknownAuthors,
         ForeignArchiveService archiveForeign,
         LinkedAuthorMergeService mergeLinkedAuthors,
+        BookIntegrityService integrity,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
@@ -55,7 +57,7 @@ public sealed class ScheduledJobs
         _sync = sync; _incoming = incoming; _organizer = organizer; _unzip = unzip;
         _disambiguator = disambiguator; _sameNames = sameNames; _physicalStars = physicalStars; _metadataCache = metadataCache;
         _flattenUnknown = flattenUnknown; _adoptUnknownAuthors = adoptUnknownAuthors; _archiveForeign = archiveForeign;
-        _mergeLinkedAuthors = mergeLinkedAuthors;
+        _mergeLinkedAuthors = mergeLinkedAuthors; _integrity = integrity;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -165,6 +167,12 @@ public sealed class ScheduledJobs
         ScheduleJobIds.MergeLinkedAuthors, manualTrigger,
         ct => _mergeLinkedAuthors.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _mergeLinkedAuthors.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunCheckIntegrity(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.CheckIntegrity, manualTrigger,
+        ct => _integrity.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _integrity.IsRunning);
 
     internal Task RunWithPollingForTests(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,
