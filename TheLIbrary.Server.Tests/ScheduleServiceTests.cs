@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Hangfire;
 using Hangfire.Common;
 using Hangfire.States;
@@ -114,6 +115,51 @@ public class ScheduleServiceTests
         Assert.True(all.ContainsKey(ScheduleJobIds.StarPhysicalAuthors));
         Assert.Equal("0 10 * * *", all[ScheduleJobIds.StarPhysicalAuthors].Cron);
         Assert.True(all[ScheduleJobIds.StarPhysicalAuthors].Enabled);
+    }
+
+    [Fact]
+    public async Task ApplyAllAsync_Registers_Every_Job_When_All_Enabled()
+    {
+        var dbName = $"schedule-tests-{Guid.NewGuid():N}";
+        await using var db = CreateDb(dbName);
+        var jobs = new Dictionary<string, ScheduleEntry>();
+        foreach (var id in ScheduleJobIds.All)
+            jobs[id] = new ScheduleEntry { Cron = "0 1 * * *", Enabled = true };
+        db.AppSettings.Add(new AppSetting
+        {
+            Key = AppSettingKeys.Schedules,
+            Value = JsonSerializer.Serialize(new ScheduleConfig { Jobs = jobs }, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+        });
+        await db.SaveChangesAsync();
+
+        var recurring = new FakeRecurringJobManager();
+        var sut = CreateService(recurring, dbName);
+
+        await sut.ApplyAllAsync();
+
+        // Every known job id must be routed through its ApplyOne switch branch.
+        Assert.Equal(ScheduleJobIds.All.OrderBy(x => x), recurring.AddedOrUpdatedJobIds.OrderBy(x => x));
+        Assert.Empty(recurring.RemovedJobIds);
+    }
+
+    [Fact]
+    public async Task UpdateAsync_Rejects_Blank_Cron()
+    {
+        var dbName = $"schedule-tests-{Guid.NewGuid():N}";
+        await using var db = CreateDb(dbName);
+        var sut = CreateService(new FakeRecurringJobManager(), dbName);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            sut.UpdateAsync(ScheduleJobIds.Sync, new ScheduleEntry { Cron = "   ", Enabled = true }));
+    }
+
+    [Fact]
+    public void TriggerNow_Rejects_Unknown_Job()
+    {
+        var dbName = $"schedule-tests-{Guid.NewGuid():N}";
+        var sut = CreateService(new FakeRecurringJobManager(), dbName);
+
+        Assert.Throws<ArgumentException>(() => sut.TriggerNow("not-a-real-job"));
     }
 
     [Fact]
