@@ -50,6 +50,7 @@ builder.Services.AddSingleton<OpenLibraryRateLimiter>();
 builder.Services.AddHttpClient<OpenLibraryClient>();
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<IFileSystem, SystemFileSystem>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.CoverCacheState>();
 builder.Services.AddSingleton<OpenLibraryMetadataCacheService>();
 builder.Services.AddSingleton<IProcessRunner, SystemProcessRunner>();
 builder.Services.AddScoped<CalibreScanner>();
@@ -77,6 +78,7 @@ builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnknownFolderFlatt
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnknownAuthorAdoptionService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.StarredAuthorRefreshService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.ForeignArchiveService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.LinkedAuthorMergeService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Pushover.PushoverClient>();
 
 // Hangfire uses the same SQL Server database for its job store so a restart
@@ -120,6 +122,12 @@ if (!skipStartupTasks)
     // Load the OpenLibrary User-Agent identity from the database into the
     // in-memory singleton so the first API call already carries it.
     await scope.ServiceProvider.GetRequiredService<OpenLibrarySettings>().LoadAsync();
+
+    // Resolve the effective cover-cache directory (saved setting, else derived
+    // from the library location) into the in-memory holder used by the serving
+    // controller and the cache job.
+    scope.ServiceProvider.GetRequiredService<TheLibrary.Server.Services.OpenLibrary.CoverCacheState>().Directory =
+        await TheLibrary.Server.Services.OpenLibrary.CoverCacheResolver.ResolveAsync(db, app.Environment);
 
     if (!await db.LibraryLocations.AnyAsync())
     {

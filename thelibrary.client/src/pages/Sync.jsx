@@ -212,6 +212,7 @@ export default function Sync() {
                                                 { key: 'adoptUnknownAuthors',label: 'Adopt unknown authors', endpoint: '/api/jobs/adopt-unknown-authors/start' },
                                                 { key: 'refreshStarred',     label: 'Refresh starred authors', endpoint: '/api/jobs/refresh-starred/start' },
                                                 { key: 'archiveForeign',     label: 'Archive foreign titles', endpoint: '/api/jobs/archive-foreign/start' },
+                                                { key: 'mergeLinkedAuthors', label: 'Merge linked authors', endpoint: '/api/jobs/merge-linked-authors/start' },
                                             ]
                                             const anyJobRunning = !!jobs.activeJob
                                             return (

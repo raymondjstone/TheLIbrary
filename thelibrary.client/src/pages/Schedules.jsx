@@ -12,6 +12,7 @@ const labels = {
     'flatten-unknown': 'Flatten __unknown subfolders (off by default)',
     'adopt-unknown-authors': 'Adopt _OLkey folders from __unknown → add author + return to incoming',
     'archive-foreign': 'Archive files of confirmed-foreign titles into the dedupe archive folder',
+    'merge-linked-authors': 'Fully merge user-linked duplicate authors into their canonical',
 }
 
 const fmtNextRun = (iso) => {

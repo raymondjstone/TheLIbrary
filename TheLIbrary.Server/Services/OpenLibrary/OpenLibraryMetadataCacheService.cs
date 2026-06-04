@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
+using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.IO;
 using TheLibrary.Server.Services.Scheduling;
 using TheLibrary.Server.Services.Sync;
@@ -14,25 +15,30 @@ public sealed class OpenLibraryMetadataCacheService
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly OpenLibraryClient _ol;
     private readonly IFileSystem _fs;
-    private readonly IWebHostEnvironment _env;
+    private readonly CoverCacheState _coverCache;
     private readonly ILogger<OpenLibraryMetadataCacheService> _log;
     private volatile bool _isRunning;
     private volatile string? _currentMessage;
     private OpenLibraryMetadataCacheSummary? _lastResult;
+
+    // Default books processed per run (overridable via the Settings page). The
+    // candidate set is scoped to owned books and every processed book is marked
+    // done, so the backlog clears monotonically.
+    public const int DefaultBatchSize = 1000;
 
     public OpenLibraryMetadataCacheService(
         IServiceScopeFactory scopeFactory,
         BackgroundTaskCoordinator coordinator,
         OpenLibraryClient ol,
         IFileSystem fs,
-        IWebHostEnvironment env,
+        CoverCacheState coverCache,
         ILogger<OpenLibraryMetadataCacheService> log)
     {
         _scopeFactory = scopeFactory;
         _coordinator = coordinator;
         _ol = ol;
         _fs = fs;
-        _env = env;
+        _coverCache = coverCache;
         _log = log;
     }
 
@@ -66,20 +72,49 @@ public sealed class OpenLibraryMetadataCacheService
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
 
+        var batchRaw = await db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.CacheMetadataBatchSize)
+            .Select(s => s.Value).FirstOrDefaultAsync(ct);
+        var batchSize = int.TryParse(batchRaw, out var n) && n > 0
+            ? Math.Clamp(n, 1, 100_000) : DefaultBatchSize;
+
+        // Only cache metadata for books the user actually OWNS (an ebook file or
+        // a manually-owned physical copy). The full OL-keyed catalogue is ~1.6M
+        // rows — mostly unowned "missing works" whose covers the UI already shows
+        // by hot-linking OpenLibrary — so caching those locally is pointless.
         var candidates = await db.Books
             .Where(b => !string.IsNullOrWhiteSpace(b.OpenLibraryWorkKey)
                      && !b.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix)
-                     && (b.Subjects == null || b.CoverUrl == null))
+                     && (b.Subjects == null || b.CoverUrl == null)
+                     && (b.ManuallyOwned || b.LocalFiles.Any()))
             .OrderByDescending(b => b.Author.Priority)
             .ThenBy(b => b.Author.Name)
             .ThenBy(b => b.Title)
-            .Take(100)
+            .Take(batchSize)
             .ToListAsync(ct);
 
         var booksUpdated = 0;
         var coversCached = 0;
-        var cacheRoot = Path.Combine(_env.WebRootPath ?? Path.Combine(AppContext.BaseDirectory, "wwwroot"), "cached-covers");
-        await _fs.CreateDirectoryAsync(cacheRoot, ct);
+
+        var cacheRoot = _coverCache.Directory;
+        if (string.IsNullOrWhiteSpace(cacheRoot))
+        {
+            _log.LogWarning("No cover-cache directory configured — skipping run.");
+            return new OpenLibraryMetadataCacheSummary(0, 0);
+        }
+        try
+        {
+            await _fs.CreateDirectoryAsync(cacheRoot, ct);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // e.g. the default /app/wwwroot is read-only in a container. Don't
+            // crash or hammer OpenLibrary — tell the user to set a writable path.
+            _log.LogWarning(ex,
+                "Cover-cache directory '{Dir}' is not writable — set a writable path on the Settings page. Skipping run.",
+                cacheRoot);
+            return new OpenLibraryMetadataCacheSummary(0, 0);
+        }
 
         foreach (var book in candidates)
         {
@@ -98,25 +133,34 @@ public sealed class OpenLibraryMetadataCacheService
                     booksUpdated++;
                 }
 
-                if (book.CoverUrl == null && work.Covers is { Count: > 0 })
+                if (book.CoverUrl == null)
                 {
-                    var coverId = work.Covers.First();
-                    var rel = $"/cached-covers/{coverId}.jpg";
-                    var disk = Path.Combine(cacheRoot, $"{coverId}.jpg");
-                    if (!await _fs.FileExistsAsync(disk, ct))
+                    string? cachedRel = null;
+                    if (work.Covers is { Count: > 0 })
                     {
-                        var bytes = await _ol.DownloadCoverBytesAsync(coverId, ct);
-                        if (bytes is not null)
+                        var coverId = work.Covers.First();
+                        var rel = $"/cached-covers/{coverId}.jpg";
+                        var disk = Path.Combine(cacheRoot, $"{coverId}.jpg");
+                        if (!await _fs.FileExistsAsync(disk, ct))
                         {
-                            await File.WriteAllBytesAsync(disk, bytes, ct);
-                            coversCached++;
+                            var bytes = await _ol.DownloadCoverBytesAsync(coverId, ct);
+                            if (bytes is not null)
+                            {
+                                await File.WriteAllBytesAsync(disk, bytes, ct);
+                                coversCached++;
+                            }
                         }
+                        if (await _fs.FileExistsAsync(disk, ct))
+                            cachedRel = rel;
                     }
-                    if (await _fs.FileExistsAsync(disk, ct))
-                    {
-                        book.CoverUrl = rel;
-                        booksUpdated++;
-                    }
+
+                    // Always record an outcome: the cached path, or "" meaning
+                    // "tried, no cover to cache" — so this book leaves the
+                    // candidate set instead of being re-fetched every run. An
+                    // empty CoverUrl is falsy in the UI, which falls back to the
+                    // OpenLibrary cover id, so display is unaffected.
+                    book.CoverUrl = cachedRel ?? "";
+                    booksUpdated++;
                 }
             }
             catch (OpenLibraryRequestFailedException ex)

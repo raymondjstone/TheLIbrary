@@ -54,6 +54,10 @@ export default function Settings() {
     const [coverHover, setCoverHover] = useState(false)
     const [coverHoverScale, setCoverHoverScale] = useState(1)
     const [coverHoverSaving, setCoverHoverSaving] = useState(false)
+    const [coverCache, setCoverCache] = useState(null) // { path, default, writable, batchSize }
+    const [coverCacheEdit, setCoverCacheEdit] = useState('')
+    const [coverCacheBatch, setCoverCacheBatch] = useState(1000)
+    const [coverCacheSaving, setCoverCacheSaving] = useState(false)
 
     const load = async () => {
         // Independent loads — a failing endpoint (e.g. pending migration) must
@@ -175,6 +179,42 @@ export default function Settings() {
             setCoverHover(!!body.enabled)
             setCoverHoverScale(body.scale > 0 ? body.scale : 1)
         } catch (e) { setError(prev => prev ?? String(e)) }
+
+        try {
+            const r = await fetch('/api/settings/cover-cache-folder')
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setCoverCache(body)
+            setCoverCacheEdit(body.path ?? '')
+            setCoverCacheBatch(body.batchSize > 0 ? body.batchSize : 1000)
+        } catch (e) { setError(prev => prev ?? String(e)) }
+    }
+
+    const saveCoverCacheFolder = async () => {
+        // Fall back to the known/effective path so saving the batch size never
+        // fails just because the path field is blank or untouched.
+        const path = (coverCacheEdit.trim() || coverCache?.path || coverCache?.default || '')
+        setCoverCacheSaving(true)
+        setError(null)
+        try {
+            const r = await fetch('/api/settings/cover-cache-folder', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    path,
+                    batchSize: Math.max(1, Number(coverCacheBatch) || 1000),
+                }),
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setCoverCache(body)
+            setCoverCacheEdit(body.path)
+            setCoverCacheBatch(body.batchSize > 0 ? body.batchSize : 1000)
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setCoverCacheSaving(false)
+        }
     }
 
     const saveCoverHover = async (enabled, scale) => {
@@ -712,6 +752,75 @@ export default function Settings() {
                 </p>
             )}
 
+            <h2 style={{ marginTop: '1.5rem' }}>Dedupe archive folder</h2>
+            <p className="subtle">
+                Where extra files are moved when you use <em>Archive extras</em> on the Duplicates page.
+                Use a simple folder name (created inside each library root, e.g. <code>__archive</code>)
+                or a full absolute path (e.g. <code>D:\Archive</code>) for one fixed location.
+                Defaults to <code>__archive</code>.
+                View and restore archived files on the{' '}
+                <a href="/archived">Archived Files</a> page.
+            </p>
+            <div className="toolbar">
+                <input
+                    style={{ minWidth: 220 }}
+                    value={archiveFolderEdit}
+                    onChange={e => setArchiveFolderEdit(e.target.value)}
+                    placeholder="__archive" />
+                <button onClick={saveArchiveFolder} disabled={archiveFolderSaving}>
+                    {archiveFolderSaving ? 'Saving…' : 'Save'}
+                </button>
+                <span className="subtle">
+                    current: <code>{archiveFolder.folderName || '__archive'}</code>
+                </span>
+            </div>
+
+            <h2 style={{ marginTop: '1.5rem' }}>Cover cache folder</h2>
+            <p className="subtle">
+                Absolute, writable folder where the “Cache OL metadata” job stores OpenLibrary
+                cover images (served at <code>/cached-covers</code>). It must be a path the app
+                can write to — e.g. on the same mount as your library. Defaults to{' '}
+                <code>{coverCache?.default ?? '—'}</code> (derived from your library location).
+            </p>
+            <div className="toolbar">
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <span>Folder</span>
+                    <input
+                        style={{ minWidth: 320 }}
+                        value={coverCacheEdit}
+                        onChange={e => setCoverCacheEdit(e.target.value)}
+                        placeholder={coverCache?.default ?? '/Books/cached-covers'} />
+                </label>
+                {coverCache && (
+                    <span className="subtle">
+                        current: <code>{coverCache.path}</code>{' '}
+                        {coverCache.writable
+                            ? <span style={{ color: 'var(--accent)' }}>✓ writable</span>
+                            : <span className="error">✗ not writable</span>}
+                    </span>
+                )}
+            </div>
+            <div className="toolbar" style={{ marginTop: '0.5rem' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <span>Books cached per run</span>
+                    <input
+                        type="number"
+                        min="1" max="100000" step="100"
+                        value={coverCacheBatch}
+                        onChange={e => setCoverCacheBatch(Number(e.target.value))}
+                        style={{ width: '7rem' }} />
+                </label>
+                <span className="subtle">
+                    Default 1000.{coverCache && <> Saved: <code>{coverCache.batchSize}</code>.</>}
+                </span>
+            </div>
+            <div className="toolbar" style={{ marginTop: '0.5rem' }}>
+                <button onClick={saveCoverCacheFolder} disabled={coverCacheSaving}>
+                    {coverCacheSaving ? 'Saving…' : 'Save folder & count'}
+                </button>
+                <span className="subtle">Saves both the folder and the per-run count.</span>
+            </div>
+
             <h2 style={{ marginTop: '1.5rem' }}>Pushover new-book alerts</h2>
             <p className="subtle">
                 Optional. Set both keys to receive a Pushover notification each time a
@@ -874,29 +983,6 @@ export default function Settings() {
                 </button>
                 <span className="subtle">
                     {(duplicateFormatPreference?.formats ?? []).join(' > ') || 'using defaults'}
-                </span>
-            </div>
-
-            <h2 style={{ marginTop: '1.5rem' }}>Dedupe archive folder</h2>
-            <p className="subtle">
-                Where extra files are moved when you use <em>Archive extras</em> on the Duplicates page.
-                Use a simple folder name (created inside each library root, e.g. <code>__archive</code>)
-                or a full absolute path (e.g. <code>D:\Archive</code>) for one fixed location.
-                Defaults to <code>__archive</code>.
-                View and restore archived files on the{' '}
-                <a href="/archived">Archived Files</a> page.
-            </p>
-            <div className="toolbar">
-                <input
-                    style={{ minWidth: 220 }}
-                    value={archiveFolderEdit}
-                    onChange={e => setArchiveFolderEdit(e.target.value)}
-                    placeholder="__archive" />
-                <button onClick={saveArchiveFolder} disabled={archiveFolderSaving}>
-                    {archiveFolderSaving ? 'Saving…' : 'Save'}
-                </button>
-                <span className="subtle">
-                    current: <code>{archiveFolder.folderName || '__archive'}</code>
                 </span>
             </div>
 

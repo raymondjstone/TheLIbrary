@@ -77,4 +77,12 @@ public static class AppSettingKeys
     // Size multiplier for the cover-hover pop-up. 1 = default, 2 = double all
     // dimensions, etc. Stored invariant-culture; unset/invalid = 1.
     public const string CoverHoverScale = "CoverHoverScale";
+
+    // Absolute, writable directory where OpenLibrary cover images are cached and
+    // served from (/cached-covers/...). Unset = derived from the library location
+    // (its parent + "cached-covers"), so it lands on the same writable mount.
+    public const string CachedCoversFolder = "CachedCoversFolder";
+
+    // How many books the "Cache OL metadata" job processes per run. Unset = 1000.
+    public const string CacheMetadataBatchSize = "CacheMetadataBatchSize";
 }

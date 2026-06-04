@@ -1496,31 +1496,58 @@ public class AuthorsController : ControllerBase
         var target = await _db.Authors.FirstOrDefaultAsync(a => a.Id == body.IntoAuthorId, ct);
         if (target is null) return BadRequest(new { error = "Target author not found." });
 
-        // Collect work keys already on the target so we can skip duplicates.
-        var targetKeys = await _db.Books
+        // Target's existing books keyed by OL key — used both to skip duplicates
+        // AND to re-home a duplicate's files onto the kept copy.
+        var targetBooksByKey = await _db.Books
             .Where(b => b.AuthorId == body.IntoAuthorId && b.OpenLibraryWorkKey != null && b.OpenLibraryWorkKey != "")
-            .Select(b => b.OpenLibraryWorkKey)
-            .ToHashSetAsync(ct);
+            .ToDictionaryAsync(b => b.OpenLibraryWorkKey!, b => b.Id, ct);
+
+        // All of the source's files (matched + unmatched), indexed by their book
+        // so we can move a duplicate book's files before dropping the duplicate.
+        var sourceFiles = await _db.LocalBookFiles.Where(f => f.AuthorId == id).ToListAsync(ct);
+        var sourceFilesByBook = sourceFiles
+            .Where(f => f.BookId != null)
+            .GroupBy(f => f.BookId!.Value)
+            .ToDictionary(g => g.Key, g => g.ToList());
 
         var sourceBooks = await _db.Books.Where(b => b.AuthorId == id).ToListAsync(ct);
         int booksReassigned = 0;
         foreach (var book in sourceBooks)
         {
-            if (!string.IsNullOrEmpty(book.OpenLibraryWorkKey) && targetKeys.Contains(book.OpenLibraryWorkKey))
-                continue; // would create duplicate — skip
+            if (!string.IsNullOrEmpty(book.OpenLibraryWorkKey)
+                && targetBooksByKey.TryGetValue(book.OpenLibraryWorkKey, out var keepId))
+            {
+                // Duplicate of a target book: move this book's files onto the kept
+                // copy, then drop the duplicate so the (AuthorId, OL key) unique
+                // index is never violated and the files aren't left unmatched.
+                if (sourceFilesByBook.TryGetValue(book.Id, out var dupFiles))
+                    foreach (var f in dupFiles) f.BookId = keepId;
+                _db.Books.Remove(book);
+                continue;
+            }
             book.AuthorId = body.IntoAuthorId;
-            targetKeys.Add(book.OpenLibraryWorkKey!);
+            if (!string.IsNullOrEmpty(book.OpenLibraryWorkKey))
+                targetBooksByKey[book.OpenLibraryWorkKey] = book.Id; // catch source-internal dups too
             booksReassigned++;
         }
 
-        var sourceFiles = await _db.LocalBookFiles.Where(f => f.AuthorId == id).ToListAsync(ct);
         foreach (var f in sourceFiles) f.AuthorId = body.IntoAuthorId;
+
+        // Also claim the source's UNMATCHED orphan files — rows with no AuthorId
+        // that the detail page associates with the source only by folder name
+        // (FolderCandidatesFor). Without this they'd be stranded once the source
+        // author is deleted and wouldn't appear under the target.
+        var sourceFolders = FolderCandidatesFor(source);
+        var orphanFiles = await _db.LocalBookFiles
+            .Where(f => f.AuthorId == null && f.BookId == null && sourceFolders.Contains(f.AuthorFolder))
+            .ToListAsync(ct);
+        foreach (var f in orphanFiles) f.AuthorId = body.IntoAuthorId;
 
         await _db.SaveChangesAsync(ct);
         _db.Authors.Remove(source);
         await _db.SaveChangesAsync(ct);
 
-        return Ok(new MergeAuthorResult(booksReassigned, sourceFiles.Count));
+        return Ok(new MergeAuthorResult(booksReassigned, sourceFiles.Count + orphanFiles.Count));
     }
 
     public sealed record LinkAuthorRequest(int CanonicalAuthorId, bool IsPenName);

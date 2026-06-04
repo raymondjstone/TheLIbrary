@@ -19,6 +19,7 @@ public class JobsController : ControllerBase
     private readonly UnknownAuthorAdoptionService _adoptUnknownAuthors;
     private readonly StarredAuthorRefreshService _refreshStarred;
     private readonly ForeignArchiveService _archiveForeign;
+    private readonly LinkedAuthorMergeService _mergeLinkedAuthors;
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly OpenLibraryRateLimiter _rateLimiter;
@@ -35,6 +36,7 @@ public class JobsController : ControllerBase
         UnknownAuthorAdoptionService adoptUnknownAuthors,
         StarredAuthorRefreshService refreshStarred,
         ForeignArchiveService archiveForeign,
+        LinkedAuthorMergeService mergeLinkedAuthors,
         BackgroundTaskCoordinator coordinator,
         IHostApplicationLifetime lifetime,
         OpenLibraryRateLimiter rateLimiter,
@@ -50,6 +52,7 @@ public class JobsController : ControllerBase
         _adoptUnknownAuthors = adoptUnknownAuthors;
         _refreshStarred = refreshStarred;
         _archiveForeign = archiveForeign;
+        _mergeLinkedAuthors = mergeLinkedAuthors;
         _coordinator = coordinator;
         _lifetime = lifetime;
         _rateLimiter = rateLimiter;
@@ -80,6 +83,7 @@ public class JobsController : ControllerBase
             adoptUnknownAuthors = new { isRunning = _adoptUnknownAuthors.IsRunning, message = _adoptUnknownAuthors.CurrentMessage },
             refreshStarred = new { isRunning = _refreshStarred.IsRunning, message = _refreshStarred.CurrentMessage },
             archiveForeign = new { isRunning = _archiveForeign.IsRunning, message = _archiveForeign.CurrentMessage },
+            mergeLinkedAuthors = new { isRunning = _mergeLinkedAuthors.IsRunning, message = _mergeLinkedAuthors.CurrentMessage },
         });
     }
 
@@ -159,6 +163,14 @@ public class JobsController : ControllerBase
     public IActionResult StartArchiveForeign()
     {
         if (!_archiveForeign.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("merge-linked-authors/start")]
+    public IActionResult StartMergeLinkedAuthors()
+    {
+        if (!_mergeLinkedAuthors.TryStart(_lifetime.ApplicationStopping, out var err))
             return Conflict(new { error = err });
         return Accepted();
     }

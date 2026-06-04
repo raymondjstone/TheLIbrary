@@ -92,6 +92,7 @@ public sealed class ScheduleService
             ScheduleJobIds.FlattenUnknown => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunFlattenUnknown(true)),
             ScheduleJobIds.AdoptUnknownAuthors => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunAdoptUnknownAuthors(true)),
             ScheduleJobIds.ArchiveForeign => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunArchiveForeign(true)),
+            ScheduleJobIds.MergeLinkedAuthors => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunMergeLinkedAuthors(true)),
             _ => throw new ArgumentException($"Unknown job id '{jobId}'", nameof(jobId)),
         };
     }
@@ -194,6 +195,9 @@ public sealed class ScheduleService
                     break;
                 case ScheduleJobIds.ArchiveForeign:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunArchiveForeign(), entry.Cron);
+                    break;
+                case ScheduleJobIds.MergeLinkedAuthors:
+                    _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunMergeLinkedAuthors(), entry.Cron);
                     break;
             }
             _log.LogInformation("Schedule {Job}: enabled with cron '{Cron}'", jobId, entry.Cron);

@@ -13,7 +13,14 @@ namespace TheLibrary.Server.Controllers;
 public class SettingsController : ControllerBase
 {
     private readonly LibraryDbContext _db;
-    public SettingsController(LibraryDbContext db) { _db = db; }
+    private readonly IWebHostEnvironment _env;
+    private readonly CoverCacheState _coverCache;
+    public SettingsController(LibraryDbContext db, IWebHostEnvironment env, CoverCacheState coverCache)
+    {
+        _db = db;
+        _env = env;
+        _coverCache = coverCache;
+    }
 
     public sealed record IncomingDto(string? Path, bool Exists);
     public sealed record UpdateIncoming(string? Path);
@@ -561,6 +568,69 @@ public class SettingsController : ControllerBase
     // snaps back to a sane value.
     private static double ClampScale(double scale)
         => double.IsFinite(scale) ? Math.Clamp(scale, 1.0, 4.0) : 1.0;
+
+    public sealed record CoverCacheFolderDto(string Path, string Default, bool Writable, int BatchSize);
+
+    [HttpGet("cover-cache-folder")]
+    public async Task<CoverCacheFolderDto> GetCoverCacheFolder(CancellationToken ct)
+    {
+        var rows = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.CachedCoversFolder || s.Key == AppSettingKeys.CacheMetadataBatchSize)
+            .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
+        var stored = rows.TryGetValue(AppSettingKeys.CachedCoversFolder, out var p) ? p?.Trim() : null;
+        var libraryPath = await _db.LibraryLocations.AsNoTracking()
+            .Where(l => l.Enabled).Select(l => l.Path).FirstOrDefaultAsync(ct);
+        var dflt = CoverCacheResolver.DefaultFor(libraryPath, _env);
+        var effective = string.IsNullOrWhiteSpace(stored) ? dflt : stored;
+        var batch = rows.TryGetValue(AppSettingKeys.CacheMetadataBatchSize, out var bv)
+            && int.TryParse(bv, out var b) && b > 0 ? b : OpenLibraryMetadataCacheService.DefaultBatchSize;
+        return new CoverCacheFolderDto(effective, dflt, IsWritable(effective), batch);
+    }
+
+    // Dedicated request shape: only the fields the client actually sends. (The
+    // response DTO has non-nullable Path/Default which [ApiController] would treat
+    // as implicitly required, rejecting the PUT with a 400 before it ran.)
+    public sealed record CoverCacheUpdate(string? Path, int? BatchSize);
+
+    [HttpPut("cover-cache-folder")]
+    public async Task<ActionResult<CoverCacheFolderDto>> SetCoverCacheFolder(
+        [FromBody] CoverCacheUpdate body, CancellationToken ct)
+    {
+        var path = (body.Path ?? "").Trim().Replace('\\', '/').TrimEnd('/');
+        if (string.IsNullOrWhiteSpace(path))
+            return BadRequest(new { error = "Path cannot be empty." });
+        if (path.Contains(".."))
+            return BadRequest(new { error = "Path must not contain '..'." });
+        if (!Path.IsPathFullyQualified(path) && !path.StartsWith('/'))
+            return BadRequest(new { error = "Use a full absolute path." });
+        var requested = body.BatchSize ?? 0;
+        var batch = Math.Clamp(requested <= 0 ? OpenLibraryMetadataCacheService.DefaultBatchSize : requested, 1, 100_000);
+
+        await UpsertSettingAsync(AppSettingKeys.CachedCoversFolder, path, ct);
+        await UpsertSettingAsync(AppSettingKeys.CacheMetadataBatchSize,
+            batch.ToString(System.Globalization.CultureInfo.InvariantCulture), ct);
+        await _db.SaveChangesAsync(ct);
+
+        // Apply immediately so the serving controller and cache job use it now.
+        _coverCache.Directory = path;
+        var libraryPath = await _db.LibraryLocations.AsNoTracking()
+            .Where(l => l.Enabled).Select(l => l.Path).FirstOrDefaultAsync(ct);
+        return new CoverCacheFolderDto(path, CoverCacheResolver.DefaultFor(libraryPath, _env), IsWritable(path), batch);
+    }
+
+    // Best-effort write check: can we create the directory and a temp file there?
+    private static bool IsWritable(string dir)
+    {
+        try
+        {
+            Directory.CreateDirectory(dir);
+            var probe = Path.Combine(dir, $".write-probe-{Guid.NewGuid():N}");
+            System.IO.File.WriteAllText(probe, "");
+            System.IO.File.Delete(probe);
+            return true;
+        }
+        catch { return false; }
+    }
 
     private static int ReadInt(IReadOnlyDictionary<string, string> rows, string key, int fallback)
         => rows.TryGetValue(key, out var v) && int.TryParse(v, out var n) && n >= 0 ? n : fallback;
