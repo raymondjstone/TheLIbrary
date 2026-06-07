@@ -429,7 +429,14 @@ Click any previewable format chip (`epub`, `pdf`, `txt`, `rtf`, `mobi`, `azw`, `
 
 - **EPUB** — rendered with [epub.js](https://github.com/futurepress/epub.js).
   Has prev/next paging controls and uses byte-range requests so large books
-  don't pull into memory.
+  don't pull into memory. Because epub.js parses content as strict XHTML/XML
+  (which predefines only `amp`/`lt`/`gt`/`quot`/`apos`), the modal first rewrites
+  HTML named entities — `&nbsp;`, `&mdash;`, `&copy;`, … — to their literal
+  characters in each text document before rendering. Without this an otherwise
+  readable book that uses such entities fails the XML parse with
+  *"Entity 'nbsp' not defined"* and renders blank up to the first error. The
+  integrity check correctly leaves these files marked **OK** — they open fine in
+  lenient readers; only the strict in-browser parser needed the repair.
 - **PDF** — `<iframe>` pointing at the streaming endpoint; the browser's
   built-in viewer provides paging, zoom, and search.
 - **TXT** — fetched and rendered in a serif `<pre>` block with line-wrapping.

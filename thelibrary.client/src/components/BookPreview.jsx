@@ -1,5 +1,57 @@
 import { useEffect, useRef, useState } from 'react'
 import ePub from 'epubjs'
+import JSZip from 'jszip'
+
+// epub.js parses every content document as strict XHTML (XML). XML only predefines
+// five entities (amp, lt, gt, quot, apos), so an EPUB whose markup uses HTML named
+// entities — &nbsp;, &mdash;, &copy;, … — makes the browser's XML parser fail with
+// "Entity 'nbsp' not defined" and the page renders blank up to the first error,
+// even though lenient readers (Calibre, most e-readers) open it fine. We rewrite
+// those entities to their literal Unicode characters before epub.js sees the bytes.
+const XML_ENTITIES = new Set(['amp', 'lt', 'gt', 'quot', 'apos'])
+const ENTITY_RX = /&([a-zA-Z][a-zA-Z0-9]*);/g
+const TEXT_ENTRY_RX = /\.(x?html?|xml|opf|ncx|svg)$/i
+const entityCache = new Map()
+
+function decodeNamedEntity(name) {
+    if (!entityCache.has(name)) {
+        const el = document.createElement('textarea')
+        el.innerHTML = `&${name};`
+        const v = el.value
+        // Unknown entity → textarea leaves it untouched; treat as "no change".
+        // Never emit a raw &, < or > — that would corrupt the XML structure.
+        entityCache.set(name, v === `&${name};` || /[&<>]/.test(v) ? null : v)
+    }
+    return entityCache.get(name)
+}
+
+function fixEntities(text) {
+    return text.replace(ENTITY_RX, (m, name) => {
+        if (XML_ENTITIES.has(name)) return m
+        const decoded = decodeNamedEntity(name)
+        return decoded ?? m
+    })
+}
+
+// Loads the EPUB zip, rewrites HTML named entities in its text documents, and
+// returns a repacked ArrayBuffer. Best-effort: any failure falls back to the
+// original buffer so the preview is never worse off than before.
+async function sanitizeEpubEntities(buf) {
+    try {
+        const zip = await JSZip.loadAsync(buf)
+        const textEntries = Object.values(zip.files).filter(f => !f.dir && TEXT_ENTRY_RX.test(f.name))
+        let changed = false
+        for (const entry of textEntries) {
+            const original = await entry.async('string')
+            const fixed = fixEntities(original)
+            if (fixed !== original) { zip.file(entry.name, fixed); changed = true }
+        }
+        if (!changed) return buf
+        return await zip.generateAsync({ type: 'arraybuffer' })
+    } catch {
+        return buf
+    }
+}
 
 // Modal preview for ebook files. Supports three formats:
 //   - EPUB: rendered with epub.js into an inner div (with prev/next nav)
@@ -136,7 +188,11 @@ function EpubPane({ url }) {
             })
             .then(async buf => {
                 if (cancelled) return
-                const book = ePub(buf)
+                // Repair HTML named entities (&nbsp; etc.) that would otherwise
+                // fail epub.js's strict XHTML/XML parse and blank the page.
+                const safeBuf = await sanitizeEpubEntities(buf)
+                if (cancelled) return
+                const book = ePub(safeBuf)
                 bookRef.current = book
 
                 // Wait one frame so the container has its final flex-laid-out
