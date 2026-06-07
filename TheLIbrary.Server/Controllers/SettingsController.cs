@@ -619,18 +619,22 @@ public class SettingsController : ControllerBase
         return new CoverCacheFolderDto(path, CoverCacheResolver.DefaultFor(libraryPath, _env), IsWritable(path), batch);
     }
 
-    public sealed record IntegritySettingsDto(int MaxBooksPerRun);
-    public sealed record IntegritySettingsUpdate(int? MaxBooksPerRun);
+    public sealed record IntegritySettingsDto(int MaxBooksPerRun, string[] ReplacementFormats);
+    public sealed record IntegritySettingsUpdate(int? MaxBooksPerRun, string[]? ReplacementFormats);
 
     [HttpGet("integrity")]
     public async Task<IntegritySettingsDto> GetIntegritySettings(CancellationToken ct)
     {
-        var raw = await _db.AppSettings.AsNoTracking()
-            .Where(s => s.Key == AppSettingKeys.IntegrityMaxBooksPerRun)
-            .Select(s => s.Value)
-            .FirstOrDefaultAsync(ct);
-        var max = int.TryParse(raw, out var n) && n > 0 ? n : BookIntegrityService.DefaultMaxBooksPerRun;
-        return new IntegritySettingsDto(max);
+        var rows = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.IntegrityMaxBooksPerRun
+                     || s.Key == AppSettingKeys.IntegrityReplacementFormats)
+            .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
+        var max = rows.TryGetValue(AppSettingKeys.IntegrityMaxBooksPerRun, out var mv)
+            && int.TryParse(mv, out var n) && n > 0 ? n : BookIntegrityService.DefaultMaxBooksPerRun;
+        var formats = ParseFormats(
+            rows.TryGetValue(AppSettingKeys.IntegrityReplacementFormats, out var fv) && !string.IsNullOrWhiteSpace(fv)
+                ? fv : DamagedController.DefaultReplacementFormats);
+        return new IntegritySettingsDto(max, formats);
     }
 
     [HttpPut("integrity")]
@@ -640,10 +644,40 @@ public class SettingsController : ControllerBase
         var requested = body.MaxBooksPerRun ?? 0;
         var max = Math.Clamp(
             requested <= 0 ? BookIntegrityService.DefaultMaxBooksPerRun : requested, 1, 100_000);
+
+        var formats = ParseFormats(string.Join(';', body.ReplacementFormats ?? Array.Empty<string>()));
+        if (formats.Length == 0) formats = ParseFormats(DamagedController.DefaultReplacementFormats);
+
         await UpsertSettingAsync(AppSettingKeys.IntegrityMaxBooksPerRun,
             max.ToString(System.Globalization.CultureInfo.InvariantCulture), ct);
+        await UpsertSettingAsync(AppSettingKeys.IntegrityReplacementFormats, string.Join(';', formats), ct);
         await _db.SaveChangesAsync(ct);
-        return new IntegritySettingsDto(max);
+        return new IntegritySettingsDto(max, formats);
+    }
+
+    public sealed record ContentScanSettingsDto(int MaxPerRun);
+    public sealed record ContentScanSettingsUpdate(int? MaxPerRun);
+
+    [HttpGet("content-scan")]
+    public async Task<ContentScanSettingsDto> GetContentScanSettings(CancellationToken ct)
+    {
+        var raw = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.ContentScanMaxPerRun)
+            .Select(s => s.Value).FirstOrDefaultAsync(ct);
+        var max = int.TryParse(raw, out var n) && n > 0 ? n : ContentScanService.DefaultMaxPerRun;
+        return new ContentScanSettingsDto(max);
+    }
+
+    [HttpPut("content-scan")]
+    public async Task<ActionResult<ContentScanSettingsDto>> SetContentScanSettings(
+        [FromBody] ContentScanSettingsUpdate body, CancellationToken ct)
+    {
+        var requested = body.MaxPerRun ?? 0;
+        var max = Math.Clamp(requested <= 0 ? ContentScanService.DefaultMaxPerRun : requested, 1, 100_000);
+        await UpsertSettingAsync(AppSettingKeys.ContentScanMaxPerRun,
+            max.ToString(System.Globalization.CultureInfo.InvariantCulture), ct);
+        await _db.SaveChangesAsync(ct);
+        return new ContentScanSettingsDto(max);
     }
 
     // Best-effort write check: can we create the directory and a temp file there?

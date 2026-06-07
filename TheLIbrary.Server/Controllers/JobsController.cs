@@ -20,6 +20,9 @@ public class JobsController : ControllerBase
     private readonly StarredAuthorRefreshService _refreshStarred;
     private readonly ForeignArchiveService _archiveForeign;
     private readonly LinkedAuthorMergeService _mergeLinkedAuthors;
+    private readonly BookIntegrityService _checkIntegrity;
+    private readonly StaleFileCleanupService _staleFiles;
+    private readonly ContentScanService _contentScan;
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly OpenLibraryRateLimiter _rateLimiter;
@@ -37,6 +40,9 @@ public class JobsController : ControllerBase
         StarredAuthorRefreshService refreshStarred,
         ForeignArchiveService archiveForeign,
         LinkedAuthorMergeService mergeLinkedAuthors,
+        BookIntegrityService checkIntegrity,
+        StaleFileCleanupService staleFiles,
+        ContentScanService contentScan,
         BackgroundTaskCoordinator coordinator,
         IHostApplicationLifetime lifetime,
         OpenLibraryRateLimiter rateLimiter,
@@ -53,6 +59,9 @@ public class JobsController : ControllerBase
         _refreshStarred = refreshStarred;
         _archiveForeign = archiveForeign;
         _mergeLinkedAuthors = mergeLinkedAuthors;
+        _checkIntegrity = checkIntegrity;
+        _staleFiles = staleFiles;
+        _contentScan = contentScan;
         _coordinator = coordinator;
         _lifetime = lifetime;
         _rateLimiter = rateLimiter;
@@ -84,6 +93,9 @@ public class JobsController : ControllerBase
             refreshStarred = new { isRunning = _refreshStarred.IsRunning, message = _refreshStarred.CurrentMessage },
             archiveForeign = new { isRunning = _archiveForeign.IsRunning, message = _archiveForeign.CurrentMessage },
             mergeLinkedAuthors = new { isRunning = _mergeLinkedAuthors.IsRunning, message = _mergeLinkedAuthors.CurrentMessage },
+            checkIntegrity = new { isRunning = _checkIntegrity.IsRunning, message = _checkIntegrity.CurrentMessage },
+            staleFiles = new { isRunning = _staleFiles.IsRunning, message = _staleFiles.CurrentMessage },
+            contentScan = new { isRunning = _contentScan.IsRunning, message = _contentScan.CurrentMessage },
         });
     }
 
@@ -171,6 +183,30 @@ public class JobsController : ControllerBase
     public IActionResult StartMergeLinkedAuthors()
     {
         if (!_mergeLinkedAuthors.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("check-integrity/start")]
+    public IActionResult StartCheckIntegrity()
+    {
+        if (!_checkIntegrity.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("prune-stale-files/start")]
+    public IActionResult StartPruneStaleFiles()
+    {
+        if (!_staleFiles.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("content-scan/start")]
+    public IActionResult StartContentScan()
+    {
+        if (!_contentScan.TryStart(_lifetime.ApplicationStopping, out var err))
             return Conflict(new { error = err });
         return Accepted();
     }

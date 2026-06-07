@@ -213,6 +213,9 @@ export default function Sync() {
                                                 { key: 'refreshStarred',     label: 'Refresh starred authors', endpoint: '/api/jobs/refresh-starred/start' },
                                                 { key: 'archiveForeign',     label: 'Archive foreign titles', endpoint: '/api/jobs/archive-foreign/start' },
                                                 { key: 'mergeLinkedAuthors', label: 'Merge linked authors', endpoint: '/api/jobs/merge-linked-authors/start' },
+                                                { key: 'checkIntegrity',     label: 'Check book integrity',  endpoint: '/api/jobs/check-integrity/start' },
+                                                { key: 'staleFiles',         label: 'Prune stale folder records', endpoint: '/api/jobs/prune-stale-files/start' },
+                                                { key: 'contentScan',        label: 'Identify books from content', endpoint: '/api/jobs/content-scan/start' },
                                             ]
                                             const anyJobRunning = !!jobs.activeJob
                                             return (

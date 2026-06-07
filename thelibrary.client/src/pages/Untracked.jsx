@@ -3,7 +3,7 @@ import AddAuthorDialog from './AddAuthorDialog.jsx'
 import OpenLibraryWorkSearch from '../components/OpenLibraryWorkSearch.jsx'
 import BookPreview from '../components/BookPreview.jsx'
 
-const PREVIEWABLE_EXTS = new Set(['epub', 'pdf', 'txt', 'mobi', 'azw', 'azw3', 'fb2', 'lit', 'docx', 'odt', 'cbz', 'zip'])
+const PREVIEWABLE_EXTS = new Set(['epub', 'pdf', 'txt', 'rtf', 'mobi', 'azw', 'azw3', 'fb2', 'lit', 'docx', 'odt', 'cbz', 'cbr', 'zip'])
 const fileExtension = (name) => {
     const idx = name.lastIndexOf('.')
     return idx >= 0 ? name.slice(idx + 1).toLowerCase() : ''

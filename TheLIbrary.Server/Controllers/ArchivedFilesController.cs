@@ -61,6 +61,21 @@ public class ArchivedFilesController : ControllerBase
         return f => f.FullPath.Contains(segment);
     }
 
+    // Inverse of ArchiveMatch — files that are NOT under the archive folder.
+    // Public so other pages (e.g. Damaged) can exclude already-archived files
+    // using the exact same leaf/absolute-path rules.
+    public static System.Linq.Expressions.Expression<Func<LocalBookFile, bool>> NotUnderArchive(string archiveLeaf)
+    {
+        var leaf = archiveLeaf.Replace('\\', '/').TrimEnd('/');
+        if (leaf.Contains('/'))
+        {
+            var prefix = leaf + "/";
+            return f => !f.FullPath.StartsWith(prefix);
+        }
+        var segment = "/" + leaf + "/";
+        return f => !f.FullPath.Contains(segment);
+    }
+
     /// <summary>
     /// Returns archived LocalBookFiles grouped by book (mirroring the Duplicates
     /// page), each with the recommended copy to restore. GET /api/archived-files

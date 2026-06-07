@@ -14,6 +14,10 @@ public static class FilePreviewResolver
             ["epub"] = "application/epub+zip",
             ["pdf"]  = "application/pdf",
             ["txt"]  = "text/plain; charset=utf-8",
+            // RTF is served as plain text and rendered in the txt pane — the
+            // browser shows the markup as-is, which is enough to eyeball the
+            // content without a full RTF→text conversion step.
+            ["rtf"]  = "text/plain; charset=utf-8",
             ["cbz"]  = "application/x-cbz",
             ["zip"]  = "application/zip",
         };

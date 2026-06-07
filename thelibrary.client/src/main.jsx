@@ -23,6 +23,7 @@ import ForeignTitles from './pages/ForeignTitles.jsx'
 import UnknownFiles from './pages/UnknownFiles.jsx'
 import ArchivedFiles from './pages/ArchivedFiles.jsx'
 import Damaged from './pages/Damaged.jsx'
+import IdentifiedBooks from './pages/IdentifiedBooks.jsx'
 
 createRoot(document.getElementById('root')).render(
     <StrictMode>
@@ -50,6 +51,7 @@ createRoot(document.getElementById('root')).render(
                     <Route path="unknown-files" element={<UnknownFiles />} />
                     <Route path="archived" element={<ArchivedFiles />} />
                     <Route path="damaged" element={<Damaged />} />
+                    <Route path="identified" element={<IdentifiedBooks />} />
                 </Route>
             </Routes>
         </BrowserRouter>

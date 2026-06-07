@@ -251,6 +251,71 @@ namespace TheLibrary.Server.Data.Migrations
                     b.ToTable("Books");
                 });
 
+            modelBuilder.Entity("TheLibrary.Server.Data.Models.BookContentScan", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AlsoByTitles")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("Author")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<int?>("AuthorId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("FullPath")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)");
+
+                    b.Property<string>("Isbn")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<DateTime>("ModifiedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<bool>("Reviewed")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTime>("ScannedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Series")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("SeriesCatalogJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("SeriesPosition")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("Title")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("BookContentScans");
+                });
+
             modelBuilder.Entity("TheLibrary.Server.Data.Models.IgnoredFolder", b =>
                 {
                     b.Property<int>("Id")
@@ -341,6 +406,9 @@ namespace TheLibrary.Server.Data.Migrations
                         .HasColumnType("nvarchar(2048)");
 
                     b.Property<DateTime?>("IntegrityCheckedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("IntegrityCheckedModified")
                         .HasColumnType("datetime2");
 
                     b.Property<long?>("IntegrityCheckedSize")
@@ -659,6 +727,33 @@ namespace TheLibrary.Server.Data.Migrations
                     b.HasIndex("NormalizedTitle");
 
                     b.ToTable("UnknownFiles");
+                });
+
+            modelBuilder.Entity("TheLibrary.Server.Data.Models.UnknownFileCheck", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CheckedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("FullPath")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)");
+
+                    b.Property<DateTime>("ModifiedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("UnknownFileChecks");
                 });
 
             modelBuilder.Entity("TheLibrary.Server.Data.Models.Author", b =>

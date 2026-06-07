@@ -122,6 +122,74 @@ public class BooksControllerIntegrationTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
+    [Fact]
+    public async Task Duplicates_Keeper_Is_Never_A_Damaged_Copy()
+    {
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Author" });
+            db.Books.Add(new Book { Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL1W", Title = "Book", NormalizedTitle = "book" });
+            // Preferred format (epub) is damaged; the healthy copy is a pdf.
+            db.LocalBookFiles.AddRange(
+                new LocalBookFile { Id = 1, BookId = 10, AuthorId = 1, FullPath = "/lib/Author/book.epub", IntegrityOk = false },
+                new LocalBookFile { Id = 2, BookId = 10, AuthorId = 1, FullPath = "/lib/Author/book.pdf", IntegrityOk = true });
+        });
+
+        using var client = factory.CreateClient();
+        var groups = await client.GetFromJsonAsync<List<BooksController.DuplicateGroup>>("/api/books/duplicates");
+
+        var g = Assert.Single(groups!);
+        Assert.Equal(2, g.RecommendedFileId);          // the healthy pdf, not the damaged epub
+        Assert.Equal("pdf", g.RecommendedFormat);
+        // Per-copy integrity status is surfaced.
+        Assert.Equal(false, g.Files.Single(f => f.Id == 1).IntegrityOk);
+        Assert.Equal(true, g.Files.Single(f => f.Id == 2).IntegrityOk);
+    }
+
+    [Fact]
+    public async Task Duplicates_Ignores_Empty_Folder_Rows_But_Keeps_Folders_With_A_Book()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "thelib-dup-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var realFile = Path.Combine(root, "book.epub");
+        await File.WriteAllBytesAsync(realFile, new byte[] { 1 });
+        var emptyFolder = Path.Combine(root, "Empty Title Folder");
+        Directory.CreateDirectory(emptyFolder); // a stale title-folder pointer, no ebook inside
+        var folderWithBook = Path.Combine(root, "Title With Book");
+        Directory.CreateDirectory(folderWithBook);
+        await File.WriteAllBytesAsync(Path.Combine(folderWithBook, "inside.pdf"), new byte[] { 1 });
+
+        try
+        {
+            using var factory = new LibraryApiFactory();
+            await SeedAsync(factory, db =>
+            {
+                db.Authors.Add(new Author { Id = 1, Name = "A" });
+                // Book 10: real file + an empty folder → only ONE real copy → not a duplicate.
+                db.Books.Add(new Book { Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL1W", Title = "Has Empty", NormalizedTitle = "a" });
+                db.LocalBookFiles.AddRange(
+                    new LocalBookFile { Id = 1, BookId = 10, AuthorId = 1, FullPath = realFile },
+                    new LocalBookFile { Id = 2, BookId = 10, AuthorId = 1, FullPath = emptyFolder });
+                // Book 20: real file + a folder that holds an ebook → two real copies → a duplicate.
+                db.Books.Add(new Book { Id = 20, AuthorId = 1, OpenLibraryWorkKey = "OL2W", Title = "Two Copies", NormalizedTitle = "b" });
+                db.LocalBookFiles.AddRange(
+                    new LocalBookFile { Id = 3, BookId = 20, AuthorId = 1, FullPath = realFile },
+                    new LocalBookFile { Id = 4, BookId = 20, AuthorId = 1, FullPath = folderWithBook });
+            });
+
+            using var client = factory.CreateClient();
+            var groups = await client.GetFromJsonAsync<List<BooksController.DuplicateGroup>>("/api/books/duplicates");
+
+            Assert.DoesNotContain(groups!, g => g.BookId == 10); // empty folder is not a copy
+            Assert.Contains(groups!, g => g.BookId == 20);       // folder-with-book counts
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
     private static async Task SeedAsync(LibraryApiFactory factory, Action<LibraryDbContext> seed)
     {
         using var scope = factory.Services.CreateScope();

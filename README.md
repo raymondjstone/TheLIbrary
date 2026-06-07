@@ -40,7 +40,7 @@ local files at all as a pure author/works tracker and wishlist.
 | Page | Route | Purpose |
 |------|-------|---------|
 | Authors | `/authors` | Full watchlist with filter, sort, pagination, A–Z jump index, per-row selection, bulk status (Active / Pending / Excluded), and author merge |
-| Author detail | `/authors/:id` | Books (grouped by series), bio, read status, NZB links, reMarkable send, Calibre scan timestamp, bulk "Mark all missing as wanted" |
+| Author detail | `/authors/:id` | Books (grouped by series), bio, read status, NZB links, reMarkable send, Calibre scan timestamp, bulk "Mark all missing as wanted". A book's local files show its live copies inline; any copies under the archive folder are hidden behind a per-book **"Show N archived"** toggle |
 | Recent Releases | `/recent-releases` | New works from starred authors (last 5 years) |
 | All Releases | `/all-releases` | New works from all tracked authors |
 | Missing Works | `/missing` | Unowned books from starred authors — bulk-own, wanted flag, genre filter, year range filter, CSV export, per-book file-candidate matching panel (fuzzy-matched from author unmatched files + unknown folder) |
@@ -48,14 +48,15 @@ local files at all as a pure author/works tracker and wishlist.
 | Starred Authors | `/starred` | Authors with priority ≥ 1 |
 | Series | `/series` | Hierarchical series tree with owned/total progress bars; create new series; inline edit of name, primary author, additional authors, parent series, and reading order position; deep-linkable via `?q=SeriesName` |
 | Stats | `/stats` | KPI cards, books-read-by-year chart, top genres, per-author coverage, file-format breakdown chart, files-acquired-by-month chart |
-| Duplicates | `/duplicates` | Books matched to more than one local file folder |
-| Damaged | `/damaged` | Ebook files the integrity job couldn't open/convert, or that have fewer than 20 pages — with per-row **Recheck** and an on-demand **Check now**. See [Book integrity check](#book-integrity-check) |
+| Duplicates | `/duplicates` | Books matched to more than one **real** local copy (a file, or a folder that actually holds an ebook — empty/stale title-folder rows are not counted). Each copy shows its integrity status (✓ ok / ✗ damaged / ? unchecked) and the **keeper is never a damaged copy** when a healthy one exists |
+| Damaged | `/damaged` | Ebook files the integrity job couldn't open/convert, or that have fewer than 20 pages — **grouped by book**, with NZB replacement-search links, per-book "add to Wanted" + "archive all bad copies", per-file preview/mark-OK/recheck/remove/restore-from-archive, an on-demand **Check now**, and a **★ Starred authors only** filter (starred authors are flagged with a ★ on each group). See [Book integrity check](#book-integrity-check) |
+| Identified | `/identified` | Author/title/series guessed from the front matter of unmatched & untracked files (the *Identify books from content* job), to review, preview, **Apply** (match to an OpenLibrary work), or dismiss. See [Identifying books from content](#identifying-books-from-content) |
 | Manual Books | `/manual-books` | Every manually-added book (works not on OpenLibrary), with inline edit and delete |
 | Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket (with one-click "Try matching all" against the current watchlist). The browse pane drills into a folder, previews EPUB/PDF/TXT files in-place, matches a single file to an OpenLibrary work, and deletes files/folders (disk + DB) — and stays open after matching when other files remain |
 | Unmatched physical | `/physical-unmatched` | Editable list of physical-books-import rows that couldn't be matched; "Re-run matching" re-tries the whole list against the current library |
 | Sync | `/sync` | Live sync dashboard with phase tracking and progress |
 | Schedules | `/schedules` | Cron expressions and enabled/disabled flags for background jobs; per-job last-N-run history panel |
-| Settings | `/settings` | Library locations, incoming folder, custom quarantine (`__unknown`) folder override, Pushover credentials (+ "Send test"), ignored folders, blacklist, NZB sites, reMarkable pairing, book integrity check (max files per run), Goodreads + physical-books import |
+| Settings | `/settings` | Library locations, incoming folder, custom quarantine (`__unknown`) folder override, Pushover credentials (+ "Send test"), ignored folders, blacklist, NZB sites, reMarkable pairing, book integrity check (max files per run + replacement formats), Goodreads + physical-books import |
 
 ## How it works
 
@@ -322,11 +323,18 @@ layers that compound rather than override each other:
    separate match candidate alongside the raw stem.
 3. **Fuzzy scoring on the unmatched list.** The server returns the top three
    `Book` candidates per unmatched file via
-   `GET /api/authors/{id}/unmatched/suggestions`, scored with Jaro-Winkler
-   over the normalised title. The Author Detail page renders them inline as
-   coloured chips (≥0.9 green, 0.75–0.9 neutral, &lt;0.75 dim), with a one-click
-   "Confirm N high-confidence matches" button that batches every ≥0.9
-   suggestion through `POST /api/authors/{id}/unmatched/bulk-match`.
+   `GET /api/authors/{id}/unmatched/suggestions`, scored with Jaro-Winkler. A
+   file is scored against the **best of its author-free candidate titles** (the
+   stripped form and any series-parsed title) — **never** against a stem that
+   still contains the author name. That matters because a book whose title
+   *starts with the author's own name* (e.g. OpenLibrary's mis-titled
+   `Alan Dean Foster - Alien - Ala`, or a real `Lonely Planet Scotland`) would
+   otherwise win on Jaro-Winkler's shared-prefix bonus for *every* `<Author> - X`
+   file. Only candidates scoring **≥ 0.75** are offered, so an unmatched file with
+   no real owning book shows *no* suggestion rather than a spurious 0.55 one. The
+   Author Detail page renders the results as coloured chips (≥0.9 green, 0.75–0.9
+   neutral), with a one-click "Confirm N high-confidence matches" button that
+   batches every ≥0.9 suggestion through `POST /api/authors/{id}/unmatched/bulk-match`.
 
 If none of the local suggestions are high-confidence, the same unmatched-files
 toolbar can fall back to **filename-based OpenLibrary matching**. That path
@@ -340,6 +348,23 @@ physically relocates the on-disk file into the target author's folder.
 The same prefix/series/fuzzy pipeline is also used by the sync's automatic
 matcher so what you see in the UI mirrors how a sync pass would have evaluated
 each file.
+
+**What the unmatched list shows.** Only actual ebook **files** appear — a row is
+listed only if it's a file with an ebook extension or a folder that contains one,
+so empty/stale folder rows (a bare title folder, or the author folder itself with
+a blank name) and archived copies are filtered out. The match dropdown and the
+suggestions also **never offer a book you've flagged foreign or suppressed**.
+
+**Per-file actions** (besides Match and Return to incoming):
+
+- **Wrong author → unknown** — `POST /unmatched/{fileId}/to-unknown` moves the
+  file into the `__unknown` quarantine and drops its row, so it's re-evaluated
+  with no author on the next sync. Use when it's filed under the wrong author.
+- **Archive** — `POST /unmatched/{fileId}/archive` moves it under the archive
+  folder (restorable from Archived Files) and drops it from the list. Use for a
+  foreign / unwanted file you've already decided not to link.
+- **Delete** — `DELETE /unmatched/{fileId}` removes the file from disk and its
+  row. Permanent.
 
 ## Title matching
 
@@ -358,6 +383,13 @@ normalization, so `The_Hobbit_by_Tolkien_JRR` feeds the same pipeline.
 Leading articles (`the`, `a`, `an`) are stripped, diacritics are decomposed,
 and Calibre's trailing `(id)` numeric suffix is removed before any of the
 above steps.
+
+**Suppressed / foreign books are never match targets.** A book you've hidden
+(suppressed) or flagged foreign is excluded from the auto-matcher's candidate
+set *and* from the unmatched-file suggestions — so a junk book you've hidden
+(e.g. a filename-derived `Alan Dean Foster - Alien - Ala` artifact) can't keep
+having files auto-linked to it on every sync even though it no longer shows in
+the book list.
 
 ## Series filename parsing
 
@@ -393,7 +425,7 @@ spanning every pattern above plus negative examples that must return all-null.
 
 ## In-browser preview
 
-Click any previewable format chip (`epub`, `pdf`, `txt`, `mobi`, `azw`, `azw3`, `fb2`, `lit`, `docx`, `odt`, `cbz`, `zip`) on an author detail page or the Untracked page to open an in-browser preview modal. The modal handles each format dynamically:
+Click any previewable format chip (`epub`, `pdf`, `txt`, `rtf`, `mobi`, `azw`, `azw3`, `fb2`, `lit`, `docx`, `odt`, `cbz`, `cbr`, `zip`) on an author detail page or the Untracked page to open an in-browser preview modal. The modal handles each format dynamically:
 
 - **EPUB** — rendered with [epub.js](https://github.com/futurepress/epub.js).
   Has prev/next paging controls and uses byte-range requests so large books
@@ -402,8 +434,9 @@ Click any previewable format chip (`epub`, `pdf`, `txt`, `mobi`, `azw`, `azw3`, 
   built-in viewer provides paging, zoom, and search.
 - **TXT** — fetched and rendered in a serif `<pre>` block with line-wrapping.
   Project Gutenberg-style plain-text books work without any conversion.
+- **RTF** — converted to plain text on the server with [RtfPipe](https://github.com/erdomke/RtfPipe) and shown in the same text pane. No Calibre needed; you see the readable prose rather than raw `{\rtf1 …}` markup.
 - **MOBI / AZW / AZW3 / FB2 / LIT / DOCX / ODT** — converted on-the-fly to EPUB using Calibre (`ebook-convert`) and rendered smoothly in the EPUB pane.
-- **CBZ / Comic ZIP** — extracts and renders images sequentially as pages directly within the modal.
+- **CBZ / CBR / Comic ZIP** — extracts and renders images sequentially as pages directly within the modal. CBZ (zip) and CBR (rar) are both read natively via SharpCompress — no Calibre.
 
 **Security**: the streaming endpoint validates that the resolved disk path
 lives inside one of the enabled `LibraryLocation` roots before reading any
@@ -416,6 +449,7 @@ bytes. A tampered `LocalBookFile.FullPath` (e.g. one rewritten to point at
 | GET    | `/api/files/{id}/preview?format=epub` | Stream an EPUB (or convertible formats converted to EPUB) for in-browser rendering |
 | GET    | `/api/files/{id}/preview?format=pdf`  | Stream a PDF for the native viewer |
 | GET    | `/api/files/{id}/preview?format=txt`  | Stream a plain-text file |
+| GET    | `/api/files/{id}/preview?format=rtf`  | Convert the RTF to plain text (RtfPipe) and return it as `text/plain` |
 | GET    | `/api/untracked/preview?format=…`     | Same modal, but resolves the path through `ResolveUntrackedSourcePathAsync` so files inside the quarantine bucket (which have no `LocalBookFile` row) can also be previewed — the custom unknown path is added to the allowed-roots list so files outside the library locations still pass the safety check |
 
 ## NZB search sites
@@ -485,6 +519,18 @@ Every endpoint that handles "books for this author" honours the merge:
   into the canonical's view automatically — the book is inserted under the
   child's `AuthorId` and the merge does the rest at display time.
 
+**Author-name works are ignored.** OpenLibrary returns, for nearly every author,
+a "work" whose title is simply the author's own name (a profile / disambiguation
+artifact). It is never a real book, so the refresh **skips it on creation** and,
+for authors refreshed before this rule existed, **deletes the existing phantom**
+— **unmatching any files that were wrongly attached to it** (they return to the
+author's unmatched pile rather than being orphaned). Only a book the user
+explicitly marked **owned by hand** is left alone. Such books are also never
+offered as a match candidate on the author page. To clear them across the whole
+library **at once** rather than waiting for each author's next refresh, use
+**Remove author-name phantom books** on the **Settings** page (same rules).
+`POST /api/authors/cleanup-name-books`.
+
 ## Works refresh cadence
 
 After each refresh, an author's next scheduled fetch is placed in one of four
@@ -517,7 +563,19 @@ refresh limits**, stored in the database — govern the rest:
 The Settings page also exposes **Duplicate format preference** — a
 semicolon-separated priority list such as `epub;pdf;azw3;mobi`. The Duplicate
 Files page uses that order to decide which format is the recommended copy to
-keep when the same work has multiple local files.
+keep when the same work has multiple local files. A copy flagged **damaged** by
+the [integrity check](#book-integrity-check) never wins the keeper slot over a
+healthy one, regardless of format — so the recommended copy is always one that
+opens. Each copy's status (✓ ok / ✗ damaged / ? unchecked) is shown inline.
+
+Only **real copies** are counted: a row whose path is a folder counts as a copy
+only when that folder actually holds an ebook file, so empty/stale title-folder
+pointers (left behind after a file was moved or archived) don't show up as bogus
+duplicates. The **`prune-stale-files`** scheduled job (default `0 20 * * *`, also
+runnable on demand from the Sync page's *Background jobs* list) sweeps those
+leftover rows out of the database entirely — it only ever touches folder-shaped
+rows, and only when the library root is actually mounted, so a file row or a
+transient mount outage can never cause a deletion.
 
 Finally, a scheduled **OpenLibrary metadata cache** job can backfill missing
 subjects and locally cache large cover images for existing works. Cached covers
@@ -762,24 +820,265 @@ ebook format — `epub`, `pdf`, `mobi`, `azw`/`azw3`, `fb2`, `cbz`/`cbr`, `lit`,
   the spine's combined text must estimate to ≥ 20 pages. EPUB has no fixed page
   count, so pages are estimated from readable text length at **~1,024 characters
   per page** (the figure Calibre/Adobe use); markup is stripped before counting.
-- **Everything else** (MOBI / AZW3 / FB2 / CBZ / …) — converted to EPUB with
-  Calibre's `ebook-convert` first, then the EPUB check is applied. A conversion
-  failure marks the file damaged. If Calibre isn't configured the file is
-  *skipped* (left for a later run) rather than wrongly flagged.
+  Spine documents are resolved tolerantly — URL-encoded hrefs, OPF-relative
+  paths, `#fragments`, and case differences are all handled, with a fallback that
+  tallies every content document in the archive — so a perfectly readable book is
+  never mis-scored as empty just because of an href quirk.
+- **RTF / FB2 / DOCX / ODT** — text-extracted **natively** (no Calibre) and
+  page-counted from the text the same way as EPUB: RTF via
+  [RtfPipe](https://github.com/erdomke/RtfPipe); FB2 (FictionBook XML), DOCX and
+  ODT (zip-of-XML) with the BCL, reusing the same parsing as their metadata
+  readers. A file that yields no readable text is flagged damaged. Native
+  extraction is milliseconds per file (vs. spawning `ebook-convert`) and works
+  even when Calibre isn't configured.
+- **CBZ / CBR** (comics) — read **natively** via SharpCompress (zip *and* rar);
+  the "page count" is the number of image entries. An archive that can't be
+  opened is flagged damaged.
+- **TXT** (plain text) — already readable, so it is checked **natively** with no
+  conversion: at most one page-floor's worth of characters (20 × ~1,024) is read
+  in a single block and page-counted, then reading stops. A multi-megabyte text
+  file is therefore inspected as cheaply as a tiny one — no `ebook-convert`, no
+  full-file read — which is why `.txt` is no longer slow to scan.
+- **Everything else** (MOBI / AZW / AZW3 / LIT / DJVU / DOC) — converted to EPUB
+  with Calibre's `ebook-convert` first (these are proprietary binary formats with
+  no good native reader), then the EPUB check is applied. A conversion failure
+  marks the file damaged. If Calibre isn't configured the file is *skipped* (left
+  for a later run) rather than wrongly flagged.
 
 Any file that can't be opened/converted, or falls short of 20 pages, is flagged
-and listed on the **Damaged** page (`/damaged`) with the reason, page count,
-size, and a per-row **Recheck** action (which re-queues it for the next run). The
-page also has a **Check now** button to start the job on demand.
+and listed on the **Damaged** page (`/damaged`), **grouped by book** like the
+Duplicates page so every bad copy of a title sits together. (Archived files are
+excluded from the list automatically.)
 
-**Incremental and cheap to re-run.** A file is only (re)checked when its folder
-fingerprint (`LocalBookFile.SizeBytes`) differs from the value stored at its last
-check, or it has never been checked — a DB-only comparison, so the candidate scan
-does no disk I/O on the library mount. Each run processes at most **Max books
-tested per run** files (Settings page, default 200), working through the backlog
-over successive runs; **starred-author books (priority ≥ 1) are checked first**,
-matching how every other job prioritises flagged authors. Enable or schedule it
-on the **Schedules** page (`check-integrity`, default cron `0 12 * * *`).
+Each **book group** has a header showing the title, author, bad-copy count, and:
+
+- **NZB search links** — one per active configured [NZB site](#nzb-search-sites),
+  built from the book's title + author with the same `{Title}`/`{Author}`/`{SearchTerm}`
+  substitution used elsewhere, for hunting down a clean replacement copy.
+- **Want** — flags the book as [Wanted](#wanted-flag) so it shows on the Wanted
+  page for re-acquisition.
+- **Archive all bad copies** — moves *every* damaged copy of that book into the
+  dedupe archive folder (`DedupeArchiveFolder`, default `__archive`) in one
+  action — recoverable from the Archived Files page, exactly like the Duplicates
+  page's archive.
+
+Each **file row** within a group offers:
+
+- **Preview** — opens the same in-browser preview modal as the rest of the app
+  (EPUB / PDF / TXT / RTF / CBZ, plus Calibre-convertible formats) so you can see
+  the file for yourself before deciding.
+- **Mark OK** — clears the flag for a false positive. The file leaves the list
+  and won't be re-flagged until it actually changes on disk (see below).
+- **Recheck** — re-queues just that file for a fresh check on the next run.
+- **Remove** — permanently deletes the file from disk and drops the record (the
+  hard-delete counterpart to the group's recoverable archive).
+- **Replacements** — expands a panel listing every other file linked to the same
+  book, **including copies in the archive folder**. Each copy shows an `archived`
+  tag (when applicable) *and* its own integrity status (`ok` / `damaged` /
+  `unchecked`), so you can see whether an archived candidate has been checked and
+  is healthy before restoring it. Each offers **Restore & replace**, which moves
+  that copy into the damaged file's place, re-queues it for a check, and deletes
+  the damaged file in one step.
+
+The page header has:
+
+- **Check now** — runs the job on demand.
+- **Recheck all** — clears every flag and re-evaluates the whole list on the next
+  run; handy after an integrity-checker fix, since files flagged by the old logic
+  won't otherwise be re-checked until they change on disk.
+- **Archive damaged with a good copy** — bulk action that archives every damaged
+  file whose book already has a healthy live copy in one of the configured
+  **replacement formats** (Settings → Book integrity check, default
+  `epub;mobi;lit`, key `IntegrityReplacementFormats`). Damaged files with no such
+  replacement are left untouched.
+
+**Incremental and cheap to re-run.** A file is only (re)checked when its stored
+fingerprint — `LocalBookFile.SizeBytes` **and** `ModifiedAt` — differs from the
+values recorded at its last check, or it has never been checked. That's a DB-only
+comparison, so the candidate scan does no disk I/O on the library mount, and a
+file you **Mark OK** (which stamps both values) stays OK until its **size or
+modified time** actually changes. Each run processes at most **Max books tested
+per run** files (Settings page, default 200), working through the backlog over
+successive runs. **Candidate priority is: unarchived before archived, and within
+each, starred authors (higher `Author.Priority`) first** — i.e. starred-unarchived
+→ unarchived → starred-archived → archived. (An archived copy is already out of
+the live library, so its health matters least.) Enable or schedule it on the
+**Schedules** page (`check-integrity`, default cron `0 12 * * *`).
+
+Whenever a run touches a file that belongs to a **book**, it also folds in
+**every other still-unchecked file of that same book/title** and checks them in
+the same run — *even past the per-run cap*. Checking all copies of a title
+together is what lets the Duplicates page choose a healthy keeper, so the few
+extra files are worth it; the displayed "checked" count grows to include them.
+
+**Content check folded in.** A healthy file the integrity job just opened is
+already warm, so the run also performs the [content check](#identifying-books-from-content)
+on it then and there rather than re-reading it in a separate content-scan run
+later. For an **unmatched** file that means the full author/title/series guess;
+for a **matched** book (title/author already known) it harvests just the
+**series catalogue** from the book's "Also by" pages — which is how series data
+gets built up from the *whole owned library*, not only from unmatched files. It
+records the result against the file's size (so it isn't repeated until the file
+changes) and never lets a content-extraction hiccup disturb the integrity result.
+
+**Scope and auto-archiving.** The check covers every ebook file linked to a book
+*or* (unmatched but) to an author. A damaged file that's **unmatched but
+author-linked** isn't shown on the Damaged page (there's no book to triage it
+against) — it's just a bad orphan, so it's **archived automatically**.
+
+Once every author-linked file is done, a second phase checks the **untracked
+files** in the `__unknown` bucket (the `UnknownFiles` index). A damaged untracked
+file is likewise **archived** (author unknown — the move just preserves its
+library-relative path); healthy ones are recorded in a small `UnknownFileChecks`
+table so they aren't re-checked every run (that table survives the `UnknownFiles`
+re-index that sync performs). All auto-archiving is NAS-safe: a file is only
+moved when it sits under an enabled library root.
+
+The job also appears in the **Sync** page's *Background jobs* list, with a manual
+start button and **live progress** while it runs — each tick names the current
+file, e.g. `Checking 140/201: Anne McCaffrey — The Ship Who Sang (lit)`.
+
+## Identifying books from content
+
+For files that aren't matched to a book — **unmatched** files (a `LocalBookFile`
+with no book) and **untracked** files (the `__unknown` bucket) — the
+`content-scan` job reads both the **front matter and the back matter** (up to
+~40k characters from each end) and guesses the **author, title, series**, any
+**"also by this author"** list, and a structured **series catalogue**. Reading
+*both* ends matters: the title/copyright sit at the front, but the "Also by /
+Novels by / Other books" bibliography and series listings live in the **back of
+the book** at least as often as the front, so a head-only read missed most of
+them. It reuses the same text extractors as the integrity check (EPUB / PDF /
+FB2 / DOCX / ODT / RTF / TXT natively; MOBI / AZW / LIT via Calibre; image-only
+formats are skipped), then applies heuristics: ISBN (copyright page),
+`Title:`/`Author:` headers (Project Gutenberg), "Copyright © YEAR by NAME",
+"Also by / Novels by NAME" lists (every such block, front and back, merged and
+deduped), and "Book N of the X" series lines. A "Book N of the X **Series**" line
+feeds the **series + position only** — it is never taken as the *title* (so a
+position descriptor can't become an unmatchable guessed title like "Book 2 of the
+Sword Dancer Series"); if a real title sits just above it on the title page, that
+title is used instead. List parsing keeps only genuine
+**title-cased** lines and stops at section headings (Warning, Dedication,
+Acknowledgements, About the Author, …), so a hard-wrapped dedication, warning or
+epigraph isn't slurped in as fake titles — a real problem for plain-text books
+where every prose line is short.
+
+The flat **"also by"** list is review context only (shown in the *Also by*
+column); the part that actually **builds series** is the structured **series
+catalogue** (a list grouped under a named series header). A bare also-by list
+with no series header therefore populates the column but won't, on its own,
+create a series.
+
+The job works through files in **priority tiers**, each filling whatever capacity
+the previous left — matching the job's aims:
+
+1. **Unmatched books in an author folder** → identify the right book. **Starred
+   authors first** (by `Author.Priority`), as everywhere else.
+2. **Untracked `__unknown` files** → identify the author.
+3. **The rest** — unmatched files not in any author folder.
+
+**Series catalogue.** Many authors print a grouped bibliography — a heading
+("Novels by G R Jordan"), then for each series a header line (often with a
+`(Genre)`), a blank line, and the titles in that series, with blank lines between
+series:
+
+```
+Novels by G R Jordan
+The Highlands and Islands Detective series (Crime)
+
+Water's Edge
+The Bothy
+...
+
+Kirsten Stewart Thrillers (Thriller)
+
+A Shot at Democracy
+...
+```
+
+The parser reads *through* the blank lines, recognises each series header (by its
+`(Genre)` suffix or a trailing collection word like *Chronicles* / *Thrillers* /
+*saga*, dropping a generic trailing "series" descriptor from the name), and
+attributes every title to the series it sits under. The result is stored as JSON
+on the scan row (`SeriesCatalogJson`) — an array of `{ Series, Genre, Titles[] }`
+— so the **series data can be built up automatically** from what books say about
+themselves. It's shown as an expandable **Series catalogue** column on the
+Identified Books page for you to confirm.
+
+A **Build series** button on that column applies the catalogue (confirm first).
+It works **across all of the author's scanned books, not just the one row**:
+each book typically lists the series up to its own point (book 3 lists 1–2,
+book 36 lists 1–35), so every catalogue for that author is **merged into one
+consensus order** — the longest list reconstructs the full ordering and the
+shorter ones corroborate it. It then creates — or reuses, by normalized name — a
+`Series` per listing and assigns the author's owned books their **catalogue
+position**. Matching is **exact on the normalized title first, then fuzzy**
+(Jaro–Winkler ≥ 0.88) so small spelling/subtitle differences still link, and
+each owned book is claimed at most once. A book with **no series** is filled in;
+a book already in **that same series** has its **position corrected**; a book in
+a **different** series is left untouched (existing curation is never clobbered).
+Catalogue titles the author doesn't own are reported as unmatched. The
+catalogue-only rows that were consumed are cleared from the review list. The
+button only appears when the file is linked to an author. `POST
+/api/identified/{id}/apply-catalog`.
+
+Guesses are written to a `BookContentScan` row and surfaced on the **Identified
+Books** page (`/identified`) for you to review. Each row offers **Preview**,
+**Dismiss** (mark reviewed), and **Apply** — which resolves the guess to an
+OpenLibrary work and links the file to that book, creating/reusing the work
+**under the file's existing author**. How the work is resolved is deliberately
+strict, because a title scraped from a book's text is only a guess:
+
+- **ISBN** (`?isbn=`) is definitive — its single result is taken.
+- **Title** (no ISBN) is searched **with the file's folder author**, and a result
+  is accepted **only when it is genuinely by that author *and* its title is a
+  close match** (Jaro–Winkler ≥ 0.82 on the normalized titles). If nothing
+  qualifies the guess is **refused, not applied** — this is what stops the scan
+  attaching an unrelated work just because a title search returned *something*. Because a file that lives in an author folder is already
+attributed to that author (the author↔file link is folder-driven), Apply
+**keeps that author and never re-parents the file**, even if the matched
+OpenLibrary work lists a different author — it only attaches the work, it never
+moves the file or invents a new author. (The manual unmatched→OpenLibrary match,
+where you explicitly pick a work, still resolves and re-parents to the work's
+author.) Nothing is applied automatically — Apply is a per-row, user-confirmed
+action. (Apply works for tracked *unmatched* files.) For **untracked
+`__unknown`** files an **Assign to «author»** button does the equivalent: it
+works out whose book it is — resolving the guessed ISBN/title against
+OpenLibrary to get a real author (matched or created by OL key) and link the
+book, or, failing that, reusing an existing author whose name matches the guess.
+A brand-new author is **only created when the guessed name matches a real
+OpenLibrary author** (the local OpenLibrary authors catalogue) — in which case
+the Pending author is tied to that OL key/name; an unverifiable name is refused
+rather than invented, so guesses can't spawn junk authors. It then **moves the
+file into that author's folder** and tracks it as one of their unmatched files,
+so it shows in their Unmatched section and can be matched to a book next. This is
+how untracked files get out of `__unknown` and onto an author. A header **Apply all N ISBN matches**
+button bulk-applies every
+ISBN-backed guess in one go (capped per call so it can't time out against
+OpenLibrary's rate limit — repeat until none remain); title-only guesses are
+left for per-row review.
+
+Each row's existence is also the "already scanned" marker, so **a file is read
+only once** (unless it changes). **Damaged** files (flagged by the integrity
+check) and files **in the archive folder** are skipped.
+
+Two ways to run it:
+
+- **Scheduled / on-demand job** (`content-scan`, default `0 21 * * *`, disabled
+  by default) — processes up to **Max files identified per run** (Settings page,
+  default 50) each run, and shows live progress on the Sync page.
+- **Per author** — the **Identify from content** button on an author's page kicks
+  off a **background** scan of that author's unmatched files (same per-run cap)
+  and returns immediately; progress shows on the Sync page and results appear on
+  the Identified Books page (the button links there). It runs in the background
+  on purpose: reading files — especially Calibre-converted MOBI/AZW/LIT — can
+  take minutes, far longer than a browser will hold a request open, so a
+  synchronous call would abort. It's resilient too: a file it can't read is
+  logged and skipped rather than failing the whole run.
+
+> Heuristics are best-effort and exact-match-free; review the guesses before
+> hitting **Apply**. An ISBN-backed guess is the most reliable; a title-only
+> guess can resolve to the wrong edition, so preview when unsure.
 
 ## Goodreads import
 
@@ -952,6 +1251,8 @@ on every startup.
 | `cache-openlibrary-metadata` | `30 10 * * *` | Backfill missing subjects and cache large OpenLibrary covers for existing books |
 | `flatten-unknown` | `0 9 * * *` (disabled by default) | Flatten any subfolders inside each quarantine author folder so each contains only files. See [Flatten-unknown job](#flatten-unknown-job) |
 | `check-integrity` | `0 12 * * *` (disabled by default) | Open/convert every matched ebook file and flag any that won't open or have fewer than 20 pages onto the Damaged page. See [Book integrity check](#book-integrity-check) |
+| `prune-stale-files` | `0 20 * * *` | Remove leftover folder-pointer `LocalBookFile` rows (empty/missing title folders) so they stop showing as bogus duplicates. NAS-guarded: only folder-shaped rows, only when the library root is mounted |
+| `content-scan` | `0 21 * * *` (disabled by default) | Read the front matter of unmatched/untracked files to guess author/title/series; results land on the Identified Books page. See [Identifying books from content](#identifying-books-from-content) |
 
 Hangfire runs with `WorkerCount=1`, and all background work also passes through
 a single `BackgroundTaskCoordinator`, so a manual UI run and a cron tick can't

@@ -81,6 +81,9 @@ builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.ForeignArchiveServ
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.LinkedAuthorMergeService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Calibre.BookIntegrityChecker>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.BookIntegrityService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.StaleFileCleanupService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Calibre.BookTextReader>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.ContentScanService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Pushover.PushoverClient>();
 
 // Hangfire uses the same SQL Server database for its job store so a restart

@@ -530,7 +530,10 @@ public class BooksController : ControllerBase
         => double.TryParse(pos, System.Globalization.NumberStyles.Any,
                System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : double.MaxValue;
 
-    public sealed record DuplicateFile(int Id, string Path, string? Format);
+    // IntegrityOk: null = not yet checked by the integrity job, true = healthy,
+    // false = flagged damaged. Lets the UI show a per-copy status and never keep
+    // a damaged copy when a healthy one exists.
+    public sealed record DuplicateFile(int Id, string Path, string? Format, bool? IntegrityOk);
 
     public sealed record DuplicateGroup(
         int BookId,
@@ -541,6 +544,9 @@ public class BooksController : ControllerBase
         // Format the user probably wants to keep (epub > pdf > mobi > others).
         // The UI can highlight files that are NOT this format as upgrade candidates.
         string? RecommendedFormat,
+        // The specific copy to keep: a non-damaged file wins over the format
+        // preference, so a damaged copy is never the keeper unless every copy is.
+        int RecommendedFileId,
         IReadOnlyList<string> Paths);  // kept for backwards compatibility with older clients
 
     // Preference order — earlier = better. Shared with the Archived Files page so
@@ -590,7 +596,7 @@ public class BooksController : ControllerBase
         var groups = await query
             .GroupBy(f => f.BookId!.Value)
             .Where(g => g.Count() > 1)
-            .Select(g => new { BookId = g.Key, Files = g.Select(f => new { f.Id, f.FullPath }).ToList() })
+            .Select(g => new { BookId = g.Key, Files = g.Select(f => new { f.Id, f.FullPath, f.IntegrityOk }).ToList() })
             .ToListAsync(ct);
 
         if (groups.Count == 0) return Array.Empty<DuplicateGroup>();
@@ -605,24 +611,38 @@ public class BooksController : ControllerBase
             .Where(g => books.ContainsKey(g.BookId))
             .Select(g =>
             {
+                // Resolve each row to a real, actionable copy. A folder-shaped
+                // row only counts if it actually holds a readable ebook file —
+                // this drops stale/empty title-folder pointers that would
+                // otherwise show a bare directory as a duplicate "copy".
                 var formatted = g.Files
-                    .Select(f => new DuplicateFile(
-                        f.Id, f.FullPath,
-                        FormatOf(f.FullPath)))
+                    .Select(f => (File: f, Copy: ResolveDuplicateCopy(f.FullPath, preference)))
+                    .Where(x => x.Copy.IsRealCopy)
+                    .Select(x => new DuplicateFile(x.File.Id, x.File.FullPath, x.Copy.Format, x.File.IntegrityOk))
                     .ToList();
-                var recommended = formatted
-                    .Select(f => f.Format)
-                    .Where(f => f is not null)
-                    .OrderBy(f => PreferenceRank(f, preference))
-                    .FirstOrDefault();
+                return (BookId: g.BookId, Files: formatted);
+            })
+            // After dropping non-copies a group may fall back to a single copy —
+            // it's no longer a duplicate, so exclude it.
+            .Where(g => g.Files.Count > 1)
+            .Select(g =>
+            {
+                // The keeper: a non-damaged copy always beats a damaged one;
+                // among equals, the preferred format wins, then the lowest id.
+                var keeper = g.Files
+                    .OrderBy(f => f.IntegrityOk == false ? 1 : 0)
+                    .ThenBy(f => PreferenceRank(f.Format, preference))
+                    .ThenBy(f => f.Id)
+                    .First();
                 return new DuplicateGroup(
                     g.BookId,
                     books[g.BookId].Title,
                     books[g.BookId].AuthorId,
                     books[g.BookId].Name,
-                    formatted,
-                    recommended,
-                    formatted.Select(f => f.Path).ToList());
+                    g.Files,
+                    keeper.Format,
+                    keeper.Id,
+                    g.Files.Select(f => f.Path).ToList());
             })
             .OrderBy(g => g.AuthorName).ThenBy(g => g.Title)
             .ToList();
@@ -753,6 +773,46 @@ public class BooksController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         return Ok(new DuplicateActionResult(deleted, archived, warnings));
+    }
+
+    // Decides whether a LocalBookFile row is a real, actionable duplicate copy
+    // and returns its format. A plain file is a copy (by extension). A directory
+    // (classic Calibre layout) is a copy ONLY if it holds a readable ebook file
+    // — so empty/stale title-folder pointers, or folders that only contain a
+    // cover, are not treated as duplicates. A path that is neither an existing
+    // file nor directory is kept only if it *looks* like an ebook file (a NAS
+    // hiccup shouldn't hide a real file); a phantom folder path is dropped.
+    private static (string? Format, bool IsRealCopy) ResolveDuplicateCopy(
+        string fullPath, IReadOnlyList<string> preference)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath)) return (null, false);
+
+        if (System.IO.File.Exists(fullPath))
+        {
+            var e = Path.GetExtension(fullPath).TrimStart('.').ToLowerInvariant();
+            return (e.Length > 0 ? e : null, true);
+        }
+
+        if (Directory.Exists(fullPath))
+        {
+            try
+            {
+                var fmt = Directory.EnumerateFiles(fullPath)
+                    .Where(f => Services.Calibre.CalibreScanner.EbookExtensions.Contains(Path.GetExtension(f)))
+                    .Select(f => Path.GetExtension(f).TrimStart('.').ToLowerInvariant())
+                    .OrderBy(e => PreferenceRank(e, preference))
+                    .FirstOrDefault();
+                return (fmt, fmt is not null);
+            }
+            catch { return (null, false); }
+        }
+
+        // Missing on disk: keep an ebook-shaped file path (conservative), drop a
+        // folder-shaped one.
+        var ext = Path.GetExtension(fullPath).TrimStart('.').ToLowerInvariant();
+        return ext.Length > 0 && Services.Calibre.CalibreScanner.EbookExtensions.Contains("." + ext)
+            ? (ext, true)
+            : (null, false);
     }
 
     private static string? FormatOf(string fullPath)

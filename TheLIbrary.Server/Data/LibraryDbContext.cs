@@ -21,6 +21,8 @@ public class LibraryDbContext : DbContext
     public DbSet<SeriesAuthor> SeriesAuthors => Set<SeriesAuthor>();
     public DbSet<PhysicalBookUnmatched> PhysicalBookUnmatched => Set<PhysicalBookUnmatched>();
     public DbSet<UnknownFile> UnknownFiles => Set<UnknownFile>();
+    public DbSet<UnknownFileCheck> UnknownFileChecks => Set<UnknownFileCheck>();
+    public DbSet<BookContentScan> BookContentScans => Set<BookContentScan>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {

@@ -56,6 +56,15 @@ public sealed class OpenLibraryClient
         return GetJsonAsync<WorkSearchResponse>(url, ct);
     }
 
+    // ISBN → work search. OpenLibrary's `?isbn=` filter returns the work(s) that
+    // edition belongs to, carrying title + author_name + work key directly.
+    public Task<WorkSearchResponse?> SearchByIsbnAsync(string isbn, CancellationToken ct)
+    {
+        var fields = "key,title,first_publish_year,cover_i,author_name,author_key";
+        var url = $"search.json?isbn={HttpUtility.UrlEncode(isbn)}&limit=5&fields={fields}";
+        return GetJsonAsync<WorkSearchResponse>(url, ct);
+    }
+
     // Fetches a single author record by OL key (e.g. "OL123A"). Returns null on
     // 404 or if the record is a redirect (merged into another key). Upstream
     // failures throw OpenLibraryRequestFailedException so callers can distinguish

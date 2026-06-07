@@ -14,6 +14,8 @@ const labels = {
     'archive-foreign': 'Archive files of confirmed-foreign titles into the dedupe archive folder',
     'merge-linked-authors': 'Fully merge user-linked duplicate authors into their canonical',
     'check-integrity': 'Check book integrity (open/convert each ebook, flag damaged on the Damaged page)',
+    'prune-stale-files': 'Prune stale folder records (remove leftover empty title-folder rows)',
+    'content-scan': 'Identify books from content (read front matter of unmatched/untracked files)',
 }
 
 const fmtNextRun = (iso) => {

@@ -61,12 +61,14 @@ public class LocalBookFile
     public string? OrganizedSig { get; set; }
 
     // --- Integrity check (see BookIntegrityService) -----------------------
-    // The value of SizeBytes when the integrity check last ran. Null = never
-    // checked. The job re-checks a file only when this differs from the
-    // current SizeBytes (i.e. the scanner re-fingerprinted the folder) or is
-    // null — a DB-only comparison so the per-run candidate scan does no disk
-    // I/O on the NAS mount.
+    // The SizeBytes / ModifiedAt the file had when the integrity check last
+    // ran. Null size = never checked. The job re-checks a file only when either
+    // differs from the current value (i.e. the scanner re-fingerprinted the
+    // file because its size or modified time changed) — a DB-only comparison so
+    // the per-run candidate scan does no disk I/O on the NAS mount. Marking a
+    // file OK stamps both, so it stays OK until the file actually changes.
     public long? IntegrityCheckedSize { get; set; }
+    public DateTime? IntegrityCheckedModified { get; set; }
 
     // null = not yet checked, true = opened/converted fine with >= the minimum
     // page count, false = damaged (couldn't open/convert, or too few pages).

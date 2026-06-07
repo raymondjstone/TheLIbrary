@@ -91,4 +91,14 @@ public static class AppSettingKeys
     // batches; already-checked files are skipped until their size changes.
     // Unset = BookIntegrityService.DefaultMaxBooksPerRun.
     public const string IntegrityMaxBooksPerRun = "IntegrityMaxBooksPerRun";
+
+    // Semicolon-separated formats that count as an acceptable healthy
+    // replacement on the Damaged page's "archive damaged that have a good
+    // copy" action. Unset = "epub;mobi;lit".
+    public const string IntegrityReplacementFormats = "IntegrityReplacementFormats";
+
+    // How many files the "Identify books from content" job reads per run. The
+    // front-matter extraction is heavier than a metadata read, so it's capped.
+    // Unset = ContentScanService.DefaultMaxPerRun.
+    public const string ContentScanMaxPerRun = "ContentScanMaxPerRun";
 }

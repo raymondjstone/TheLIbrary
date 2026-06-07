@@ -31,12 +31,22 @@ export default function Duplicates() {
     const [page, setPage] = useState(0)
     const [preview, setPreview] = useState(null) // { fileId, format, title }
 
-    // Returns the id of the file that should be kept in a group (the recommended
-    // format, or the first file if there is no recommendation).
+    // Returns the id of the file that should be kept in a group. The server picks
+    // a non-damaged copy (preferred format among equals); fall back to the
+    // recommended format or first file for older responses.
     const keeperId = (g) => {
+        if (g.recommendedFileId != null) return g.recommendedFileId
         const files = g.files ?? []
         const rec = g.recommendedFormat && files.find(f => f.format === g.recommendedFormat)
         return rec ? rec.id : files[0]?.id
+    }
+
+    // Per-copy integrity status pill: checked-ok, damaged, or not yet checked.
+    const integBadge = (f) => {
+        const base = { fontSize: '0.65rem', fontWeight: 700, padding: '0 0.3rem', borderRadius: '3px', whiteSpace: 'nowrap' }
+        if (f.integrityOk === true) return <span style={{ ...base, color: 'var(--accent, #1d4ed8)' }} title="Passed the integrity check">✓ ok</span>
+        if (f.integrityOk === false) return <span style={{ ...base, color: '#b91c1c' }} title="Flagged damaged by the integrity check">✗ damaged</span>
+        return <span style={{ ...base, color: 'var(--subtle)' }} title="Not yet checked by the integrity job">? unchecked</span>
     }
 
     const load = () => {
@@ -193,6 +203,9 @@ export default function Duplicates() {
                 Use <em>Archive selected</em> to move files to a holding folder (safe, reversible) or{' '}
                 <em>Delete selected</em> to permanently remove them from disk.
                 Click the format badge (e.g. <strong>epub</strong>) next to any file to preview it before deciding.
+                {' '}Each copy also shows its integrity status — <strong>✓ ok</strong>, <strong>✗ damaged</strong>,
+                or <strong>? unchecked</strong> — and a copy flagged <strong>damaged</strong> is never chosen as
+                the keeper when a healthy copy exists.
             </div>
 
             <div className="toolbar" style={{ marginBottom: '0.75rem', flexWrap: 'wrap' }}>
@@ -313,6 +326,7 @@ export default function Duplicates() {
                                                             : null
                                                         }
                                                         <span style={{ flex: 1 }}>{f.path}</span>
+                                                        {g.files && integBadge(f)}
                                                         {/* g.files present => f.id is a real LocalBookFile id, so it can be sent. */}
                                                         {rmConnected && g.files && (
                                                             <button

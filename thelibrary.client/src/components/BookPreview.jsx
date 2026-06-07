@@ -13,10 +13,16 @@ import ePub from 'epubjs'
 export default function BookPreview({ fileId, format, onClose, title, srcUrl }) {
     const f = (format || '').toLowerCase()
     const convertibleFormats = ['mobi', 'azw', 'azw3', 'fb2', 'lit', 'docx', 'odt']
-    const displayFormat = convertibleFormats.includes(f) ? 'epub' : f
+    // Which pane renders the file. RTF has no native viewer, so it's shown in
+    // the plain-text pane (the server streams it as text/plain).
+    const displayFormat = convertibleFormats.includes(f) ? 'epub' : (f === 'rtf' ? 'txt' : f)
+    // Which format to ask the server for. Convertibles are converted to EPUB;
+    // RTF is requested under its real extension (the server streams it as text),
+    // so it's NOT mapped to 'txt' here or the file lookup would miss.
+    const requestFormat = convertibleFormats.includes(f) ? 'epub' : f
     // srcUrl overrides the default /api/files/{id}/preview endpoint so the
     // same modal can preview untracked files (where there is no LBF row yet).
-    const url = srcUrl ?? `/api/files/${fileId}/preview?format=${displayFormat}`
+    const url = srcUrl ?? `/api/files/${fileId}/preview?format=${requestFormat}`
     return (
         // zIndex inline override so the preview sits ON TOP of any caller
         // that already opened a stacked modal (e.g. the Untracked browse pane
@@ -47,8 +53,8 @@ export default function BookPreview({ fileId, format, onClose, title, srcUrl }) 
                     {displayFormat === 'epub' && <EpubPane url={url} />}
                     {displayFormat === 'pdf'  && <PdfPane url={url} />}
                     {displayFormat === 'txt'  && <TxtPane url={url} />}
-                    {['cbz', 'zip'].includes(displayFormat) && <CbzPane fileId={fileId} srcUrl={srcUrl} />}
-                    {!['epub', 'pdf', 'txt', 'cbz', 'zip'].includes(displayFormat) && <UnsupportedPane format={f} />}
+                    {['cbz', 'cbr', 'zip', 'rar'].includes(displayFormat) && <CbzPane fileId={fileId} srcUrl={srcUrl} />}
+                    {!['epub', 'pdf', 'txt', 'cbz', 'cbr', 'zip', 'rar'].includes(displayFormat) && <UnsupportedPane format={f} />}
                 </div>
             </div>
         </div>

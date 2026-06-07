@@ -32,6 +32,8 @@ public sealed class ScheduledJobs
     private readonly ForeignArchiveService _archiveForeign;
     private readonly LinkedAuthorMergeService _mergeLinkedAuthors;
     private readonly BookIntegrityService _integrity;
+    private readonly StaleFileCleanupService _pruneStaleFiles;
+    private readonly ContentScanService _contentScan;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -50,6 +52,8 @@ public sealed class ScheduledJobs
         ForeignArchiveService archiveForeign,
         LinkedAuthorMergeService mergeLinkedAuthors,
         BookIntegrityService integrity,
+        StaleFileCleanupService pruneStaleFiles,
+        ContentScanService contentScan,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
@@ -57,7 +61,8 @@ public sealed class ScheduledJobs
         _sync = sync; _incoming = incoming; _organizer = organizer; _unzip = unzip;
         _disambiguator = disambiguator; _sameNames = sameNames; _physicalStars = physicalStars; _metadataCache = metadataCache;
         _flattenUnknown = flattenUnknown; _adoptUnknownAuthors = adoptUnknownAuthors; _archiveForeign = archiveForeign;
-        _mergeLinkedAuthors = mergeLinkedAuthors; _integrity = integrity;
+        _mergeLinkedAuthors = mergeLinkedAuthors; _integrity = integrity; _pruneStaleFiles = pruneStaleFiles;
+        _contentScan = contentScan;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -173,6 +178,18 @@ public sealed class ScheduledJobs
         ScheduleJobIds.CheckIntegrity, manualTrigger,
         ct => _integrity.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _integrity.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunPruneStaleFiles(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.PruneStaleFiles, manualTrigger,
+        ct => _pruneStaleFiles.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _pruneStaleFiles.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunContentScan(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.ContentScan, manualTrigger,
+        ct => _contentScan.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _contentScan.IsRunning);
 
     internal Task RunWithPollingForTests(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,

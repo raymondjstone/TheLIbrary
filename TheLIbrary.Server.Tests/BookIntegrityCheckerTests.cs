@@ -47,6 +47,121 @@ public class BookIntegrityCheckerTests
     }
 
     [Fact]
+    public async Task CheckAsync_Healthy_Rtf_Is_Ok_Without_Calibre()
+    {
+        var fs = new FakeFileSystem();
+        var rtf = @"{\rtf1\ansi " + string.Concat(Enumerable.Repeat("word ", 6000)) + "}";
+        fs.AddFile("/books/good.rtf", System.Text.Encoding.UTF8.GetBytes(rtf));
+        var sut = CreateChecker(fs, configured: false); // no Calibre needed for RTF
+
+        var result = await sut.CheckAsync("/books/good.rtf", CancellationToken.None);
+
+        Assert.Equal(IntegrityStatus.Ok, result.Status);
+        Assert.True(result.Pages >= BookIntegrityChecker.MinPages);
+    }
+
+    [Fact]
+    public async Task CheckAsync_Short_Rtf_Is_Damaged()
+    {
+        var fs = new FakeFileSystem();
+        fs.AddFile("/books/tiny.rtf", System.Text.Encoding.UTF8.GetBytes(@"{\rtf1\ansi just a few words}"));
+        var sut = CreateChecker(fs, configured: false);
+
+        var result = await sut.CheckAsync("/books/tiny.rtf", CancellationToken.None);
+
+        Assert.Equal(IntegrityStatus.Damaged, result.Status);
+        Assert.Contains("RTF", result.Error);
+    }
+
+    [Theory]
+    [InlineData("good.fb2")]
+    [InlineData("good.docx")]
+    [InlineData("good.odt")]
+    public async Task CheckAsync_Healthy_Text_Format_Is_Ok_Without_Calibre(string name)
+    {
+        var fs = new FakeFileSystem();
+        var ext = name.Split('.')[1];
+        var bytes = ext switch
+        {
+            "fb2" => TestDocs.Fb2(30_000),
+            "docx" => TestDocs.Docx(30_000),
+            _ => TestDocs.Odt(30_000),
+        };
+        fs.AddFile($"/books/{name}", bytes);
+        var sut = CreateChecker(fs, configured: false); // no Calibre
+
+        var result = await sut.CheckAsync($"/books/{name}", CancellationToken.None);
+
+        Assert.Equal(IntegrityStatus.Ok, result.Status);
+        Assert.True(result.Pages >= BookIntegrityChecker.MinPages);
+    }
+
+    [Fact]
+    public async Task CheckAsync_Short_Docx_Is_Damaged()
+    {
+        var fs = new FakeFileSystem();
+        fs.AddFile("/books/tiny.docx", TestDocs.Docx(500));
+        var sut = CreateChecker(fs, configured: false);
+
+        var result = await sut.CheckAsync("/books/tiny.docx", CancellationToken.None);
+
+        Assert.Equal(IntegrityStatus.Damaged, result.Status);
+        Assert.Contains("DOCX", result.Error);
+    }
+
+    [Fact]
+    public async Task CheckAsync_Healthy_Cbz_Is_Ok_Without_Calibre()
+    {
+        var fs = new FakeFileSystem();
+        fs.AddFile("/books/comic.cbz", TestDocs.Cbz(30));
+        var sut = CreateChecker(fs, configured: false);
+
+        var result = await sut.CheckAsync("/books/comic.cbz", CancellationToken.None);
+
+        Assert.Equal(IntegrityStatus.Ok, result.Status);
+        Assert.Equal(30, result.Pages);
+    }
+
+    [Fact]
+    public async Task CheckAsync_Short_Cbz_Is_Damaged()
+    {
+        var fs = new FakeFileSystem();
+        fs.AddFile("/books/thin.cbz", TestDocs.Cbz(3));
+        var sut = CreateChecker(fs, configured: false);
+
+        var result = await sut.CheckAsync("/books/thin.cbz", CancellationToken.None);
+
+        Assert.Equal(IntegrityStatus.Damaged, result.Status);
+        Assert.Contains("Comic", result.Error);
+    }
+
+    [Fact]
+    public async Task CheckAsync_Healthy_Txt_Is_Ok_Without_Calibre()
+    {
+        var fs = new FakeFileSystem();
+        fs.AddFile("/books/good.txt", System.Text.Encoding.UTF8.GetBytes(new string('a', 30_000)));
+        var sut = CreateChecker(fs, configured: false); // must NOT need Calibre
+
+        var result = await sut.CheckAsync("/books/good.txt", CancellationToken.None);
+
+        Assert.Equal(IntegrityStatus.Ok, result.Status);
+        Assert.True(result.Pages >= BookIntegrityChecker.MinPages);
+    }
+
+    [Fact]
+    public async Task CheckAsync_Short_Txt_Is_Damaged()
+    {
+        var fs = new FakeFileSystem();
+        fs.AddFile("/books/tiny.txt", System.Text.Encoding.UTF8.GetBytes("just a few words here"));
+        var sut = CreateChecker(fs, configured: false);
+
+        var result = await sut.CheckAsync("/books/tiny.txt", CancellationToken.None);
+
+        Assert.Equal(IntegrityStatus.Damaged, result.Status);
+        Assert.Contains("Text file", result.Error);
+    }
+
+    [Fact]
     public async Task CheckAsync_Unreadable_Pdf_Is_Damaged()
     {
         var fs = new FakeFileSystem();

@@ -17,6 +17,15 @@ namespace TheLibrary.Server.Tests;
 public class ScheduleServiceTests
 {
     [Fact]
+    public void Every_Job_Id_Has_A_Built_In_Default()
+    {
+        // Guards against adding a job id to All but forgetting its default —
+        // which previously KeyNotFound-crashed startup in GetAllAsync.
+        var missing = ScheduleJobIds.All.Where(id => !ScheduleJobIds.Defaults.ContainsKey(id)).ToList();
+        Assert.True(missing.Count == 0, $"Job ids missing a default: {string.Join(", ", missing)}");
+    }
+
+    [Fact]
     public async Task GetAllAsync_Returns_Defaults_When_No_Config_Row_Exists()
     {
         var dbName = $"schedule-tests-{Guid.NewGuid():N}";

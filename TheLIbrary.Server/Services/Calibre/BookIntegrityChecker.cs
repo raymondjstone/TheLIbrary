@@ -67,6 +67,17 @@ public sealed class BookIntegrityChecker
             {
                 "pdf" => CheckPdf(path),
                 "epub" => CheckEpub(path),
+                // Native text extraction — no Calibre, far faster than a per-file
+                // ebook-convert, and works even when Calibre isn't configured.
+                "rtf" => CheckText(path, RtfTextExtractor.ExtractText, "RTF"),
+                "fb2" => CheckText(path, Fb2TextExtractor.ExtractText, "FB2"),
+                "docx" => CheckText(path, OfficeTextExtractor.ExtractDocx, "DOCX"),
+                "odt" => CheckText(path, OfficeTextExtractor.ExtractOdt, "ODT"),
+                // Plain text: just confirm it has roughly book length — read only as
+                // far as the page floor, no Calibre, no full-file slurp.
+                "txt" => CheckTxt(path),
+                // Comics: count image entries (zip/cbz + rar/cbr) natively.
+                "cbz" or "cbr" => CheckComic(path),
                 _ => await CheckViaConversionAsync(path, ct),
             };
         }
@@ -105,6 +116,55 @@ public sealed class BookIntegrityChecker
     {
         using var stream = _fs.OpenRead(path);
         return EvaluateEpub(stream);
+    }
+
+    // Shared text-based check: extract readable text with the given extractor
+    // and estimate pages from its length (same ~1,024-chars/page rule as EPUB).
+    private IntegrityResult CheckText(string path, Func<Stream, string> extract, string label)
+    {
+        string text;
+        using (var stream = _fs.OpenRead(path))
+            text = extract(stream);
+
+        if (string.IsNullOrWhiteSpace(text))
+            return IntegrityResult.Damaged($"{label} contained no readable text (unreadable or empty).");
+
+        var pages = text.Length / EpubInspector.CharsPerPage;
+        return pages < MinPages
+            ? IntegrityResult.Damaged($"{label} has about {pages} page(s) of text; at least {MinPages} required.", pages)
+            : IntegrityResult.Ok(pages);
+    }
+
+    // A .txt is already plain text — read at most MinPages worth of characters
+    // (enough to prove it's book-length) and stop. No conversion, no full read,
+    // so even a multi-megabyte text file is checked in a single small block.
+    private IntegrityResult CheckTxt(string path)
+    {
+        var cap = MinPages * EpubInspector.CharsPerPage; // = the page floor in chars
+        int read;
+        using (var stream = _fs.OpenRead(path))
+        using (var reader = new StreamReader(stream))
+        {
+            var buffer = new char[cap];
+            read = reader.ReadBlock(buffer, 0, cap);
+        }
+        var pages = read / EpubInspector.CharsPerPage;
+        return pages < MinPages
+            ? IntegrityResult.Damaged($"Text file has only ~{pages} page(s) of text; at least {MinPages} required.", pages)
+            : IntegrityResult.Ok(pages);
+    }
+
+    private IntegrityResult CheckComic(string path)
+    {
+        int images;
+        using (var stream = _fs.OpenRead(path))
+            images = ComicArchive.CountImages(stream);
+
+        if (images < 0)
+            return IntegrityResult.Damaged("Comic archive could not be opened (corrupt or unsupported).");
+        return images < MinPages
+            ? IntegrityResult.Damaged($"Comic has only {images} page(s); at least {MinPages} required.", images)
+            : IntegrityResult.Ok(images);
     }
 
     private async Task<IntegrityResult> CheckViaConversionAsync(string path, CancellationToken ct)

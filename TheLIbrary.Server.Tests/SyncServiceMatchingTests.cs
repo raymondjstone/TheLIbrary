@@ -51,6 +51,34 @@ public class SyncServiceMatchingTests
     }
 
     [Fact]
+    public void MatchAuthorFilesForTests_Never_Auto_Links_To_A_Suppressed_Or_Foreign_Book()
+    {
+        // The user suppressed/flagged a junk author-prefixed book so it vanished
+        // from the visible list. A file whose stem matches that junk title must NOT
+        // be auto-linked to it — a hidden book is never a valid match target.
+        var author = new Author { Id = 1, Name = "Alan Dean Foster" };
+        var entries = new Dictionary<string, List<CalibreBookEntry>>(StringComparer.Ordinal)
+        {
+            [TitleNormalizer.NormalizeAuthor("Alan Dean Foster")] =
+            [new("C:\\lib", "Alan Dean Foster", "Alan Dean Foster - Alien - Ala", "C:\\lib\\Alan Dean Foster\\junk.epub", 1, DateTime.UtcNow)]
+        };
+        var books = new Dictionary<int, List<Book>>
+        {
+            [1] =
+            [
+                new Book { Id = 10, AuthorId = 1, Title = "Alan Dean Foster - Alien - Ala", NormalizedTitle = TitleNormalizer.Normalize("Alan Dean Foster - Alien - Ala"), OpenLibraryWorkKey = "OL10W", Suppressed = true },
+                new Book { Id = 11, AuthorId = 1, Title = "Alan Dean Foster - Alien", NormalizedTitle = TitleNormalizer.Normalize("Alan Dean Foster - Alien"), OpenLibraryWorkKey = "OL11W", Foreign = true },
+            ]
+        };
+
+        var result = SyncService.MatchAuthorFilesForTests(author, entries, books, new Dictionary<int, List<int>>(), new Dictionary<string, LocalBookFile>(StringComparer.Ordinal));
+
+        var insert = Assert.Single(result.Inserts);
+        Assert.Null(insert.BookId);     // left unmatched, not linked to the hidden junk book
+        Assert.Equal(1, insert.AuthorId);
+    }
+
+    [Fact]
     public void MatchAuthorFilesForTests_Updates_Existing_Row_Without_Overwriting_Manual_Unmatch()
     {
         var author = new Author { Id = 1, Name = "Author" };

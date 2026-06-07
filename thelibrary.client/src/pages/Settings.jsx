@@ -60,8 +60,12 @@ export default function Settings() {
     const [coverCacheBatch, setCoverCacheBatch] = useState(1000)
     const [coverCacheSaving, setCoverCacheSaving] = useState(false)
     const [integrityMax, setIntegrityMax] = useState(200)
+    const [integrityFormats, setIntegrityFormats] = useState('epub, mobi, lit')
     const [integritySaved, setIntegritySaved] = useState(null)
     const [integritySaving, setIntegritySaving] = useState(false)
+    const [contentScanMax, setContentScanMax] = useState(50)
+    const [contentScanSaved, setContentScanSaved] = useState(null)
+    const [contentScanSaving, setContentScanSaving] = useState(false)
 
     const load = async () => {
         // Independent loads — a failing endpoint (e.g. pending migration) must
@@ -198,22 +202,56 @@ export default function Settings() {
             if (!r.ok) throw new Error(r.statusText)
             const body = await r.json()
             setIntegrityMax(body.maxBooksPerRun > 0 ? body.maxBooksPerRun : 200)
+            if (Array.isArray(body.replacementFormats)) setIntegrityFormats(body.replacementFormats.join(', '))
             setIntegritySaved(body.maxBooksPerRun)
         } catch (e) { setError(prev => prev ?? String(e)) }
+
+        try {
+            const r = await fetch('/api/settings/content-scan')
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setContentScanMax(body.maxPerRun > 0 ? body.maxPerRun : 50)
+            setContentScanSaved(body.maxPerRun)
+        } catch (e) { setError(prev => prev ?? String(e)) }
+    }
+
+    const saveContentScan = async () => {
+        setContentScanSaving(true)
+        setError(null)
+        try {
+            const r = await fetch('/api/settings/content-scan', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ maxPerRun: Math.max(1, Number(contentScanMax) || 50) }),
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setContentScanMax(body.maxPerRun)
+            setContentScanSaved(body.maxPerRun)
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setContentScanSaving(false)
+        }
     }
 
     const saveIntegrity = async () => {
         setIntegritySaving(true)
         setError(null)
         try {
+            const formats = integrityFormats.split(/[;,]/).map(s => s.trim()).filter(Boolean)
             const r = await fetch('/api/settings/integrity', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ maxBooksPerRun: Math.max(1, Number(integrityMax) || 200) }),
+                body: JSON.stringify({
+                    maxBooksPerRun: Math.max(1, Number(integrityMax) || 200),
+                    replacementFormats: formats,
+                }),
             })
             const body = await r.json().catch(() => ({}))
             if (!r.ok) throw new Error(body.error || r.statusText)
             setIntegrityMax(body.maxBooksPerRun)
+            if (Array.isArray(body.replacementFormats)) setIntegrityFormats(body.replacementFormats.join(', '))
             setIntegritySaved(body.maxBooksPerRun)
         } catch (e) {
             setError(String(e.message ?? e))
@@ -661,6 +699,22 @@ export default function Settings() {
         load()
     }
 
+    const [cleanupBusy, setCleanupBusy] = useState(false)
+    const cleanupNameBooks = async () => {
+        if (!window.confirm('Delete phantom "books" whose title is just their author\'s name (the OpenLibrary artifact) across the whole library? Any files wrongly attached to them are unlinked (returned to the author\'s unmatched pile); only books you marked owned by hand are kept. This cannot be undone.')) return
+        setCleanupBusy(true)
+        try {
+            const r = await fetch('/api/authors/cleanup-name-books', { method: 'POST' })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            alert(`Removed ${body.removed} author-name phantom book(s).`)
+        } catch (e) {
+            alert(`Failed: ${e.message}`)
+        } finally {
+            setCleanupBusy(false)
+        }
+    }
+
     if (locations === null) return <p>Loading…</p>
 
     return (
@@ -873,11 +927,49 @@ export default function Settings() {
                         onChange={e => setIntegrityMax(Number(e.target.value))}
                         style={{ width: '7rem' }} />
                 </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <span>Replacement formats</span>
+                    <input
+                        value={integrityFormats}
+                        onChange={e => setIntegrityFormats(e.target.value)}
+                        placeholder="epub, mobi, lit"
+                        style={{ minWidth: 180 }} />
+                </label>
                 <button onClick={saveIntegrity} disabled={integritySaving}>
                     {integritySaving ? 'Saving…' : 'Save'}
                 </button>
                 <span className="subtle">
                     Default 200.{integritySaved != null && <> Saved: <code>{integritySaved}</code>.</>}
+                </span>
+            </div>
+            <p className="subtle" style={{ marginTop: '0.3rem' }}>
+                <strong>Replacement formats</strong> drive the Damaged page's “Archive damaged that
+                have a good copy” action — a damaged file is archived when the same book has a healthy
+                copy in one of these formats. Comma- or semicolon-separated.
+            </p>
+
+            <h2 style={{ marginTop: '1.5rem' }}>Identify books from content</h2>
+            <p className="subtle">
+                The <strong>Identify books from content</strong> job (Schedules /
+                <Link to="/sync"> Sync</Link> page) reads the front matter of unmatched and
+                untracked files to guess their author, title and series; results appear on the
+                {' '}<Link to="/identified">Identified Books</Link> page. It's heavy (opens each
+                file), so each run processes at most this many files. Files are read once;
+                damaged and archived files are skipped.
+            </p>
+            <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <span>Max files identified per run</span>
+                    <input type="number" min="1" max="100000" step="25"
+                        value={contentScanMax}
+                        onChange={e => setContentScanMax(Number(e.target.value))}
+                        style={{ width: '7rem' }} />
+                </label>
+                <button onClick={saveContentScan} disabled={contentScanSaving}>
+                    {contentScanSaving ? 'Saving…' : 'Save'}
+                </button>
+                <span className="subtle">
+                    Default 50.{contentScanSaved != null && <> Saved: <code>{contentScanSaved}</code>.</>}
                 </span>
             </div>
 
@@ -988,6 +1080,20 @@ export default function Settings() {
                         {refreshLimits.maxEarlyDaysAhead > 0 ? ` within ${refreshLimits.maxEarlyDaysAhead}d` : ''}
                     </span>
                 )}
+            </div>
+
+            <h2 style={{ marginTop: '1.5rem' }}>Library maintenance</h2>
+            <p className="subtle">
+                OpenLibrary returns a phantom "work" titled as the author for nearly
+                every author. New refreshes skip and clean these automatically, but
+                this sweeps the <strong>whole library at once</strong>. Files wrongly
+                attached to a phantom are unlinked (back to the author's unmatched
+                pile); only books you marked owned by hand are kept.
+            </p>
+            <div className="toolbar">
+                <button onClick={cleanupNameBooks} disabled={cleanupBusy}>
+                    {cleanupBusy ? 'Removing…' : 'Remove author-name phantom books'}
+                </button>
             </div>
 
             <h2 style={{ marginTop: '1.5rem' }}>Works refresh cadence</h2>

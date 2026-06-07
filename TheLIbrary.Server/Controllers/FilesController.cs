@@ -1,6 +1,8 @@
 using System.IO.Compression;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using SharpCompress.Archives;
+using SharpCompress.Readers;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
@@ -135,7 +137,7 @@ public class FilesController : ControllerBase
             return resolution.Failure switch
             {
                 FilePreviewResolver.FailureKind.UnsupportedFormat
-                    => StatusCode(415, new { error = $"Preview not supported for '.{format}'. Supported: epub, pdf, txt, cbz, zip." }),
+                    => StatusCode(415, new { error = $"Preview not supported for '.{format}'. Supported: epub, pdf, txt, rtf, cbz, zip." }),
                 FilePreviewResolver.FailureKind.OutsideLibrary
                     => StatusCode(403, new { error = "Refusing to serve a file outside enabled library locations" }),
                 _ => NotFound(new { error = $"No '.{format}' file found at this record" }),
@@ -144,6 +146,22 @@ public class FilesController : ControllerBase
 
         if (!System.IO.File.Exists(resolution.Ok.FullPath))
             return NotFound(new { error = "File no longer exists on disk" });
+
+        // RTF has no native browser viewer, so convert it to plain text on the
+        // fly (RtfPipe) and serve that for the txt pane instead of the raw
+        // markup. Read fully — RTF files are small enough not to stream.
+        if (fmt == "rtf")
+        {
+            try
+            {
+                var rtf = await System.IO.File.ReadAllTextAsync(resolution.Ok.FullPath, ct);
+                return Content(RtfTextExtractor.ExtractText(rtf), "text/plain; charset=utf-8");
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = $"Could not read RTF: {ex.Message}" });
+            }
+        }
 
         // Explicitly set `inline` disposition so the browser's PDF viewer
         // renders the file in an <iframe> instead of triggering a download.
@@ -176,14 +194,18 @@ public class FilesController : ControllerBase
 
         // Check format
         var ext = Path.GetExtension(lbf.FullPath).ToLowerInvariant();
-        if (ext != ".cbz" && ext != ".zip" && ext != ".rar")
+        if (ext != ".cbz" && ext != ".zip" && ext != ".cbr" && ext != ".rar")
         {
-            // Try to find a .cbz or .zip in the folder if the FullPath points to a folder (classic Calibre layout)
+            // Classic Calibre layout: FullPath is a folder — pick a comic archive
+            // inside it (zip/cbz or rar/cbr).
             if (Directory.Exists(lbf.FullPath))
             {
                 var fallback = Directory.EnumerateFiles(lbf.FullPath)
-                    .FirstOrDefault(f => Path.GetExtension(f).Equals(".cbz", StringComparison.OrdinalIgnoreCase) ||
-                                         Path.GetExtension(f).Equals(".zip", StringComparison.OrdinalIgnoreCase));
+                    .FirstOrDefault(f => Path.GetExtension(f) is { } e &&
+                        (e.Equals(".cbz", StringComparison.OrdinalIgnoreCase) ||
+                         e.Equals(".zip", StringComparison.OrdinalIgnoreCase) ||
+                         e.Equals(".cbr", StringComparison.OrdinalIgnoreCase) ||
+                         e.Equals(".rar", StringComparison.OrdinalIgnoreCase)));
                 if (fallback != null)
                 {
                     lbf.FullPath = fallback;
@@ -204,6 +226,14 @@ public class FilesController : ControllerBase
         return (canonical, null);
     }
 
+    // Image entries (in display order) from a comic archive — SharpCompress
+    // reads both zip/cbz and rar/cbr.
+    private static List<IArchiveEntry> OrderedImageEntries(IArchive archive)
+        => archive.Entries
+            .Where(e => !e.IsDirectory && e.Key is not null && ImageExtensions.Contains(Path.GetExtension(e.Key)))
+            .OrderBy(e => e.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
     [HttpGet("{fileId:int}/cbz-pages")]
     public async Task<IActionResult> GetCbzPages(int fileId, CancellationToken ct)
     {
@@ -212,18 +242,16 @@ public class FilesController : ControllerBase
 
         try
         {
-            using var zip = ZipFile.OpenRead(path!);
-            var entries = zip.Entries
-                .Where(e => ImageExtensions.Contains(Path.GetExtension(e.FullName)))
-                .OrderBy(e => e.FullName, StringComparer.OrdinalIgnoreCase)
-                .Select((e, idx) => new { index = idx, name = e.FullName, size = e.Length })
+            using var archive = ArchiveFactory.OpenArchive(path!, new ReaderOptions());
+            var entries = OrderedImageEntries(archive)
+                .Select((e, idx) => new { index = idx, name = e.Key, size = e.Size })
                 .ToList();
 
             return Ok(entries);
         }
         catch (Exception ex)
         {
-            return BadRequest(new { error = $"Failed to read zip archive: {ex.Message}" });
+            return BadRequest(new { error = $"Failed to read comic archive: {ex.Message}" });
         }
     }
 
@@ -235,22 +263,19 @@ public class FilesController : ControllerBase
 
         try
         {
-            using var zip = ZipFile.OpenRead(path!);
-            var entries = zip.Entries
-                .Where(e => ImageExtensions.Contains(Path.GetExtension(e.FullName)))
-                .OrderBy(e => e.FullName, StringComparer.OrdinalIgnoreCase)
-                .ToList();
+            using var archive = ArchiveFactory.OpenArchive(path!, new ReaderOptions());
+            var entries = OrderedImageEntries(archive);
 
             if (index < 0 || index >= entries.Count)
                 return NotFound(new { error = $"Page index {index} is out of bounds. Max index: {entries.Count - 1}" });
 
             var entry = entries[index];
-            using var stream = entry.Open();
             var memoryStream = new MemoryStream();
-            await stream.CopyToAsync(memoryStream, ct);
+            using (var stream = entry.OpenEntryStream())
+                await stream.CopyToAsync(memoryStream, ct);
             memoryStream.Position = 0;
 
-            var ext = Path.GetExtension(entry.FullName).ToLowerInvariant();
+            var ext = Path.GetExtension(entry.Key!).ToLowerInvariant();
             var contentType = ext switch
             {
                 ".png" => "image/png",

@@ -109,7 +109,7 @@ function WorkTitle({ workKey, title }) {
 // Clickable format chip (epub / pdf / txt / mobi / …). EPUB / PDF / TXT open
 // the in-browser preview modal; other formats render the same as before with
 // no click handler since the preview endpoint would just 415.
-const PREVIEWABLE_EXTS = new Set(['epub', 'pdf', 'txt', 'mobi', 'azw', 'azw3', 'fb2', 'lit', 'docx', 'odt', 'cbz', 'zip'])
+const PREVIEWABLE_EXTS = new Set(['epub', 'pdf', 'txt', 'rtf', 'mobi', 'azw', 'azw3', 'fb2', 'lit', 'docx', 'odt', 'cbz', 'cbr', 'zip'])
 
 function FormatChip({ ext, onPreview, fileId, title }) {
     const canPreview = PREVIEWABLE_EXTS.has(ext.toLowerCase()) && onPreview && fileId
@@ -191,8 +191,8 @@ function UnmatchedFilesSection({
     unmatchedLocal, books,
     matchError, matchBusyIds, returnBusyIds,
     matchSel, setMatchSel, matchFilter, setMatchFilter,
-    onMatch, onReturn, rmConnected, sendBusyIds, onSend,
-    suggestionsByFile, onBulkMatch, bulkBusy, onPreview,
+    onMatch, onReturn, onArchive, onDelete, onToUnknown, rmConnected, sendBusyIds, onSend,
+    suggestionsByFile, onBulkMatch, bulkBusy, onContentScan, contentScanBusy, onPreview,
     openLibraryByFile, setOpenLibraryByFile, onAddOpenLibraryBook
 }) {
     if (!unmatchedLocal.length) return null
@@ -213,6 +213,12 @@ function UnmatchedFilesSection({
                         {bulkBusy ? 'Matching…' : highConfidenceCount > 0
                             ? `✓ Confirm ${highConfidenceCount} high-confidence match${highConfidenceCount === 1 ? '' : 'es'}`
                             : `Match all ${unmatchedLocal.length} unmatched file${unmatchedLocal.length === 1 ? '' : 's'} via OpenLibrary`}
+                    </button>
+                )}
+                {unmatchedLocal.length > 0 && onContentScan && (
+                    <button className="btn-ghost" onClick={onContentScan} disabled={contentScanBusy}
+                            title="Read each unmatched file's front matter to guess its author/title/series — review on the Identified Books page">
+                        {contentScanBusy ? 'Reading…' : 'Identify from content'}
                     </button>
                 )}
             </div>
@@ -278,6 +284,8 @@ function UnmatchedFilesSection({
                                         onChange={e => setMatchSel(prev => ({ ...prev, [u.id]: e.target.value }))}>
                                         <option value="">— pick a work —</option>
                                         {[...books]
+                                            // Don't offer books already flagged foreign or hidden.
+                                            .filter(b => String(b.id) === selected || (!b.foreign && !b.suppressed))
                                             .sort((a, b) => (a.title ?? '').localeCompare(b.title ?? ''))
                                             .filter(b => {
                                                 const f = matchFilter[u.id] ?? ''
@@ -321,11 +329,31 @@ function UnmatchedFilesSection({
                                     </button>
                                 </td>
                                 <td>
-                                    <button onClick={() => onReturn(u.id, u.titleFolder || u.fullPath)}
-                                        disabled={busy || returning}
-                                        title="Move this folder back to the incoming bucket and remove the library record">
-                                        {returning ? 'Returning…' : 'Return to incoming'}
-                                    </button>
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
+                                        <button onClick={() => onReturn(u.id, u.titleFolder || u.fullPath)}
+                                            disabled={busy || returning}
+                                            title="Move this folder back to the incoming bucket and remove the library record">
+                                            {returning ? 'Returning…' : 'Return to incoming'}
+                                        </button>
+                                        <button className="btn-ghost"
+                                            onClick={() => onToUnknown(u.id, fileName || u.titleFolder || 'this file')}
+                                            disabled={busy || returning}
+                                            title="Wrong author? Move it to the __unknown folder to be re-evaluated with no author">
+                                            Wrong author → unknown
+                                        </button>
+                                        <button className="btn-ghost"
+                                            onClick={() => onArchive(u.id, fileName || u.titleFolder || 'this file')}
+                                            disabled={busy || returning}
+                                            title="Archive this file (e.g. a foreign item you don't want to link) — hidden but restorable">
+                                            Archive
+                                        </button>
+                                        <button className="btn-danger"
+                                            onClick={() => onDelete(u.id, fileName || u.titleFolder || 'this file')}
+                                            disabled={busy || returning}
+                                            title="Permanently delete this file from disk">
+                                            Delete
+                                        </button>
+                                    </div>
                                 </td>
                                 <td>
                                     {sendable
@@ -368,6 +396,35 @@ function UnmatchedFilesSection({
                     })}
                 </tbody>
             </table>
+        </>
+    )
+}
+
+// Renders a book's local files: live copies inline, with any copies that live
+// under the archive folder tucked behind a collapsed "Show N archived" toggle
+// so they don't clutter the page by default.
+function BookFiles({ files, rmConnected, sendBusyIds, onSend, onUnmatch, onPreview }) {
+    const [showArchived, setShowArchived] = useState(false)
+    const withFiles = (files ?? []).filter(f => (f.formats ?? []).length > 0)
+    const live = withFiles.filter(f => !f.archived)
+    const archived = withFiles.filter(f => f.archived)
+    const row = (f) => (
+        <FileRow key={f.id} file={f}
+            rmConnected={rmConnected} sendBusyIds={sendBusyIds}
+            onSend={onSend} onUnmatch={onUnmatch} onPreview={onPreview} />
+    )
+    return (
+        <>
+            {live.map(row)}
+            {archived.length > 0 && (
+                <div style={{ marginTop: '0.2rem' }}>
+                    <button className="btn-ghost" style={{ fontSize: '0.78em', color: 'var(--subtle)', padding: '0 0.3rem' }}
+                        onClick={() => setShowArchived(s => !s)}>
+                        {showArchived ? '▾ Hide' : '▸ Show'} {archived.length} archived cop{archived.length === 1 ? 'y' : 'ies'}
+                    </button>
+                    {showArchived && archived.map(row)}
+                </div>
+            )}
         </>
     )
 }
@@ -511,6 +568,24 @@ export default function AuthorDetail() {
             .catch(() => setSuggestionsByFile({}))
     }, [data, id])
 
+    const [contentScanBusy, setContentScanBusy] = useState(false)
+    const runContentScan = async () => {
+        setContentScanBusy(true)
+        try {
+            const r = await fetch(`/api/authors/${id}/content-scan`, { method: 'POST' })
+            const body = await r.json().catch(() => ({}))
+            // 409 = another background task already running.
+            if (r.status === 409) { alert(body.error || 'Another background task is running — try again shortly.'); return }
+            if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`)
+            if (window.confirm('Started reading this author\'s unmatched files in the background (progress shows on the Sync page). Open the Identified Books page to review the guesses as they land?'))
+                navigate(`/identified?author=${id}`)
+        } catch (e) {
+            alert(`Could not start: ${e.message || 'request failed'}`)
+        } finally {
+            setContentScanBusy(false)
+        }
+    }
+
     const bulkMatch = async () => {
         // Only commit pairs where the server-side score was ≥0.9 — anything
         // below that should be manually confirmed by the user.
@@ -608,6 +683,10 @@ export default function AuthorDetail() {
                 const wa = norm(u.titleFolder ?? '').split(' ').filter(Boolean)
                 let bestId = '', bestScore = 0
                 for (const b of data.books) {
+                    // Never pre-select a book the user hid (suppressed) or flagged
+                    // foreign — it's not a valid match target, same as the dropdown
+                    // and the server-side suggestions/auto-matcher.
+                    if (b.foreign || b.suppressed) continue
                     const wb = new Set(norm(b.title ?? '').split(' ').filter(Boolean))
                     const matches = wa.filter(w => wb.has(w)).length
                     const total = new Set([...wa, ...wb]).size
@@ -788,6 +867,33 @@ export default function AuthorDetail() {
             })
         }
     }
+
+    // Per-unmatched-file actions: archive (keep but hide), delete (off disk),
+    // and send to the __unknown bucket (when filed under the wrong author).
+    const unmatchedAction = async (fileId, verb, confirmMsg, opts = {}) => {
+        if (confirmMsg && !confirm(confirmMsg)) return
+        setMatchError(null)
+        setReturnBusyIds(prev => new Set(prev).add(fileId))
+        try {
+            const r = await fetch(`/api/authors/${id}/unmatched/${fileId}${opts.path ?? ''}`,
+                { method: opts.method ?? 'POST' })
+            if (!r.ok) {
+                const body = await r.json().catch(() => null)
+                throw new Error(body?.error ?? r.statusText)
+            }
+            setData(await r.json())
+        } catch (e) {
+            setMatchError(String(e.message ?? e))
+        } finally {
+            setReturnBusyIds(prev => { const n = new Set(prev); n.delete(fileId); return n })
+        }
+    }
+    const archiveUnmatched = (fileId, name) =>
+        unmatchedAction(fileId, 'archive', `Archive "${name}"? It moves to the archive folder and leaves the unmatched list (restorable from Archived Files).`, { path: '/archive' })
+    const deleteUnmatched = (fileId, name) =>
+        unmatchedAction(fileId, 'delete', `Permanently delete "${name}" from disk? This cannot be undone.`, { method: 'DELETE' })
+    const sendUnmatchedToUnknown = (fileId, name) =>
+        unmatchedAction(fileId, 'unknown', `Send "${name}" to the unknown folder? Use this when it's filed under the wrong author — it'll be re-evaluated with no author on the next sync.`, { path: '/to-unknown' })
 
     const reloadAuthor = () => {
         fetch(`/api/authors/${id}`)
@@ -1378,14 +1484,12 @@ export default function AuthorDetail() {
                                     )}
                                     {b.hasLocalFiles
                                         ? <div className="subtle">
-                                            {b.files.filter(f => (f.formats ?? []).length > 0).map(f => (
-                                                <FileRow key={f.id} file={f}
-                                                    rmConnected={rmConnected}
-                                                    sendBusyIds={sendBusyIds}
-                                                    onSend={sendToRemarkable}
-                                                    onUnmatch={unmatchFile}
-                                                    onPreview={openPreview} />
-                                            ))}
+                                            <BookFiles files={b.files}
+                                                rmConnected={rmConnected}
+                                                sendBusyIds={sendBusyIds}
+                                                onSend={sendToRemarkable}
+                                                onUnmatch={unmatchFile}
+                                                onPreview={openPreview} />
                                         </div>
                                         : null}
                                 </td>
@@ -1446,14 +1550,12 @@ export default function AuthorDetail() {
                                         )}
                                         {ed.hasLocalFiles
                                             ? <div className="subtle">
-                                                {ed.files.filter(f => (f.formats ?? []).length > 0).map(f => (
-                                                    <FileRow key={f.id} file={f}
-                                                        rmConnected={rmConnected}
-                                                        sendBusyIds={sendBusyIds}
-                                                        onSend={sendToRemarkable}
-                                                        onUnmatch={unmatchFile}
+                                                <BookFiles files={ed.files}
+                                                    rmConnected={rmConnected}
+                                                    sendBusyIds={sendBusyIds}
+                                                    onSend={sendToRemarkable}
+                                                    onUnmatch={unmatchFile}
                                                     onPreview={openPreview} />
-                                                ))}
                                             </div>
                                             : null}
                                     </td>
@@ -1530,14 +1632,12 @@ export default function AuthorDetail() {
                                     {!b.owned && nzbSites.length > 0 && <div style={{ marginTop: '0.2rem' }}>{nzbLinks(b.title)}</div>}
                                     {b.hasLocalFiles
                                         ? <div className="subtle">
-                                            {b.files.filter(f => (f.formats ?? []).length > 0).map(f => (
-                                                <FileRow key={f.id} file={f}
-                                                    rmConnected={rmConnected}
-                                                    sendBusyIds={sendBusyIds}
-                                                    onSend={sendToRemarkable}
-                                                    onUnmatch={unmatchFile}
-                                                    onPreview={openPreview} />
-                                            ))}
+                                            <BookFiles files={b.files}
+                                                rmConnected={rmConnected}
+                                                sendBusyIds={sendBusyIds}
+                                                onSend={sendToRemarkable}
+                                                onUnmatch={unmatchFile}
+                                                onPreview={openPreview} />
                                         </div>
                                         : null}
                                 </td>
@@ -1567,14 +1667,12 @@ export default function AuthorDetail() {
                                         {!ed.owned && nzbSites.length > 0 && <div style={{ marginTop: '0.2rem' }}>{nzbLinks(ed.title)}</div>}
                                         {ed.hasLocalFiles
                                             ? <div className="subtle">
-                                                {ed.files.filter(f => (f.formats ?? []).length > 0).map(f => (
-                                                    <FileRow key={f.id} file={f}
-                                                        rmConnected={rmConnected}
-                                                        sendBusyIds={sendBusyIds}
-                                                        onSend={sendToRemarkable}
-                                                        onUnmatch={unmatchFile}
+                                                <BookFiles files={ed.files}
+                                                    rmConnected={rmConnected}
+                                                    sendBusyIds={sendBusyIds}
+                                                    onSend={sendToRemarkable}
+                                                    onUnmatch={unmatchFile}
                                                     onPreview={openPreview} />
-                                                ))}
                                             </div>
                                             : null}
                                     </td>
@@ -1607,12 +1705,17 @@ export default function AuthorDetail() {
                 matchFilter={matchFilter} setMatchFilter={setMatchFilter}
                 onMatch={matchToBook}
                 onReturn={returnToIncoming}
+                onArchive={archiveUnmatched}
+                onDelete={deleteUnmatched}
+                onToUnknown={sendUnmatchedToUnknown}
                 rmConnected={rmConnected}
                 sendBusyIds={sendBusyIds}
                 onSend={sendToRemarkable}
                 suggestionsByFile={suggestionsByFile}
                 onBulkMatch={bulkMatch}
                 bulkBusy={bulkBusy}
+                onContentScan={runContentScan}
+                contentScanBusy={contentScanBusy}
                 onPreview={openPreview}
                 openLibraryByFile={openLibraryByFile}
                 setOpenLibraryByFile={setOpenLibraryByFile}

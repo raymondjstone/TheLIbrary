@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
@@ -20,6 +21,115 @@ public static class EpubInspector
     private static readonly XNamespace ContainerNs = "urn:oasis:names:tc:opendocument:xmlns:container";
     private static readonly Regex TagRx = new("<[^>]+>", RegexOptions.Compiled);
     private static readonly Regex WhitespaceRx = new(@"\s+", RegexOptions.Compiled);
+    // For ReadHeadText: turn block ends into newlines, collapse intra-line space.
+    private static readonly Regex BlockEndRx = new(
+        @"</(p|div|h[1-6]|li|tr)\s*>|<br\s*/?>", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex InlineWsRx = new(@"[^\S\n]+", RegexOptions.Compiled);
+    private static readonly Regex TrimLineWsRx = new(@" *\n *", RegexOptions.Compiled);
+
+    // Returns up to maxChars of leading readable text in spine order (front
+    // matter first) — for content-based identification. Best-effort: returns ""
+    // on any parse problem.
+    public static string ReadHeadText(Stream stream, int maxChars)
+    {
+        try
+        {
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: true);
+            var docs = ResolveSpineDocuments(zip);
+
+            var sb = new StringBuilder();
+            foreach (var entry in docs)
+            {
+                if (sb.Length >= maxChars) break;
+                var text = ReadDocText(entry);
+                if (text.Length > 0) sb.Append(text).Append('\n');
+            }
+            return sb.Length > maxChars ? sb.ToString(0, maxChars) : sb.ToString();
+        }
+        catch { return ""; }
+    }
+
+    // Returns up to maxChars of *trailing* readable text in spine order — the
+    // back matter, where "Also by / Novels by / Other books" bibliographies and
+    // series listings most often live. Reads spine documents from the end until
+    // the budget fills, then returns them in natural reading order so line-based
+    // heuristics see the list the right way up. Best-effort: "" on any problem.
+    public static string ReadTailText(Stream stream, int maxChars)
+    {
+        try
+        {
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: true);
+            var docs = ResolveSpineDocuments(zip);
+
+            var collected = new List<string>();
+            var total = 0;
+            for (var i = docs.Count - 1; i >= 0 && total < maxChars; i--)
+            {
+                var text = ReadDocText(docs[i]);
+                if (text.Length == 0) continue;
+                collected.Add(text);
+                total += text.Length + 1;
+            }
+            collected.Reverse(); // back to reading order
+            var sb = new StringBuilder();
+            foreach (var t in collected) sb.Append(t).Append('\n');
+            // Keep the *last* maxChars so the tail end (where the list sits) wins.
+            return sb.Length > maxChars ? sb.ToString(sb.Length - maxChars, maxChars) : sb.ToString();
+        }
+        catch { return ""; }
+    }
+
+    // Resolves the spine's content documents in reading order, reusing the same
+    // robust href resolution as Inspect and falling back to every content
+    // document when the spine can't be resolved.
+    private static List<ZipArchiveEntry> ResolveSpineDocuments(ZipArchive zip)
+    {
+        var container = zip.GetEntry("META-INF/container.xml");
+        if (container is null) return new List<ZipArchiveEntry>();
+        string opfPath;
+        using (var cs = container.Open())
+            opfPath = XDocument.Load(cs).Descendants(ContainerNs + "rootfile")
+                .FirstOrDefault()?.Attribute("full-path")?.Value ?? "";
+        if (string.IsNullOrWhiteSpace(opfPath)) return new List<ZipArchiveEntry>();
+        var opf = zip.GetEntry(opfPath);
+        if (opf is null) return new List<ZipArchiveEntry>();
+
+        XDocument odoc;
+        using (var os = opf.Open()) odoc = XDocument.Load(os);
+        var manifest = odoc.Descendants().Where(e => e.Name.LocalName == "item")
+            .Where(e => e.Attribute("id") is not null && e.Attribute("href") is not null)
+            .GroupBy(e => e.Attribute("id")!.Value)
+            .ToDictionary(g => g.Key, g => g.First().Attribute("href")!.Value);
+        var spine = odoc.Descendants().Where(e => e.Name.LocalName == "itemref")
+            .Select(e => e.Attribute("idref")?.Value).Where(id => id is not null).Select(id => id!).ToList();
+        var opfDir = opfPath.Contains('/') ? opfPath[..opfPath.LastIndexOf('/')] : "";
+
+        var docs = new List<ZipArchiveEntry>();
+        foreach (var idref in spine)
+        {
+            if (!manifest.TryGetValue(idref, out var href)) continue;
+            var entry = ResolveEntry(zip, opfDir, href);
+            if (entry is not null) docs.Add(entry);
+        }
+        if (docs.Count == 0)
+            docs = zip.Entries.Where(e => IsContentDocument(e.FullName))
+                .OrderBy(e => e.FullName, StringComparer.Ordinal).ToList();
+        return docs;
+    }
+
+    // Reads one content document and returns its readable text with paragraph /
+    // line breaks preserved as newlines (so line-based front-matter heuristics —
+    // Gutenberg headers, "also by" lists — still work).
+    private static string ReadDocText(ZipArchiveEntry entry)
+    {
+        using var es = entry.Open();
+        using var reader = new StreamReader(es);
+        var html = reader.ReadToEnd();
+        var withBreaks = BlockEndRx.Replace(html, "\n");
+        var text = System.Net.WebUtility.HtmlDecode(TagRx.Replace(withBreaks, " "));
+        text = InlineWsRx.Replace(text, " ");
+        return TrimLineWsRx.Replace(text, "\n").Trim();
+    }
 
     public static EpubInspection Inspect(Stream stream)
     {
@@ -80,18 +190,34 @@ public static class EpubInspector
                 // OPF hrefs are relative to the OPF's own directory.
                 var opfDir = opfPath.Contains('/') ? opfPath[..opfPath.LastIndexOf('/')] : "";
 
-                long totalChars = 0;
+                // Resolve the spine's content documents. Manifest hrefs are
+                // URL-encoded and relative to the OPF, and zip lookups are
+                // case-sensitive — all of which can make a naive GetEntry miss
+                // every document and report a real book as "0 pages". Resolution
+                // therefore tries several candidate paths per href.
+                var contentEntries = new List<ZipArchiveEntry>();
                 foreach (var idref in spine)
                 {
                     if (!manifest.TryGetValue(idref, out var href)) continue;
-                    var entryPath = CombineZipPath(opfDir, href);
-                    var entry = zip.GetEntry(entryPath) ?? zip.GetEntry(href);
-                    if (entry is null) continue;
+                    var entry = ResolveEntry(zip, opfDir, href);
+                    if (entry is not null) contentEntries.Add(entry);
+                }
 
+                // Fallback: if not one spine document resolved (encoding/path
+                // quirks), tally every content document in the archive instead
+                // so a perfectly readable book is never scored as empty.
+                if (contentEntries.Count == 0)
+                    contentEntries = zip.Entries
+                        .Where(e => IsContentDocument(e.FullName))
+                        .OrderBy(e => e.FullName, StringComparer.Ordinal)
+                        .ToList();
+
+                long totalChars = 0;
+                foreach (var entry in contentEntries)
+                {
                     using var es = entry.Open();
                     using var reader = new StreamReader(es);
-                    var html = reader.ReadToEnd();
-                    totalChars += CountVisibleText(html);
+                    totalChars += CountVisibleText(reader.ReadToEnd());
                 }
 
                 var chars = (int)Math.Min(int.MaxValue, totalChars);
@@ -103,6 +229,51 @@ public static class EpubInspector
                 return new EpubInspection(false, 0, 0, $"EPUB could not be parsed: {ex.Message}");
             }
         }
+    }
+
+    // Locates the zip entry for a manifest href, tolerating URL-encoding, the
+    // OPF-relative base directory, in-document fragments, and case differences.
+    private static ZipArchiveEntry? ResolveEntry(ZipArchive zip, string opfDir, string href)
+    {
+        href = href.Split('#')[0]; // drop any in-document fragment
+        if (string.IsNullOrWhiteSpace(href)) return null;
+        var decoded = SafeUnescape(href);
+
+        // Exact lookups first (cheap), encoded and decoded, with/without base dir.
+        foreach (var candidate in new[]
+        {
+            CombineZipPath(opfDir, href),
+            CombineZipPath(opfDir, decoded),
+            href,
+            decoded,
+        })
+        {
+            var entry = zip.GetEntry(candidate);
+            if (entry is not null) return entry;
+        }
+
+        // Case-insensitive full-path match (some EPUBs differ only by case).
+        var wanted = CombineZipPath(opfDir, decoded);
+        var ci = zip.Entries.FirstOrDefault(e => string.Equals(e.FullName, wanted, StringComparison.OrdinalIgnoreCase));
+        if (ci is not null) return ci;
+
+        // Last resort: match by leaf filename.
+        var leaf = decoded.Contains('/') ? decoded[(decoded.LastIndexOf('/') + 1)..] : decoded;
+        return zip.Entries.FirstOrDefault(e =>
+            e.FullName.EndsWith("/" + leaf, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(e.FullName, leaf, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string SafeUnescape(string s)
+    {
+        try { return Uri.UnescapeDataString(s); }
+        catch { return s; }
+    }
+
+    private static bool IsContentDocument(string name)
+    {
+        var n = name.ToLowerInvariant();
+        return n.EndsWith(".xhtml") || n.EndsWith(".html") || n.EndsWith(".htm");
     }
 
     // Strips markup and collapses whitespace, returning the count of remaining

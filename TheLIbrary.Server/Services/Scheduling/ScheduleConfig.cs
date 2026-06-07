@@ -34,13 +34,16 @@ public static class ScheduleJobIds
     public const string ArchiveForeign = "archive-foreign";
     public const string MergeLinkedAuthors = "merge-linked-authors";
     public const string CheckIntegrity = "check-integrity";
+    public const string PruneStaleFiles = "prune-stale-files";
+    public const string ContentScan = "content-scan";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
         Sync, Seed, AuthorUpdates, Incoming, ReprocessUnknown, RefreshWorks,
         OrganizeSeries, Unzip, DisambiguateFolders, SameNameAuthors,
         StarPhysicalAuthors, CacheOpenLibraryMetadata, FlattenUnknown,
-        AdoptUnknownAuthors, ArchiveForeign, MergeLinkedAuthors, CheckIntegrity
+        AdoptUnknownAuthors, ArchiveForeign, MergeLinkedAuthors, CheckIntegrity,
+        PruneStaleFiles, ContentScan
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -74,5 +77,12 @@ public static class ScheduleJobIds
             // Heavy (PDF parse / Calibre conversion) and capped per run, so it
             // ships disabled — the user opts in on the Schedules page.
             [CheckIntegrity] = new() { Cron = "0 12 * * *", Enabled = false },
+            // Prune leftover folder-pointer LocalBookFile rows. Cheap and
+            // NAS-guarded, so on by default at a quiet hour.
+            [PruneStaleFiles] = new() { Cron = "0 20 * * *", Enabled = true },
+            // Read the front matter of unmatched / untracked files to guess their
+            // author, title and series. Heavy (opens each file), so capped per
+            // run and disabled by default — opt in on the Schedules page.
+            [ContentScan] = new() { Cron = "0 21 * * *", Enabled = false },
         };
 }

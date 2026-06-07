@@ -194,6 +194,19 @@ public sealed class AuthorRefresher
                      && b.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix))
             .ToListAsync(ct);
 
+        // Clean up any phantom "book" titled as the author themself that an
+        // earlier refresh created (before we started skipping them).
+        var authorNameNorm = TitleNormalizer.Normalize(author.Name);
+        if (await RemovePhantomAuthorNameBooksAsync(_db, author, ct) > 0)
+        {
+            existingBooks = await _db.Books
+                .Where(b => b.AuthorId == author.Id)
+                .Select(b => new { b.Id, b.OpenLibraryWorkKey, b.Subjects, b.SeriesId, b.SeriesPosition })
+                .ToListAsync(ct);
+            existingByKey = existingBooks.ToDictionary(b => b.OpenLibraryWorkKey, b => b, StringComparer.OrdinalIgnoreCase);
+            seen = new HashSet<string>(existingByKey.Keys, StringComparer.OrdinalIgnoreCase);
+        }
+
         // Starred authors (Priority >= 1) bypass the English-only filter so
         // works in any language are retrieved.
         var worksStream = author.Priority >= 1
@@ -206,6 +219,12 @@ public sealed class AuthorRefresher
         {
             ct.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(doc.Key) || string.IsNullOrWhiteSpace(doc.Title)) continue;
+            // OpenLibrary frequently returns a "work" whose title is simply the
+            // author's name (a profile / disambiguation artifact). It shows up for
+            // nearly every author and is never a real book — skip it outright.
+            if (!string.IsNullOrEmpty(authorNameNorm)
+                && TitleNormalizer.Normalize(doc.Title) == authorNameNorm)
+                continue;
 
             var workKey = doc.Key.Split('/').Last();
 
@@ -530,6 +549,41 @@ public sealed class AuthorRefresher
     // promote into. An exact normalized-title match wins; failing that, a
     // single clear fuzzy match above the threshold. An ambiguous tie promotes
     // nothing — a duplicate the user can merge is safer than a wrong rewrite.
+    // Deletes phantom "book" rows whose title is just the author's own name — an
+    // OpenLibrary artifact that appears for nearly every author. Any files that
+    // got mis-matched to such a non-book are first unmatched (BookId → null) so
+    // they return to the author's unmatched pile rather than being orphaned. Only
+    // a book the user explicitly marked owned is left alone. Returns the count
+    // deleted.
+    public static async Task<int> RemovePhantomAuthorNameBooksAsync(LibraryDbContext db, Author author, CancellationToken ct)
+    {
+        var norm = TitleNormalizer.Normalize(author.Name);
+        if (string.IsNullOrEmpty(norm)) return 0;
+        var phantomIds = await db.Books
+            .Where(b => b.AuthorId == author.Id && !b.ManuallyOwned && b.NormalizedTitle == norm)
+            .Select(b => b.Id)
+            .ToListAsync(ct);
+        if (phantomIds.Count == 0) return 0;
+        return await DeletePhantomBooksAsync(db, phantomIds, ct);
+    }
+
+    // Unmatches any files pointing at the given (phantom) books, then deletes the
+    // books. Two saves so the FK is cleared before the rows go. Returns the count
+    // of books removed.
+    internal static async Task<int> DeletePhantomBooksAsync(LibraryDbContext db, IReadOnlyList<int> bookIds, CancellationToken ct)
+    {
+        var files = await db.LocalBookFiles
+            .Where(f => f.BookId != null && bookIds.Contains(f.BookId.Value))
+            .ToListAsync(ct);
+        foreach (var f in files) { f.BookId = null; f.ManuallyUnmatched = false; }
+        if (files.Count > 0) await db.SaveChangesAsync(ct);
+
+        var books = await db.Books.Where(b => bookIds.Contains(b.Id)).ToListAsync(ct);
+        db.Books.RemoveRange(books);
+        await db.SaveChangesAsync(ct);
+        return books.Count;
+    }
+
     private static Book? PickManualToPromote(List<Book> manual, string normTitle)
     {
         if (manual.Count == 0 || normTitle.Length == 0) return null;

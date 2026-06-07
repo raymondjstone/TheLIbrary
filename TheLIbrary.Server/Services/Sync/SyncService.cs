@@ -541,6 +541,12 @@ public sealed class SyncService
         {
             foreach (var b in bs)
             {
+                // A book the user has hidden (suppressed) or flagged foreign is NOT
+                // a valid match target — they've already decided they don't want it.
+                // The suggestions UI already filters these; the auto-matcher must too,
+                // otherwise a suppressed junk book the user can no longer even see in
+                // the list keeps getting files auto-linked to it on every sync.
+                if (b.Suppressed || b.Foreign) continue;
                 var t = b.NormalizedTitle ?? "";
                 if (!bookByTitle.ContainsKey(t)) bookByTitle[t] = b;
             }

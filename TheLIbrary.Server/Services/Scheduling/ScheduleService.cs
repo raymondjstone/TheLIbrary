@@ -36,7 +36,16 @@ public sealed class ScheduleService
         // sees the full roster even on a fresh install.
         var merged = new Dictionary<string, ScheduleEntry>(StringComparer.Ordinal);
         foreach (var id in ScheduleJobIds.All)
-            merged[id] = cfg.Jobs.TryGetValue(id, out var e) ? e : Clone(ScheduleJobIds.Defaults[id]);
+        {
+            // Persisted config wins; otherwise the built-in default. A missing
+            // default must never crash startup — fall back to a disabled daily
+            // entry so a newly-added job id can't take the whole app down.
+            merged[id] = cfg.Jobs.TryGetValue(id, out var e)
+                ? e
+                : ScheduleJobIds.Defaults.TryGetValue(id, out var d)
+                    ? Clone(d)
+                    : new ScheduleEntry { Cron = "0 3 * * *", Enabled = false };
+        }
         return merged;
     }
 
@@ -94,6 +103,8 @@ public sealed class ScheduleService
             ScheduleJobIds.ArchiveForeign => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunArchiveForeign(true)),
             ScheduleJobIds.MergeLinkedAuthors => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunMergeLinkedAuthors(true)),
             ScheduleJobIds.CheckIntegrity => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunCheckIntegrity(true)),
+            ScheduleJobIds.PruneStaleFiles => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunPruneStaleFiles(true)),
+            ScheduleJobIds.ContentScan => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunContentScan(true)),
             _ => throw new ArgumentException($"Unknown job id '{jobId}'", nameof(jobId)),
         };
     }
@@ -202,6 +213,12 @@ public sealed class ScheduleService
                     break;
                 case ScheduleJobIds.CheckIntegrity:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunCheckIntegrity(), entry.Cron);
+                    break;
+                case ScheduleJobIds.PruneStaleFiles:
+                    _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunPruneStaleFiles(), entry.Cron);
+                    break;
+                case ScheduleJobIds.ContentScan:
+                    _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunContentScan(), entry.Cron);
                     break;
             }
             _log.LogInformation("Schedule {Job}: enabled with cron '{Cron}'", jobId, entry.Cron);
