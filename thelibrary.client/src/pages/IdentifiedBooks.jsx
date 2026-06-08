@@ -112,7 +112,7 @@ export default function IdentifiedBooks() {
             const r = await fetch(`/api/identified/${id}/apply-catalog`, { method: 'POST' })
             const body = await r.json().catch(() => ({}))
             if (!r.ok) throw new Error(body.error || r.statusText)
-            alert(`From ${body.sourceBooks} book list(s): series created ${body.seriesCreated}, reused ${body.seriesReused}; ${body.booksLinked} book(s) linked, ${body.positionsFixed} position(s) corrected, ${body.titlesUnmatched} catalogue title(s) not owned.`)
+            alert(`From ${body.sourceBooks} book list(s): series created ${body.seriesCreated}, reused ${body.seriesReused}; ${body.booksLinked} owned book(s) linked, ${body.titlesAdded} not-yet-owned title(s) added, ${body.positionsFixed} position(s) corrected.`)
             load()
         } catch (e) {
             alert(`Failed: ${e.message}`)

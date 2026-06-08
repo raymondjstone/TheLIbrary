@@ -125,7 +125,8 @@ public class IdentifiedController : ControllerBase
     }
 
     public sealed record ApplyCatalogResult(
-        int SeriesCreated, int SeriesReused, int BooksLinked, int PositionsFixed, int TitlesUnmatched, int SourceBooks);
+        int SeriesCreated, int SeriesReused, int BooksLinked, int PositionsFixed,
+        int TitlesUnmatched, int TitlesAdded, int SourceBooks);
 
     // Merges every catalogue an author's scanned books carry into one consensus
     // per series: each book lists a prefix of the series in order, so the longest
@@ -204,6 +205,19 @@ public class IdentifiedController : ControllerBase
         foreach (var b in books) byTitle.TryAdd(normTitles[b], b);
         var used = new HashSet<int>(); // each book claimed by at most one title this run
 
+        // Existing work keys (so minted placeholder keys don't collide) and the
+        // placeholder books created this run, keyed by normalized title (so the same
+        // catalogue title appearing under two listings isn't created twice).
+        var usedKeys = new HashSet<string>(books.Select(b => b.OpenLibraryWorkKey ?? string.Empty), StringComparer.Ordinal);
+        var placeholdersByNorm = new Dictionary<string, Book>(StringComparer.Ordinal);
+
+        string MintManualKey()
+        {
+            string k;
+            do { k = ManualWorkKey.NewCandidate(); } while (!usedKeys.Add(k));
+            return k;
+        }
+
         Book? Resolve(string normTitle)
         {
             if (byTitle.TryGetValue(normTitle, out var exact) && !used.Contains(exact.Id)) return exact;
@@ -223,7 +237,7 @@ public class IdentifiedController : ControllerBase
         // querying the not-yet-saved DB and creating a duplicate.
         var seriesByNorm = new Dictionary<string, Series>(StringComparer.Ordinal);
 
-        int created = 0, reused = 0, linked = 0, fixedPos = 0, unmatched = 0;
+        int created = 0, reused = 0, linked = 0, fixedPos = 0, unmatched = 0, added = 0;
         foreach (var listing in merged)
         {
             if (string.IsNullOrWhiteSpace(listing.Series)) continue;
@@ -260,10 +274,35 @@ public class IdentifiedController : ControllerBase
 
             for (var i = 0; i < listing.Titles.Count; i++)
             {
-                var book = Resolve(TitleNormalizer.Normalize(listing.Titles[i]));
-                if (book is null) { unmatched++; continue; }
-                used.Add(book.Id);
+                var rawTitle = listing.Titles[i].Trim();
+                if (rawTitle.Length == 0) continue;
+                var normT = TitleNormalizer.Normalize(rawTitle);
                 var pos = (i + 1).ToString();
+
+                var book = Resolve(normT);
+                if (book is null)
+                {
+                    // No existing book for this catalogue title. So the series keeps
+                    // its FULL member list (not just the few titles already owned),
+                    // mint a placeholder book — a not-yet-owned member with a manual
+                    // work key (preserved across OL refreshes) shown as "missing" on
+                    // the Series page. Reuse one already minted this run for the title.
+                    if (placeholdersByNorm.ContainsKey(normT)) continue;
+                    var ph = new Book
+                    {
+                        AuthorId = authorId,
+                        Title = rawTitle,
+                        NormalizedTitle = normT,
+                        OpenLibraryWorkKey = MintManualKey(),
+                        Series = series,
+                        SeriesPosition = pos,
+                    };
+                    _db.Books.Add(ph);
+                    placeholdersByNorm[normT] = ph;
+                    added++;
+                    continue;
+                }
+                used.Add(book.Id);
 
                 if (book.SeriesId is null && book.Series is null)
                 {
@@ -288,7 +327,7 @@ public class IdentifiedController : ControllerBase
                 r.Reviewed = true;
 
         await _db.SaveChangesAsync(ct);
-        return Ok(new ApplyCatalogResult(created, reused, linked, fixedPos, unmatched, sourceRows.Count));
+        return Ok(new ApplyCatalogResult(created, reused, linked, fixedPos, unmatched, added, sourceRows.Count));
     }
 
     /// <summary>Marks a guess reviewed so it leaves the list. POST /api/identified/{id}/dismiss</summary>

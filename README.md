@@ -1035,7 +1035,11 @@ bucket — which is why such a series previously seemed to "vanish" after buildi
 each owned book is claimed at most once. A book with **no series** is filled in;
 a book already in **that same series** has its **position corrected**; a book in
 a **different** series is left untouched (existing curation is never clobbered).
-Catalogue titles the author doesn't own are reported as unmatched. The
+A catalogue title the author **doesn't own** is added to the series as a
+**placeholder member** — a not-yet-owned book with a synthetic *manual* work key
+(`XX…W`, preserved across OpenLibrary refreshes), shown as a "missing" entry on
+the Series page — so the series keeps its **full** title list and ordering rather
+than just the few titles already on disk. The
 catalogue-only rows that were consumed are cleared from the review list. The
 button only appears when the file is linked to an author. `POST
 /api/identified/{id}/apply-catalog`.

@@ -191,6 +191,52 @@ public class IdentifiedControllerIntegrationTests
     }
 
     [Fact]
+    public async Task ApplyCatalog_Adds_Unowned_Catalogue_Titles_As_Placeholder_Series_Members()
+    {
+        using var factory = new LibraryApiFactory();
+        var catalog = System.Text.Json.JsonSerializer.Serialize(new[]
+        {
+            new { Series = "Wizard Scout Trinity", Genre = (string?)null,
+                  Titles = new[] { "Cadet", "Recon", "Trinity" } },
+        });
+
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Rodney Hartman" });
+            // The author owns only the first of the three catalogue titles.
+            db.Books.Add(new Book
+            {
+                Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL10W", Title = "Cadet",
+                NormalizedTitle = TitleNormalizer.Normalize("Cadet"), ManuallyOwned = true,
+            });
+            db.BookContentScans.Add(new BookContentScan
+            {
+                Id = 5, FullPath = "/b/x.epub", Source = "unmatched", AuthorId = 1,
+                SeriesCatalogJson = catalog, ScannedAt = DateTime.UtcNow,
+            });
+        });
+
+        using var client = factory.CreateClient();
+        var resp = await client.PostAsync("/api/identified/5/apply-catalog", null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+
+        var series = await db.Series.Include(s => s.Books).FirstAsync(s => s.Name == "Wizard Scout Trinity");
+        // All three catalogue titles are now members, in order.
+        var byTitle = series.Books.ToDictionary(b => b.Title, b => b);
+        Assert.Equal(3, series.Books.Count);
+        Assert.Equal("1", byTitle["Cadet"].SeriesPosition);
+        Assert.Equal("2", byTitle["Recon"].SeriesPosition);
+        Assert.Equal("3", byTitle["Trinity"].SeriesPosition);
+        // The two unowned titles are placeholders: manual key, not owned.
+        Assert.StartsWith("XX", byTitle["Recon"].OpenLibraryWorkKey);
+        Assert.False(byTitle["Recon"].ManuallyOwned);
+        Assert.Equal("OL10W", byTitle["Cadet"].OpenLibraryWorkKey); // the owned one is untouched
+    }
+
+    [Fact]
     public async Task ApplyCatalog_Does_Not_Reuse_Another_Authors_Same_Named_Series()
     {
         using var factory = new LibraryApiFactory();
