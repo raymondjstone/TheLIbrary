@@ -52,8 +52,13 @@ public class IdentifiedController : ControllerBase
     {
         var q = _db.BookContentScans.AsNoTracking()
             .Where(c => !c.Reviewed
-                && (c.Isbn != null || c.Title != null || c.Author != null || c.Series != null
-                    || c.AlsoByTitles != null || c.SeriesCatalogJson != null));
+                && (c.Isbn != null || c.Title != null || c.Series != null
+                    || c.AlsoByTitles != null || c.SeriesCatalogJson != null
+                    // An author-only guess is worth reviewing ONLY when the file
+                    // isn't already filed under an author. For a file already in an
+                    // author folder it just re-confirms what we know ("accept author"
+                    // on a file that's already there) — pure noise — so drop it.
+                    || (c.Author != null && c.AuthorId == null)));
         if (authorId is int aid) q = q.Where(c => c.AuthorId == aid);
 
         var rows = await q

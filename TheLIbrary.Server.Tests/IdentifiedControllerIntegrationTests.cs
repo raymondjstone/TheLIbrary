@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using TheLibrary.Server.Controllers;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Sync;
@@ -187,6 +188,29 @@ public class IdentifiedControllerIntegrationTests
         using var client = factory.CreateClient();
         var response = await client.PostAsync("/api/identified/5/apply-catalog", null);
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Get_Hides_Author_Only_Rows_For_Files_Already_Under_An_Author()
+    {
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Known Author" });
+            db.BookContentScans.AddRange(
+                // Already filed under an author, only an author guess → pure noise, hidden.
+                new BookContentScan { Id = 1, FullPath = "/b/linked.epub", Source = "unmatched", AuthorId = 1, Author = "Known Author", ScannedAt = DateTime.UtcNow },
+                // Already filed under an author but also has a title → still useful, shown.
+                new BookContentScan { Id = 2, FullPath = "/b/withtitle.epub", Source = "unmatched", AuthorId = 1, Author = "Known Author", Title = "Some Title", ScannedAt = DateTime.UtcNow },
+                // Not under any author, author guess is the only lead → shown.
+                new BookContentScan { Id = 3, FullPath = "/b/untracked.epub", Source = "untracked", AuthorId = null, Author = "Guessed Author", ScannedAt = DateTime.UtcNow });
+        });
+
+        using var client = factory.CreateClient();
+        var rows = await client.GetFromJsonAsync<List<IdentifiedController.IdentifiedRow>>("/api/identified");
+        var ids = rows!.Select(r => r.Id).OrderBy(i => i).ToList();
+
+        Assert.Equal(new[] { 2, 3 }, ids); // the author-only linked row (1) is dropped
     }
 
     private static async Task SeedAsync(LibraryApiFactory factory, Action<LibraryDbContext> seed)

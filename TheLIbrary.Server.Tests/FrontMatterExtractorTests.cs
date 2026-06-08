@@ -28,6 +28,22 @@ public class FrontMatterExtractorTests
     }
 
     [Fact]
+    public void Copyright_Boilerplate_On_The_Same_Line_Is_Trimmed_From_The_Author()
+    {
+        // "Copyright … by <Name>. All rights reserved" on ONE line previously
+        // captured "John Smith. All" — the boilerplate must be dropped.
+        var det = FrontMatterExtractor.Parse("Copyright © 2020 by John Smith. All rights reserved.\n");
+        Assert.Equal("John Smith", det.Author);
+    }
+
+    [Fact]
+    public void Author_Initials_Are_Preserved()
+    {
+        var det = FrontMatterExtractor.Parse("Title: The Hobbit\nAuthor: J.R.R. Tolkien\n");
+        Assert.Equal("J.R.R. Tolkien", det.Author);
+    }
+
+    [Fact]
     public void Captures_Also_By_List_And_Author()
     {
         var text = "Also by Anne McCaffrey\nDragonflight\nDragonquest\nThe White Dragon\n\nChapter One\n";

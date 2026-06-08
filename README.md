@@ -960,7 +960,10 @@ FB2 / DOCX / ODT / RTF / TXT natively; MOBI / AZW / LIT via Calibre; image-only
 formats are skipped), then applies heuristics: ISBN (copyright page),
 `Title:`/`Author:` headers (Project Gutenberg), "Copyright © YEAR by NAME",
 "Also by / Novels by NAME" lists (every such block, front and back, merged and
-deduped), and "Book N of the X" series lines. A "Book N of the X **Series**" line
+deduped), and "Book N of the X" series lines. A captured author name is trimmed of
+copyright-notice boilerplate the name pattern can run into on a single line —
+"Copyright 2020 by John Smith. All rights reserved" yields **John Smith**, not
+"John Smith. All" — while genuine initials (`J.R.R. Tolkien`) are preserved. A "Book N of the X **Series**" line
 feeds the **series + position only** — it is never taken as the *title* (so a
 position descriptor can't become an unmatchable guessed title like "Book 2 of the
 Sword Dancer Series"); if a real title sits just above it on the title page, that
@@ -1030,7 +1033,13 @@ button only appears when the file is linked to an author. `POST
 /api/identified/{id}/apply-catalog`.
 
 Guesses are written to a `BookContentScan` row and surfaced on the **Identified
-Books** page (`/identified`) for you to review. Each row offers **Preview**,
+Books** page (`/identified`) for you to review. A row only appears when it adds
+something actionable — an ISBN, title, series, "also by" list, or series
+catalogue. An **author-only** guess is shown **only for a file that isn't already
+filed under an author** (an untracked `__unknown` file, where the author is the
+one useful lead); for a file already sitting in an author folder a bare author
+guess just re-confirms what's known, so it's hidden rather than cluttering the
+list with "accept author" rows that do nothing. Each row offers **Preview**,
 **Dismiss** (mark reviewed), and **Apply** — which resolves the guess to an
 OpenLibrary work and links the file to that book, creating/reusing the work
 **under the file's existing author**. How the work is resolved is deliberately

@@ -111,7 +111,7 @@ public static class FrontMatterExtractor
             if (title is null && GutenbergTitle.Match(l) is { Success: true } tm && LooksLikeTitle(tm.Groups[1].Value))
                 title = Clean(tm.Groups[1].Value);
             if (author is null && GutenbergAuthor.Match(l) is { Success: true } am)
-                author = Clean(am.Groups[1].Value);
+                author = CleanAuthor(am.Groups[1].Value);
         }
 
         // Copyright line → author. Matched per line so the name can't run past
@@ -120,8 +120,10 @@ public static class FrontMatterExtractor
         {
             foreach (var l in lines.Take(120))
             {
-                if (CopyrightBy.Match(l) is { Success: true } cm) { author = Clean(cm.Groups[1].Value); break; }
-                if (CopyrightYearName.Match(l) is { Success: true } cy) { author = Clean(cy.Groups[1].Value); break; }
+                if (CopyrightBy.Match(l) is { Success: true } cm
+                    && CleanAuthor(cm.Groups[1].Value) is { } a1) { author = a1; break; }
+                if (CopyrightYearName.Match(l) is { Success: true } cy
+                    && CleanAuthor(cy.Groups[1].Value) is { } a2) { author = a2; break; }
             }
         }
 
@@ -152,7 +154,7 @@ public static class FrontMatterExtractor
             var hm = AlsoByHeading.Match(lines[bi]);
             if (hm.Success)
             {
-                if (author is null && hm.Groups[1].Success) author = Clean(hm.Groups[1].Value);
+                if (author is null && hm.Groups[1].Success) author = CleanAuthor(hm.Groups[1].Value);
                 bi = ParseBibliography(lines, bi + 1, alsoBy, catalog);
             }
             else bi++;
@@ -329,7 +331,7 @@ public static class FrontMatterExtractor
         {
             var m = Regex.Match(head[i], @"^\s*by\s+(" + NamePattern + @")\s*$", RegexOptions.IgnoreCase);
             if (!m.Success) continue;
-            var author = Clean(m.Groups[1].Value);
+            var author = CleanAuthor(m.Groups[1].Value);
             // The title must be a plausible line within the 3 lines directly above
             // the byline — not just any earlier line.
             string? title = null;
@@ -414,5 +416,39 @@ public static class FrontMatterExtractor
     {
         s = Regex.Replace(s.Trim(), @"\s+", " ");
         return s.Length > 480 ? s[..480].TrimEnd() : s;
+    }
+
+    // Copyright-notice words that the capitalised-name regex slurps into an author
+    // capture from a same-line notice ("by John Smith. All rights reserved" →
+    // "John Smith. All"). They never appear inside a real author name, so the name
+    // ends as soon as one shows up.
+    private static readonly HashSet<string> AuthorBoilerplate = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "all", "rights", "reserved", "copyright", "published", "publishing",
+    };
+
+    // A pure-initials token like "J." or "J.R.R." — its trailing period is part of
+    // the name, not a sentence end, so it must NOT terminate the author.
+    private static readonly Regex InitialsToken = new(@"^(?:\p{Lu}\.)+$", RegexOptions.Compiled);
+
+    // Cleans a captured author name, dropping copyright-notice boilerplate the name
+    // regex can run into. The name ends at the first boilerplate word OR at the
+    // sentence-ending period after a real word ("Smith." → "Smith", stop), while
+    // genuine initials ("J.R.R. Tolkien") are kept intact. Returns null when nothing
+    // usable remains.
+    private static string? CleanAuthor(string raw)
+    {
+        var cleaned = Clean(raw);
+        if (string.IsNullOrWhiteSpace(cleaned)) return null;
+
+        var kept = new List<string>();
+        foreach (var w in cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (AuthorBoilerplate.Contains(w.Trim('.', ','))) break;
+            if (w.EndsWith('.') && !InitialsToken.IsMatch(w)) { kept.Add(w.TrimEnd('.')); break; }
+            kept.Add(w);
+        }
+        var result = string.Join(' ', kept).Trim();
+        return result.Length == 0 ? null : result;
     }
 }
