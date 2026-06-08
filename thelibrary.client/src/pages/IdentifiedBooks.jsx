@@ -1,6 +1,19 @@
-import { Fragment, useEffect, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import BookPreview from '../components/BookPreview.jsx'
+
+// Flattens every column's text for a row into one lowercased string so a single
+// filter box can match against ANY column (path, author, title, series, ISBN,
+// "also by", and the whole series catalogue).
+function rowSearchText(r) {
+    const parts = [
+        r.path, r.source, r.author, r.title, r.series, r.seriesPosition,
+        r.isbn, r.linkedAuthorName, r.format,
+        ...(r.alsoBy ?? []),
+        ...(r.seriesCatalog ?? []).flatMap(s => [s.series, s.genre, ...(s.titles ?? [])]),
+    ]
+    return parts.filter(Boolean).join('  ').toLowerCase()
+}
 
 // Review surface for the "identify books from content" job: the author / title /
 // series guessed from each unmatched or untracked file's front matter, so you
@@ -13,6 +26,15 @@ export default function IdentifiedBooks() {
     const [busy, setBusy] = useState(() => new Set())
     const [preview, setPreview] = useState(null)
     const [expanded, setExpanded] = useState(() => new Set())
+    const [filter, setFilter] = useState('')
+
+    // Filter rows on the entered text appearing in ANY column.
+    const filtered = useMemo(() => {
+        if (!rows) return rows
+        const q = filter.trim().toLowerCase()
+        if (!q) return rows
+        return rows.filter(r => rowSearchText(r).includes(q))
+    }, [rows, filter])
 
     const toggleCatalog = (id) =>
         setExpanded(prev => {
@@ -146,6 +168,23 @@ export default function IdentifiedBooks() {
                 {authorId && <> Filtered to author #{authorId}. <Link to="/identified">Show all</Link></>}
             </p>
 
+            {rows !== null && rows.length > 0 && (
+                <div className="toolbar" style={{ marginBottom: '0.75rem' }}>
+                    <input
+                        type="search"
+                        value={filter}
+                        onChange={e => setFilter(e.target.value)}
+                        placeholder="Filter — matches any column (path, author, title, series, ISBN…)"
+                        style={{ width: 'min(30rem, 100%)' }} />
+                    {filter.trim() && (
+                        <span className="subtle">
+                            {filtered.length} of {rows.length}
+                            {' '}<button className="btn-ghost" onClick={() => setFilter('')}>clear</button>
+                        </span>
+                    )}
+                </div>
+            )}
+
             {isbnApplicable > 0 && (
                 <div className="toolbar">
                     <button onClick={applyAllIsbn} disabled={bulkBusy}
@@ -161,6 +200,8 @@ export default function IdentifiedBooks() {
                 <p>Loading…</p>
             ) : rows.length === 0 ? (
                 <p className="subtle">Nothing to review. Run the identify job to populate this.</p>
+            ) : filtered.length === 0 ? (
+                <p className="subtle">No rows match “{filter.trim()}”. <button className="btn-ghost" onClick={() => setFilter('')}>Clear filter</button></p>
             ) : (
                 <table className="grid">
                     <thead>
@@ -177,7 +218,7 @@ export default function IdentifiedBooks() {
                         </tr>
                     </thead>
                     <tbody>
-                        {rows.map(r => (
+                        {filtered.map(r => (
                             <Fragment key={r.id}>
                             <tr>
                                 <td style={{ maxWidth: 320 }}>

@@ -1047,7 +1047,9 @@ catalogue. An **author-only** guess is shown **only for a file that isn't alread
 filed under an author** (an untracked `__unknown` file, where the author is the
 one useful lead); for a file already sitting in an author folder a bare author
 guess just re-confirms what's known, so it's hidden rather than cluttering the
-list with "accept author" rows that do nothing. Each row offers **Preview**,
+list with "accept author" rows that do nothing. A single **filter box** narrows
+the list to rows whose text matches in **any** column — path, author, title,
+series, ISBN, "also by", or anywhere in the series catalogue. Each row offers **Preview**,
 **Dismiss** (mark reviewed), and **Apply** — which resolves the guess to an
 OpenLibrary work and links the file to that book, creating/reusing the work
 **under the file's existing author**. How the work is resolved is deliberately
