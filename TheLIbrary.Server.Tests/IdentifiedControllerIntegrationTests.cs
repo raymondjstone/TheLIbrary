@@ -191,6 +191,49 @@ public class IdentifiedControllerIntegrationTests
     }
 
     [Fact]
+    public async Task ApplyCatalog_Does_Not_Reuse_Another_Authors_Same_Named_Series()
+    {
+        using var factory = new LibraryApiFactory();
+        var catalog = System.Text.Json.JsonSerializer.Serialize(new[]
+        {
+            new { Series = "Legacy of Ash", Genre = (string?)null, Titles = new[] { "First Light" } },
+        });
+
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Author One" });
+            db.Authors.Add(new Author { Id = 2, Name = "Author Two" });
+            // A pre-existing, identically-named series owned by a DIFFERENT author.
+            db.Series.Add(new Series { Id = 7, Name = "Legacy of Ash", NormalizedName = TitleNormalizer.Normalize("Legacy of Ash"), PrimaryAuthorId = 2 });
+            db.Books.Add(new Book
+            {
+                Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL10W", Title = "First Light",
+                NormalizedTitle = TitleNormalizer.Normalize("First Light"),
+            });
+            db.BookContentScans.Add(new BookContentScan
+            {
+                Id = 5, FullPath = "/b/x.epub", Source = "unmatched", AuthorId = 1,
+                SeriesCatalogJson = catalog, ScannedAt = DateTime.UtcNow,
+            });
+        });
+
+        using var client = factory.CreateClient();
+        var resp = await client.PostAsync("/api/identified/5/apply-catalog", null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+
+        var book = await db.Books.Include(b => b.Series).FirstAsync(b => b.Id == 10);
+        Assert.NotNull(book.Series);
+        Assert.NotEqual(7, book.SeriesId);            // a NEW series, not author 2's
+        Assert.Equal(1, book.Series!.PrimaryAuthorId); // owned by this author
+        Assert.Equal("Legacy of Ash", book.Series.Name);
+        // Author 2's original series is untouched.
+        Assert.Equal(2, (await db.Series.FindAsync(7))!.PrimaryAuthorId);
+    }
+
+    [Fact]
     public async Task ApplyCatalog_Qualifies_Generic_Series_Name_With_Author_And_Sets_Primary()
     {
         using var factory = new LibraryApiFactory();

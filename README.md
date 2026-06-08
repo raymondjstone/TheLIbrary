@@ -1020,8 +1020,11 @@ It works **across all of the author's scanned books, not just the one row**:
 each book typically lists the series up to its own point (book 3 lists 1–2,
 book 36 lists 1–35), so every catalogue for that author is **merged into one
 consensus order** — the longest list reconstructs the full ordering and the
-shorter ones corroborate it. It then creates — or reuses, by normalized name — a
-`Series` per listing (always setting its **primary author**) and assigns the
+shorter ones corroborate it. It then creates — or reuses an existing series of
+**this same author** (matched by normalized name; a different author's
+identically-named series is never reused, or this author's books would land in it
+and no series would appear under this author) — a `Series` per listing (always
+setting its **primary author**) and assigns the
 author's owned books their **catalogue position**. A **generic** catalogue header
 that names a category rather than a real series — *Novels*, *Short Stories*,
 *Other Books*, … — is **qualified with the author name** ("Novels" → "Anne

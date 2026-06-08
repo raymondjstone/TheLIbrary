@@ -218,6 +218,11 @@ public class IdentifiedController : ControllerBase
             return best;
         }
 
+        // Series resolved this run, keyed by normalized name — so two listings that
+        // normalize to the same name reuse the one we just added rather than each
+        // querying the not-yet-saved DB and creating a duplicate.
+        var seriesByNorm = new Dictionary<string, Series>(StringComparer.Ordinal);
+
         int created = 0, reused = 0, linked = 0, fixedPos = 0, unmatched = 0;
         foreach (var listing in merged)
         {
@@ -228,17 +233,29 @@ public class IdentifiedController : ControllerBase
             var name = QualifySeriesName(listing.Series.Trim(), author.Name);
             var normName = TitleNormalizer.Normalize(name);
 
-            var series = await _db.Series.FirstOrDefaultAsync(s => s.NormalizedName == normName, ct);
-            if (series is null)
+            if (!seriesByNorm.TryGetValue(normName, out var series))
             {
-                series = new Series { Name = name, NormalizedName = normName, PrimaryAuthorId = authorId };
-                _db.Series.Add(series);
-                created++;
-            }
-            else
-            {
-                reused++;
-                if (series.PrimaryAuthorId is null) series.PrimaryAuthorId = authorId;
+                // A content catalogue is THIS author's own bibliography, so only reuse
+                // a series that is already this author's (or unattributed). Matching
+                // purely on name would reuse a different author's identically-named
+                // series — dumping this author's books there and leaving no series
+                // under this author, so it "never appears" on the Series page even for
+                // a unique name.
+                series = await _db.Series.FirstOrDefaultAsync(
+                    s => s.NormalizedName == normName
+                         && (s.PrimaryAuthorId == authorId || s.PrimaryAuthorId == null), ct);
+                if (series is null)
+                {
+                    series = new Series { Name = name, NormalizedName = normName, PrimaryAuthorId = authorId };
+                    _db.Series.Add(series);
+                    created++;
+                }
+                else
+                {
+                    reused++;
+                    if (series.PrimaryAuthorId is null) series.PrimaryAuthorId = authorId;
+                }
+                seriesByNorm[normName] = series;
             }
 
             for (var i = 0; i < listing.Titles.Count; i++)
