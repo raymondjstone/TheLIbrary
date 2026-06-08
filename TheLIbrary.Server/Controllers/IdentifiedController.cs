@@ -83,6 +83,31 @@ public class IdentifiedController : ControllerBase
             r.ScannedAt)).ToList();
     }
 
+    // Bibliography-section headers that name a *category*, not a real series, and
+    // so are meaningless without the author (every author has "Novels"). Matched on
+    // the normalized form (lowercase, punctuation stripped).
+    private static readonly HashSet<string> GenericSeriesNames = new(StringComparer.Ordinal)
+    {
+        "novels", "novel", "the novels", "stories", "short stories", "short story",
+        "novellas", "novella", "books", "the books", "other books", "other titles",
+        "other novels", "works", "selected works", "collected works", "collections",
+        "collection", "anthologies", "anthology", "omnibus", "omnibuses", "fiction",
+        "nonfiction", "non fiction", "standalone", "standalones", "stand alone", "other",
+    };
+
+    // Qualifies a series name with the author when the name is a generic category
+    // header ("Novels" → "Anne McCaffrey Novels"), so it becomes a distinct,
+    // author-specific series instead of colliding with every other author's
+    // identically-named bucket. Names that already contain the author, or aren't
+    // generic, are returned unchanged.
+    private static string QualifySeriesName(string name, string authorName)
+    {
+        if (string.IsNullOrWhiteSpace(authorName)) return name;
+        if (!GenericSeriesNames.Contains(TitleNormalizer.Normalize(name))) return name;
+        if (name.Contains(authorName, StringComparison.OrdinalIgnoreCase)) return name;
+        return $"{authorName.Trim()} {name}";
+    }
+
     // The series catalogue is stored as JSON; decode it for the client, tolerating
     // a malformed value rather than failing the whole list.
     private static IReadOnlyList<SeriesListingRow> ParseCatalog(string? json)
@@ -158,6 +183,9 @@ public class IdentifiedController : ControllerBase
         if (scan.AuthorId is not int authorId)
             return BadRequest(new { error = "This file isn't linked to an author, so its series can't be attributed." });
 
+        var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == authorId, ct);
+        if (author is null) return NotFound(new { error = "Linked author not found." });
+
         // Pull EVERY catalogue this author's scanned books carry and merge them —
         // book 3 lists 1–2, book 36 lists 1–35, so together they give the full,
         // correctly-ordered series.
@@ -194,7 +222,10 @@ public class IdentifiedController : ControllerBase
         foreach (var listing in merged)
         {
             if (string.IsNullOrWhiteSpace(listing.Series)) continue;
-            var name = listing.Series.Trim();
+            // A generic bibliography header like "Novels" / "Short Stories" isn't a
+            // real, distinct series — qualify it with the author so it doesn't
+            // collide with (and get merged into) some other author's "Novels".
+            var name = QualifySeriesName(listing.Series.Trim(), author.Name);
             var normName = TitleNormalizer.Normalize(name);
 
             var series = await _db.Series.FirstOrDefaultAsync(s => s.NormalizedName == normName, ct);

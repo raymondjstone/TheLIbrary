@@ -1021,8 +1021,13 @@ each book typically lists the series up to its own point (book 3 lists 1–2,
 book 36 lists 1–35), so every catalogue for that author is **merged into one
 consensus order** — the longest list reconstructs the full ordering and the
 shorter ones corroborate it. It then creates — or reuses, by normalized name — a
-`Series` per listing and assigns the author's owned books their **catalogue
-position**. Matching is **exact on the normalized title first, then fuzzy**
+`Series` per listing (always setting its **primary author**) and assigns the
+author's owned books their **catalogue position**. A **generic** catalogue header
+that names a category rather than a real series — *Novels*, *Short Stories*,
+*Other Books*, … — is **qualified with the author name** ("Novels" → "Anne
+McCaffrey Novels") so it becomes a distinct, author-specific series instead of
+colliding with (and being merged into) every other author's identically-named
+bucket — which is why such a series previously seemed to "vanish" after building. Matching is **exact on the normalized title first, then fuzzy**
 (Jaro–Winkler ≥ 0.88) so small spelling/subtitle differences still link, and
 each owned book is claimed at most once. A book with **no series** is filled in;
 a book already in **that same series** has its **position corrected**; a book in
