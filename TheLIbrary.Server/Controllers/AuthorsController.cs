@@ -185,12 +185,26 @@ public class AuthorsController : ControllerBase
             .Select(g => new { AuthorId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.AuthorId, x => x.Count, ct);
 
-        var unmatchedRaw = await _db.LocalBookFiles.AsNoTracking()
+        // Count only rows the author page would actually show as unmatched: an
+        // ebook file (by extension), with a non-blank title, not under the archive
+        // folder. Counting every BookId==null row (folder-shaped, blank-title, or
+        // archived rows included) is why the star count read 15 while the detail
+        // page showed none. The extension test isn't SQL-translatable, so pull the
+        // (curated, starred-only) candidate paths and filter in memory.
+        var archiveLeafRaw = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.DedupeArchiveFolder).Select(s => s.Value).FirstOrDefaultAsync(ct);
+        var archiveLeaf = string.IsNullOrWhiteSpace(archiveLeafRaw) ? "__archive" : archiveLeafRaw.Trim();
+
+        var unmatchedFiles = await _db.LocalBookFiles.AsNoTracking()
             .Where(f => f.BookId == null && f.AuthorId != null && ids.Contains(f.AuthorId.Value))
-            .GroupBy(f => f.AuthorId)
-            .Select(g => new { AuthorId = g.Key, Count = g.Count() })
+            .Select(f => new { f.AuthorId, f.TitleFolder, f.FullPath })
             .ToListAsync(ct);
-        var unmatchedDict = unmatchedRaw.ToDictionary(x => x.AuthorId!.Value, x => x.Count);
+        var unmatchedDict = unmatchedFiles
+            .Where(f => !string.IsNullOrWhiteSpace(f.TitleFolder)
+                        && HasEbookExtension(f.FullPath)
+                        && !IsUnderArchiveFolder(f.FullPath, archiveLeaf))
+            .GroupBy(f => f.AuthorId!.Value)
+            .ToDictionary(g => g.Key, g => g.Count());
 
         return authors.Select(a => new StarredAuthorRow(
             a.Id, a.Name, a.Priority,

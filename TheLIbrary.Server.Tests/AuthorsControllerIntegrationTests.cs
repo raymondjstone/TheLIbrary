@@ -436,6 +436,29 @@ public class AuthorsControllerIntegrationTests
     }
 
     [Fact]
+    public async Task Starred_UnmatchedCount_Excludes_NonEbook_Blank_And_Archived_Rows()
+    {
+        // Matches what the author detail page actually shows: only real ebook files
+        // with a non-blank title that aren't archived. The folder-shaped, blank-title
+        // and archived rows here must NOT inflate the star count.
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Starred", Priority = 3 });
+            db.LocalBookFiles.AddRange(
+                new LocalBookFile { Id = 50, AuthorId = 1, BookId = null, AuthorFolder = "Starred", TitleFolder = "Real", FullPath = "/lib/Starred/Real/book.epub" },
+                new LocalBookFile { Id = 51, AuthorId = 1, BookId = null, AuthorFolder = "Starred", TitleFolder = "", FullPath = "/lib/Starred" },
+                new LocalBookFile { Id = 52, AuthorId = 1, BookId = null, AuthorFolder = "Starred", TitleFolder = "FolderRow", FullPath = "/lib/Starred/FolderRow" },
+                new LocalBookFile { Id = 53, AuthorId = 1, BookId = null, AuthorFolder = "Starred", TitleFolder = "Arch", FullPath = "/lib/__archive/Starred/old.epub" });
+        });
+        using var client = factory.CreateClient();
+
+        var rows = await client.GetFromJsonAsync<List<AuthorsController.StarredAuthorRow>>("/api/authors/starred");
+
+        Assert.Equal(1, Assert.Single(rows!).UnmatchedCount); // only the real .epub
+    }
+
+    [Fact]
     public async Task Link_Rejects_Self_Link()
     {
         using var factory = new LibraryApiFactory();
