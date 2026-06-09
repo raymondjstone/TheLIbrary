@@ -71,6 +71,26 @@ export default function IdentifiedBooks() {
     }
 
     const isbnApplicable = (rows ?? []).filter(r => r.fileId != null && r.isbn).length
+    const catalogApplicable = (rows ?? []).filter(r => r.authorId != null && r.seriesCatalog?.length > 0).length
+
+    const [catalogBusy, setCatalogBusy] = useState(false)
+    // Build series for EVERY author with a catalogue in one go — series only,
+    // never touches the book-title or author guesses.
+    const buildAllSeries = async () => {
+        if (!window.confirm('Build series from the catalogues of every author listed here? This creates/updates series and slots in matching books (owned and not-yet-owned). It does not change any book-title or author guesses.')) return
+        setCatalogBusy(true)
+        try {
+            const r = await fetch('/api/identified/apply-catalog-all', { method: 'POST' })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            alert(`Built series for ${body.authorsBuilt} author(s): created ${body.seriesCreated}, reused ${body.seriesReused}; ${body.booksLinked} owned book(s) linked, ${body.titlesAdded} not-yet-owned title(s) added, ${body.positionsFixed} position(s) corrected.`)
+            load()
+        } catch (e) {
+            alert(`Failed: ${e.message}`)
+        } finally {
+            setCatalogBusy(false)
+        }
+    }
 
     const dismiss = async (id) => {
         setBusy(prev => new Set(prev).add(id))
@@ -192,6 +212,16 @@ export default function IdentifiedBooks() {
                         {bulkBusy ? 'Applying…' : `Apply all ${isbnApplicable} ISBN match${isbnApplicable === 1 ? '' : 'es'}`}
                     </button>
                     <span className="subtle">ISBN-backed guesses are the reliable ones — title-only guesses still need a per-row check.</span>
+                </div>
+            )}
+
+            {catalogApplicable > 0 && (
+                <div className="toolbar">
+                    <button onClick={buildAllSeries} disabled={catalogBusy}
+                            title="Build series from every listed author's catalogue at once — series only, leaves book-title and author guesses alone">
+                        {catalogBusy ? 'Building…' : 'Build all series'}
+                    </button>
+                    <span className="subtle">Applies every series catalogue below (across all authors). Doesn't touch book-title or author guesses.</span>
                 </div>
             )}
 

@@ -191,6 +191,42 @@ public class IdentifiedControllerIntegrationTests
     }
 
     [Fact]
+    public async Task ApplyCatalogAll_Builds_Series_For_Every_Author_With_A_Catalogue()
+    {
+        using var factory = new LibraryApiFactory();
+        var cat1 = System.Text.Json.JsonSerializer.Serialize(new[]
+        {
+            new { Series = "Saga A", Genre = (string?)null, Titles = new[] { "A One", "A Two" } },
+        });
+        var cat2 = System.Text.Json.JsonSerializer.Serialize(new[]
+        {
+            new { Series = "Saga B", Genre = (string?)null, Titles = new[] { "B One" } },
+        });
+
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Author One" });
+            db.Authors.Add(new Author { Id = 2, Name = "Author Two" });
+            db.BookContentScans.AddRange(
+                new BookContentScan { Id = 5, FullPath = "/b/1.epub", Source = "unmatched", AuthorId = 1, SeriesCatalogJson = cat1, ScannedAt = DateTime.UtcNow },
+                new BookContentScan { Id = 6, FullPath = "/b/2.epub", Source = "unmatched", AuthorId = 2, SeriesCatalogJson = cat2, ScannedAt = DateTime.UtcNow });
+        });
+
+        using var client = factory.CreateClient();
+        var resp = await client.PostAsync("/api/identified/apply-catalog-all", null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<IdentifiedController.ApplyCatalogAllResult>();
+        Assert.Equal(2, body!.AuthorsBuilt);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        var names = await db.Series.Select(s => s.Name).ToListAsync();
+        Assert.Contains("Saga A", names);
+        Assert.Contains("Saga B", names);
+        Assert.Equal(2, await db.Series.Where(s => s.PrimaryAuthorId == 1).CountAsync() + await db.Series.Where(s => s.PrimaryAuthorId == 2).CountAsync());
+    }
+
+    [Fact]
     public async Task ApplyCatalog_Adds_Unowned_Catalogue_Titles_As_Placeholder_Series_Members()
     {
         using var factory = new LibraryApiFactory();

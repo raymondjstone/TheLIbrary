@@ -187,6 +187,49 @@ public class IdentifiedController : ControllerBase
         var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == authorId, ct);
         if (author is null) return NotFound(new { error = "Linked author not found." });
 
+        var result = await BuildSeriesForAuthorAsync(author, ct);
+        if (result is null) return BadRequest(new { error = "No series catalogue was found for this author." });
+        return Ok(result);
+    }
+
+    public sealed record ApplyCatalogAllResult(
+        int AuthorsBuilt, int SeriesCreated, int SeriesReused, int BooksLinked, int PositionsFixed, int TitlesAdded);
+
+    /// <summary>
+    /// Bulk version of apply-catalog: builds series for EVERY author that has a
+    /// content catalogue. Series-only — it never touches the book-title or author
+    /// guesses. POST /api/identified/apply-catalog-all
+    /// </summary>
+    [HttpPost("apply-catalog-all")]
+    public async Task<ActionResult<ApplyCatalogAllResult>> ApplyCatalogAll(CancellationToken ct)
+    {
+        var authorIds = await _db.BookContentScans
+            .Where(c => c.AuthorId != null && c.SeriesCatalogJson != null)
+            .Select(c => c.AuthorId!.Value).Distinct().ToListAsync(ct);
+
+        int built = 0, created = 0, reused = 0, linked = 0, fixedPos = 0, added = 0;
+        foreach (var aid in authorIds)
+        {
+            ct.ThrowIfCancellationRequested();
+            var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == aid, ct);
+            if (author is null) continue;
+            var r = await BuildSeriesForAuthorAsync(author, ct);
+            _db.ChangeTracker.Clear(); // keep the tracker from growing across authors
+            if (r is null) continue;
+            built++;
+            created += r.SeriesCreated; reused += r.SeriesReused;
+            linked += r.BooksLinked; fixedPos += r.PositionsFixed; added += r.TitlesAdded;
+        }
+        return Ok(new ApplyCatalogAllResult(built, created, reused, linked, fixedPos, added));
+    }
+
+    // Core of apply-catalog for one author: merges every catalogue the author's
+    // scanned books carry and builds/updates their series. Returns null when the
+    // author has no catalogue. Saves its own changes.
+    private async Task<ApplyCatalogResult?> BuildSeriesForAuthorAsync(Author author, CancellationToken ct)
+    {
+        var authorId = author.Id;
+
         // Pull EVERY catalogue this author's scanned books carry and merge them —
         // book 3 lists 1–2, book 36 lists 1–35, so together they give the full,
         // correctly-ordered series.
@@ -194,7 +237,7 @@ public class IdentifiedController : ControllerBase
             .Where(c => c.AuthorId == authorId && c.SeriesCatalogJson != null)
             .ToListAsync(ct);
         var merged = MergeCatalogues(sourceRows.Select(r => ParseCatalog(r.SeriesCatalogJson)));
-        if (merged.Count == 0) return BadRequest(new { error = "No series catalogue was found for this author." });
+        if (merged.Count == 0) return null;
 
         // The author's books, indexed by normalized title (exact) with the full
         // list kept for a fuzzy fallback. Series is included so we can tell
@@ -327,7 +370,7 @@ public class IdentifiedController : ControllerBase
                 r.Reviewed = true;
 
         await _db.SaveChangesAsync(ct);
-        return Ok(new ApplyCatalogResult(created, reused, linked, fixedPos, unmatched, added, sourceRows.Count));
+        return new ApplyCatalogResult(created, reused, linked, fixedPos, unmatched, added, sourceRows.Count);
     }
 
     /// <summary>Marks a guess reviewed so it leaves the list. POST /api/identified/{id}/dismiss</summary>

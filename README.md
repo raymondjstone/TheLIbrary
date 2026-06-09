@@ -1048,7 +1048,10 @@ the Series page — so the series keeps its **full** title list and ordering rat
 than just the few titles already on disk. The
 catalogue-only rows that were consumed are cleared from the review list. The
 button only appears when the file is linked to an author. `POST
-/api/identified/{id}/apply-catalog`.
+/api/identified/{id}/apply-catalog`. A page-level **Build all series** button does
+the same for **every** author listed at once (`POST
+/api/identified/apply-catalog-all`) — series only; it never touches the book-title
+or author guesses.
 
 Guesses are written to a `BookContentScan` row and surfaced on the **Identified
 Books** page (`/identified`) for you to review. A row only appears when it adds
