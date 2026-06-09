@@ -35,6 +35,35 @@ public class BookIntegrityServiceTests
     }
 
     [Fact]
+    public async Task Run_Clears_Stuck_NonFile_Damaged_Rows()
+    {
+        var dbName = NewDb();
+        await using (var db = CreateDb(dbName))
+        {
+            var author = new Author { Name = "A" };
+            var book = new Book { Title = "B", Author = author };
+            // A directory-shaped row (no ebook extension) wrongly flagged damaged by
+            // an older check — the current job can never re-evaluate it.
+            db.LocalBookFiles.Add(new LocalBookFile
+            {
+                FullPath = "/lib/A/Some Title Folder",
+                SizeBytes = 1, ModifiedAt = FixedModified,
+                Book = book, Author = author,
+                IntegrityOk = false, IntegrityError = "stale",
+                IntegrityCheckedSize = 1, IntegrityCheckedModified = FixedModified,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        await CreateService(new FakeFileSystem(), dbName).RunForTestsAsync(CancellationToken.None);
+
+        await using var verify = CreateDb(dbName);
+        var row = await verify.LocalBookFiles.SingleAsync();
+        Assert.Null(row.IntegrityOk);     // un-flagged so it leaves the Damaged page
+        Assert.Null(row.IntegrityError);
+    }
+
+    [Fact]
     public async Task Run_Skips_Files_Already_Checked_At_Current_Size()
     {
         var fs = new FakeFileSystem();

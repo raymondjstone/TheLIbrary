@@ -39,6 +39,31 @@ public class DamagedControllerTests
     }
 
     [Fact]
+    public async Task GetDamaged_Drops_NonFile_Rows_With_No_Ebook_Extension()
+    {
+        var dbName = NewDb();
+        await using (var db = CreateDb(dbName))
+        {
+            var author = new Author { Name = "A" };
+            var book = new Book { Title = "Mixed Book", Author = author };
+            db.LocalBookFiles.AddRange(
+                Linked("/lib/A/real.epub", book),          // a real file → shown
+                Linked("/lib/A/Some Title Folder", book),  // directory-shaped row → dropped
+                Linked("/lib/A/loose", book));             // extensionless row → dropped
+            await db.SaveChangesAsync();
+        }
+
+        await using var verify = CreateDb(dbName);
+        var controller = new DamagedController(verify, null!, new FakeFileSystem(), new FakeLifetime());
+
+        var groups = await controller.GetDamaged();
+
+        var group = Assert.Single(groups);
+        var file = Assert.Single(group.Files);             // only the real ebook file
+        Assert.EndsWith("real.epub", file.Path);
+    }
+
+    [Fact]
     public async Task GetDamaged_Reports_Author_Priority_For_Starred_Filtering()
     {
         var dbName = NewDb();

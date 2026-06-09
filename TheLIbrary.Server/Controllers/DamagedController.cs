@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.IO;
 using TheLibrary.Server.Services.Sync;
 
@@ -85,8 +86,12 @@ public class DamagedController : ControllerBase
             .ToListAsync(ct);
 
         // Group by book when linked; fall back to author+title folder so loose
-        // damaged files (whose book was deleted) still cluster sensibly.
+        // damaged files (whose book was deleted) still cluster sensibly. Only real
+        // ebook FILES belong here — drop any directory / extensionless rows that an
+        // older check flagged and the current job (ebook-extension only) never
+        // re-evaluates, so they don't sit here forever as un-previewable ". files".
         return rows
+            .Where(r => BookIntegrityChecker.IsEbook(r.FullPath))
             .GroupBy(r => r.BookId.HasValue ? $"b:{r.BookId.Value}" : $"f:{r.AuthorFolder}|{r.TitleFolder}")
             .Select(g =>
             {
@@ -115,10 +120,14 @@ public class DamagedController : ControllerBase
     public async Task<JobStatus> GetStatus(CancellationToken ct = default)
     {
         var archiveLeaf = await GetArchiveLeafAsync(ct);
-        var count = await _db.LocalBookFiles.AsNoTracking()
+        // Count only real ebook files, matching GetDamaged — the extension test
+        // isn't SQL-translatable, so pull the (small) damaged path set and filter.
+        var paths = await _db.LocalBookFiles.AsNoTracking()
             .Where(f => f.IntegrityOk == false)
             .Where(ArchivedFilesController.NotUnderArchive(archiveLeaf))
-            .CountAsync(ct);
+            .Select(f => f.FullPath)
+            .ToListAsync(ct);
+        var count = paths.Count(BookIntegrityChecker.IsEbook);
         return new JobStatus(_integrity.IsRunning, _integrity.CurrentMessage, count);
     }
 

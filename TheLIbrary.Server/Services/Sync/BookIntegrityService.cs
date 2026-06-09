@@ -89,6 +89,29 @@ public sealed class BookIntegrityService
         var locations = await db.LibraryLocations.AsNoTracking()
             .Where(l => l.Enabled).Select(l => l.Path).ToListAsync(ct);
 
+        // Self-heal: clear the damaged flag on any flagged row that isn't an ebook
+        // FILE — a directory / extensionless row an older check wrongly flagged.
+        // This job only ever checks ebook-extension paths, so such rows can never be
+        // re-evaluated and would otherwise sit on the Damaged page forever as
+        // un-previewable ". files".
+        var flagged = await db.LocalBookFiles.AsNoTracking()
+            .Where(f => f.IntegrityOk == false)
+            .Select(f => new { f.Id, f.FullPath })
+            .ToListAsync(ct);
+        var stuckIds = flagged.Where(f => !BookIntegrityChecker.IsEbook(f.FullPath)).Select(f => f.Id).ToList();
+        if (stuckIds.Count > 0)
+        {
+            var toReset = await db.LocalBookFiles.Where(f => stuckIds.Contains(f.Id)).ToListAsync(ct);
+            foreach (var f in toReset)
+            {
+                f.IntegrityOk = null;
+                f.IntegrityError = null;
+                f.IntegrityPages = null;
+            }
+            await db.SaveChangesAsync(ct);
+            _log.LogInformation("Book-integrity: cleared {Count} stuck non-file damaged row(s)", toReset.Count);
+        }
+
         // Candidate = an ebook file linked to a book OR (unmatched but) to an
         // author, whose fingerprint changed since — or was never — checked. The
         // ebook-extension filter and the size/modified comparison run in SQL so

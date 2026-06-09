@@ -933,6 +933,12 @@ changes) and never lets a content-extraction hiccup disturb the integrity result
 author-linked** isn't shown on the Damaged page (there's no book to triage it
 against) — it's just a bad orphan, so it's **archived automatically**.
 
+Only rows that are actual ebook **files** (by extension) appear on the Damaged
+page. Directory-shaped / extensionless rows are never checked, and any such row a
+much-older check left flagged is **un-flagged at the start of each run** (it could
+never be re-evaluated, so it would otherwise sit on the Damaged page forever as an
+un-previewable "`.` file").
+
 Once every author-linked file is done, a second phase checks the **untracked
 files** in the `__unknown` bucket (the `UnknownFiles` index). A damaged untracked
 file is likewise **archived** (author unknown — the move just preserves its
