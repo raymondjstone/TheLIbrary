@@ -1060,20 +1060,25 @@ guess just re-confirms what's known, so it's hidden rather than cluttering the
 list with "accept author" rows that do nothing. A single **filter box** narrows
 the list to rows whose text matches in **any** column — path, author, title,
 series, ISBN, "also by", or anywhere in the series catalogue. Each row offers **Preview**,
-**Dismiss** (mark reviewed), and **Apply** — which resolves the guess to an
-OpenLibrary work and links the file to that book, creating/reusing the work
-**under the file's existing author**. How the work is resolved is deliberately
-strict, because a title scraped from a book's text is only a guess:
+**Dismiss** (mark reviewed), and **Apply** — which links the file to one of the
+author's books. How the guess is resolved is deliberately strict, because a title
+scraped from a book's text is only a guess, and we already know the author:
 
-- **ISBN** (`?isbn=`) is definitive — its single result is taken.
-- **Title** (no ISBN) is searched **with the file's folder author**, and a result
-  is accepted **only when it is genuinely by that author *and* its title is a
-  close match** (Jaro–Winkler ≥ 0.82 on the normalized titles). If nothing
-  qualifies the guess is **refused, not applied** — this is what stops the scan
-  attaching an unrelated work just because a title search returned *something*. Because a file that lives in an author folder is already
+- **ISBN** (`?isbn=`) is definitive — its single OpenLibrary result is taken.
+- **Title** (no ISBN) is matched **against the author's OWN existing books** — the
+  DB list of valid titles, kept comprehensive by the OpenLibrary author refresh —
+  using the same author-prefix strip + series-filename parsing + Jaro–Winkler fuzzy
+  (≥ 0.82) as the unmatched-file suggestions, with a trailing `Book N`/`Vol N`
+  descriptor stripped and the series **position** breaking ties between
+  identically-prefixed titles (so `High Druid of Shannara - Book 1` links to that
+  series' book 1). If **nothing in the author's catalogue matches**, the guess is
+  **refused, not applied** — it does **not** invent an OpenLibrary work, which is
+  what used to attach wrong books. (Match a genuinely-new book by hand instead.)
+
+Because a file that lives in an author folder is already
 attributed to that author (the author↔file link is folder-driven), Apply
-**keeps that author and never re-parents the file**, even if the matched
-OpenLibrary work lists a different author — it only attaches the work, it never
+**keeps that author and never re-parents the file**, even when matched by ISBN to a
+work that lists a different author — it only attaches the book, it never
 moves the file or invents a new author. (The manual unmatched→OpenLibrary match,
 where you explicitly pick a work, still resolves and re-parents to the work's
 author.) Nothing is applied automatically — Apply is a per-row, user-confirmed

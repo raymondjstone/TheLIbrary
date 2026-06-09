@@ -578,24 +578,22 @@ public class AuthorsControllerIntegrationTests
     }
 
     [Fact]
-    public async Task ApplyContentGuess_By_Title_Refuses_Work_By_Another_Author()
+    public async Task ApplyContentGuess_By_Title_Refuses_When_No_Known_Title_Matches()
     {
-        // Title-only guess. OL returns a work by a DIFFERENT author than the
-        // folder — exactly the "random work" case. It must be refused, not
-        // attached: the file stays unmatched and no book is created.
-        using var factory = new LibraryApiFactory((request, _) =>
-            Task.FromResult(TestHttpMessageHandler.Json("""
-                {"numFound":1,"docs":[{"key":"/works/OL99W","title":"Some Book",
-                  "author_name":["Someone Else"],"author_key":["OL999A"]}]}
-                """)));
+        // Title-only guess that matches none of the author's own books. It must be
+        // refused, not invented from OpenLibrary: the file stays unmatched and no
+        // book is created. (No OL call is made on the title path at all.)
+        using var factory = new LibraryApiFactory();
         await SeedAsync(factory, db =>
         {
-            db.Authors.Add(new Author { Id = 1, Name = "Anne McCaffrey", OpenLibraryKey = "OL26320A" });
+            db.Authors.Add(new Author { Id = 1, Name = "Anne McCaffrey" });
+            db.Books.Add(new Book { Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL10W",
+                Title = "Dragonflight", NormalizedTitle = TitleNormalizer.Normalize("Dragonflight") });
             db.LocalBookFiles.Add(new LocalBookFile { Id = 5, AuthorId = 1, FullPath = "/lib/A/x.epub" });
             db.BookContentScans.Add(new BookContentScan
             {
                 Id = 9, FullPath = "/lib/A/x.epub", Source = "unmatched", AuthorId = 1,
-                Title = "Some Book", Author = "Someone Else",
+                Title = "Some Completely Unrelated Book",
             });
         });
 
@@ -607,27 +605,27 @@ public class AuthorsControllerIntegrationTests
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
         Assert.Null((await db.LocalBookFiles.FindAsync(5))!.BookId); // still unmatched
-        Assert.Empty(await db.Books.ToListAsync());                  // no random work attached
+        Assert.Single(await db.Books.ToListAsync());                 // no new book invented
     }
 
     [Fact]
-    public async Task ApplyContentGuess_By_Title_Applies_Work_By_Same_Author()
+    public async Task ApplyContentGuess_By_Title_Links_To_The_Authors_Own_Known_Book()
     {
-        // Title-only guess that resolves to a work genuinely by the folder author
-        // with a closely-matching title — this one should apply.
-        using var factory = new LibraryApiFactory((request, _) =>
-            Task.FromResult(TestHttpMessageHandler.Json("""
-                {"numFound":1,"docs":[{"key":"/works/OL77W","title":"Dragonflight",
-                  "author_name":["Anne McCaffrey"],"author_key":["OL26320A"]}]}
-                """)));
+        // Title-only guess. No OpenLibrary call — it matches the guess against the
+        // author's OWN existing books (the DB list of valid titles) and links the
+        // file to the one that matches, even with a trailing "Book N" descriptor.
+        using var factory = new LibraryApiFactory();
         await SeedAsync(factory, db =>
         {
-            db.Authors.Add(new Author { Id = 1, Name = "Anne McCaffrey", OpenLibraryKey = "OL26320A" });
+            db.Authors.Add(new Author { Id = 1, Name = "Terry Brooks" });
+            db.Books.Add(new Book { Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL10W",
+                Title = "High Druid of Shannara: Jarka Ruus",
+                NormalizedTitle = TitleNormalizer.Normalize("High Druid of Shannara: Jarka Ruus") });
             db.LocalBookFiles.Add(new LocalBookFile { Id = 5, AuthorId = 1, FullPath = "/lib/A/x.epub" });
             db.BookContentScans.Add(new BookContentScan
             {
                 Id = 9, FullPath = "/lib/A/x.epub", Source = "unmatched", AuthorId = 1,
-                Title = "Dragonflight", Author = "Anne McCaffrey",
+                Title = "High Druid of Shannara - Book 1",
             });
         });
 
@@ -639,8 +637,8 @@ public class AuthorsControllerIntegrationTests
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
         var file = await db.LocalBookFiles.FindAsync(5);
-        Assert.NotNull(file!.BookId);
-        Assert.Equal("OL77W", (await db.Books.FindAsync(file.BookId))!.OpenLibraryWorkKey);
+        Assert.Equal(10, file!.BookId);              // linked to the author's existing book
+        Assert.Single(await db.Books.ToListAsync()); // no new book invented
     }
 
     [Fact]

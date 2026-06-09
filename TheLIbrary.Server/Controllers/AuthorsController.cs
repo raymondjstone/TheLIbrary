@@ -1319,18 +1319,30 @@ public class AuthorsController : ControllerBase
             doc = byIsbn?.Docs?.FirstOrDefault(d => !string.IsNullOrWhiteSpace(d.Key));
         }
 
+        // No ISBN hit → match the guessed title against the author's OWN known
+        // books (the DB list of valid titles) rather than inventing an OpenLibrary
+        // work. We already know the author, and AuthorRefresher keeps their full OL
+        // catalogue in the DB, so the right book is almost always already there.
+        // Inventing a work from an OL title search is what attached wrong books.
         if (doc is null && !string.IsNullOrWhiteSpace(scan.Title))
         {
-            // Search by the authoritative folder author, not the (also-guessed) text author.
-            var byTitle = await _ol.SearchWorksAsync(scan.Title!, currentAuthor.Name, ct);
-            doc = PickWorkByAuthorAndTitle(byTitle?.Docs, currentAuthor.Name, scan.Title!);
-            if (doc is null)
+            var known = await FindBestKnownBookAsync(currentAuthor, scan.Title!, scan.SeriesPosition, ct);
+            if (known is not null)
             {
-                scan.Reviewed = true; // unactionable guess — clear it from the list
+                file.AuthorId = currentAuthor.Id;
+                file.BookId = known.Id;
+                file.ManuallyUnmatched = false;
+                scan.Reviewed = true;
                 await _db.SaveChangesAsync(ct);
-                return Ok(new ApplyGuessResult(false, null, null, null,
-                    $"No OpenLibrary work by {currentAuthor.Name} closely matched the guessed title “{scan.Title}” — not applied."));
+                return Ok(new ApplyGuessResult(true, known.Id, file.AuthorId, known.Title, null));
             }
+
+            // Nothing in the author's catalogue matched — do NOT guess an OpenLibrary
+            // work. Leave the file for manual matching rather than attach something wrong.
+            scan.Reviewed = true;
+            await _db.SaveChangesAsync(ct);
+            return Ok(new ApplyGuessResult(false, null, null, null,
+                $"“{scan.Title}” doesn't closely match any of {currentAuthor.Name}'s known titles — not applied. Match it by hand if it's a new book."));
         }
 
         if (doc is null || string.IsNullOrWhiteSpace(doc.Key))
@@ -1520,35 +1532,71 @@ public class AuthorsController : ControllerBase
         return author;
     }
 
-    // Minimum title similarity for a content-guess title to be accepted against a
-    // candidate OpenLibrary work. High on purpose: a guess scraped from the text
-    // must really be the book's title, not just land near another of the author's
-    // works. (Both sides are normalized first, so articles/punctuation don't count.)
-    private const double GuessTitleMinScore = 0.82;
+    // Minimum fuzzy score for auto-linking a content guess to one of the author's
+    // EXISTING books. High on purpose: a scraped title must really be one of their
+    // known titles, not just land near one. (Both sides are normalized first, so
+    // articles/punctuation don't count.)
+    private const double KnownTitleMinScore = 0.82;
 
-    // From OL title-search results, picks the one work that is (a) by the given
-    // author and (b) the closest title match above the floor. Returns null when
-    // nothing qualifies — the caller then refuses rather than attaching a wrong
-    // work. This is what stops the content scan matching random books.
-    private static WorkSearchDoc? PickWorkByAuthorAndTitle(IReadOnlyList<WorkSearchDoc>? docs, string author, string guessTitle)
+    // A trailing "Book 3" / "Vol. 2" / "Part 1" / "#4" descriptor on a guessed
+    // title ("High Druid of Shannara - Book 1") — stripped to form an extra match
+    // candidate so the bare title can hit the real book.
+    private static readonly System.Text.RegularExpressions.Regex TrailingVolumeRx = new(
+        @"[\s:–—-]+(?:book|vol(?:ume)?|part|#)\s*\.?\s*\d+(?:\.\d+)?\s*$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // Finds the author's own existing book that best matches a content-guess title,
+    // reusing the same author-prefix strip + series-filename parsing + Jaro-Winkler
+    // fuzzy as the unmatched-file suggestions. Returns null when nothing clears the
+    // floor — the caller then refuses rather than inventing an OpenLibrary work.
+    // When the guess carries a series position, a same-position book is nudged up so
+    // "X - Book 1" picks position 1 among several identically-prefixed titles.
+    private async Task<Book?> FindBestKnownBookAsync(Author author, string guessedTitle, string? seriesPosition, CancellationToken ct)
     {
-        if (docs is null || docs.Count == 0) return null;
-        var wantAuthor = TitleNormalizer.NormalizeAuthor(author);
-        var wantTitle = TitleNormalizer.Normalize(guessTitle);
+        var foldedIds = new List<int> { author.Id };
+        foldedIds.AddRange(await _db.Authors.AsNoTracking()
+            .Where(a => a.LinkedToAuthorId == author.Id && !a.IsPenName)
+            .Select(a => a.Id).ToListAsync(ct));
 
-        WorkSearchDoc? best = null;
-        var bestScore = GuessTitleMinScore;
-        foreach (var d in docs)
+        var authorNorm = TitleNormalizer.Normalize(author.Name);
+        var books = (await _db.Books.AsNoTracking()
+            .Where(b => foldedIds.Contains(b.AuthorId) && !b.Suppressed && !b.Foreign)
+            .Select(b => new { b.Id, b.Title, b.NormalizedTitle, b.SeriesPosition })
+            .ToListAsync(ct))
+            // Never match a phantom book titled as the author themself.
+            .Where(b => string.IsNullOrEmpty(authorNorm)
+                || (b.NormalizedTitle ?? TitleNormalizer.Normalize(b.Title)) != authorNorm)
+            .ToList();
+        if (books.Count == 0) return null;
+
+        var stems = SyncService.TitleStemCandidates(guessedTitle, author).ToList();
+        var bare = TrailingVolumeRx.Replace(guessedTitle, "").Trim();
+        if (bare.Length > 0 && !stems.Contains(bare)) stems.Add(bare);
+
+        var candidates = stems
+            .SelectMany(TitleNormalizer.FolderTitleCandidates)
+            .Where(c => !string.IsNullOrEmpty(c)
+                        && c != authorNorm
+                        && !(authorNorm.Length > 0 && c.StartsWith(authorNorm + " ", StringComparison.Ordinal)))
+            .Distinct()
+            .ToList();
+        if (candidates.Count == 0) return null;
+
+        var hasPos = !string.IsNullOrWhiteSpace(seriesPosition);
+        int? bestId = null;
+        double bestScore = 0;
+        foreach (var b in books)
         {
-            if (string.IsNullOrWhiteSpace(d.Key)) continue;
-            // Must be by this author (one of the listed names must match).
-            if (d.AuthorNames is null
-                || !d.AuthorNames.Any(n => TitleNormalizer.NormalizeAuthor(n) == wantAuthor))
-                continue;
-            var score = FuzzyScore.JaroWinkler(wantTitle, TitleNormalizer.Normalize(d.Title ?? ""));
-            if (score > bestScore) { bestScore = score; best = d; }
+            var bn = b.NormalizedTitle ?? TitleNormalizer.Normalize(b.Title);
+            double score = 0;
+            foreach (var c in candidates) score = Math.Max(score, FuzzyScore.JaroWinkler(bn, c));
+            if (hasPos && b.SeriesPosition == seriesPosition) score += 0.03; // position tiebreak
+            if (score > bestScore) { bestScore = score; bestId = b.Id; }
         }
-        return best;
+
+        return bestId is int id && bestScore >= KnownTitleMinScore
+            ? await _db.Books.FirstOrDefaultAsync(b => b.Id == id, ct)
+            : null;
     }
 
     public sealed record BulkApplyResult(int Applied, int Failed, int Remaining);
