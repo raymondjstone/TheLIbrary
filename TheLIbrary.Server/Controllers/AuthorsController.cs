@@ -1443,14 +1443,53 @@ public class AuthorsController : ControllerBase
     {
         var scan = await _db.BookContentScans.FirstOrDefaultAsync(c => c.Id == scanId, ct);
         if (scan is null) return NotFound(new { error = "Scan not found." });
+        return Ok(await AssignUntrackedAuthorCoreAsync(scan, ct));
+    }
 
+    public sealed record AssignAuthorsAllResult(int Assigned, int Skipped, int Failed, int Remaining);
+
+    // Bulk version of assign-author: files every untracked row that has something to
+    // resolve an author from (ISBN / title / guessed author) under its OL-resolved
+    // or guessed author, creating authors as needed. Capped per call because
+    // OpenLibrary is rate-limited — repeat until Remaining is 0. Rows that carry a
+    // series catalogue are kept (with their new author) so their series can then be
+    // built with the same Build-series action as the tracked rows.
+    // POST /api/identified/assign-authors-all
+    [HttpPost("~/api/identified/assign-authors-all")]
+    public async Task<ActionResult<AssignAuthorsAllResult>> AssignUntrackedAuthorsAll(CancellationToken ct)
+    {
+        const int cap = 100;
+        var candidates = await _db.BookContentScans
+            .Where(c => !c.Reviewed && c.AuthorId == null
+                && (c.Isbn != null || c.Author != null || c.Title != null))
+            .OrderBy(c => c.Id)
+            .ToListAsync(ct);
+
+        int assigned = 0, skipped = 0, failed = 0;
+        foreach (var scan in candidates.Take(cap))
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var r = await AssignUntrackedAuthorCoreAsync(scan, ct);
+                if (r.Assigned) assigned++; else skipped++;
+            }
+            catch { failed++; _db.ChangeTracker.Clear(); }
+        }
+        return Ok(new AssignAuthorsAllResult(assigned, skipped, failed, Math.Max(0, candidates.Count - cap)));
+    }
+
+    // Core of assign-author for one already-loaded scan. Saves its own changes and
+    // returns the result; the HTTP wrappers just wrap it.
+    private async Task<AssignAuthorResult> AssignUntrackedAuthorCoreAsync(BookContentScan scan, CancellationToken ct)
+    {
         var sourcePath = scan.FullPath;
         if (!_fs.FileExists(sourcePath) && !_fs.DirectoryExists(sourcePath))
-            return Ok(new AssignAuthorResult(false, null, null, null, null, "File no longer exists on disk."));
+            return new AssignAuthorResult(false, null, null, null, null, "File no longer exists on disk.");
 
         var existingFile = await _db.LocalBookFiles.FirstOrDefaultAsync(f => f.FullPath == sourcePath, ct);
         if (existingFile?.AuthorId is not null)
-            return Ok(new AssignAuthorResult(false, null, null, null, null, "This file is already linked to an author."));
+            return new AssignAuthorResult(false, null, null, null, null, "This file is already linked to an author.");
 
         // Which enabled library root does the file live under? (Needed to build
         // the destination author folder.)
@@ -1469,12 +1508,12 @@ public class AuthorsController : ControllerBase
                 customUnknown.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
                 StringComparison.OrdinalIgnoreCase);
             if (!isUnderCustom)
-                return Ok(new AssignAuthorResult(false, null, null, null, null, "File is outside all enabled library locations."));
+                return new AssignAuthorResult(false, null, null, null, null, "File is outside all enabled library locations.");
 
             root = locations.FirstOrDefault(l => l.IsPrimary)?.Path
                    ?? roots.FirstOrDefault();
             if (root is null)
-                return Ok(new AssignAuthorResult(false, null, null, null, null, "No enabled library location is configured."));
+                return new AssignAuthorResult(false, null, null, null, null, "No enabled library location is configured.");
         }
 
         // 1. Try OpenLibrary (ISBN, else title + author) — best author + a book.
@@ -1506,10 +1545,10 @@ public class AuthorsController : ControllerBase
             author = await ResolveAuthorByNameAsync(scan.Author!.Trim(), ct);
 
         if (author is null)
-            return Ok(new AssignAuthorResult(false, null, null, null, null,
+            return new AssignAuthorResult(false, null, null, null, null,
                 string.IsNullOrWhiteSpace(scan.Author)
                     ? "Couldn't determine an author — no usable ISBN, title, or author was guessed for this file."
-                    : $"Couldn't confirm \"{scan.Author}\" — not found via OpenLibrary, so no author was created."));
+                    : $"Couldn't confirm \"{scan.Author}\" — not found via OpenLibrary, so no author was created.");
 
         var file = existingFile ?? new LocalBookFile();
         if (existingFile is null) _db.LocalBookFiles.Add(file);
@@ -1525,15 +1564,17 @@ public class AuthorsController : ControllerBase
         file.FullPath = finalPath;
         file.NormalizedTitle = TitleNormalizer.Normalize(file.TitleFolder);
 
-        // The file now lives under an author, so the scan row follows it and is
-        // cleared from the review list.
+        // The file now lives under an author, so the scan row follows it. Keep the
+        // row when it carries a series catalogue (now tagged with its author) so the
+        // same Build-series action as the tracked rows can still be run on it;
+        // otherwise it's done, so clear it from the review list.
         scan.FullPath = finalPath;
         scan.AuthorId = author.Id;
         scan.Source = "unmatched";
-        scan.Reviewed = true;
+        scan.Reviewed = scan.SeriesCatalogJson is null;
 
         await _db.SaveChangesAsync(ct);
-        return Ok(new AssignAuthorResult(true, author.Id, author.Name, book?.Id, finalPath, null));
+        return new AssignAuthorResult(true, author.Id, author.Name, book?.Id, finalPath, null);
     }
 
     // Resolves a guessed author name to an Author for the untracked-assign

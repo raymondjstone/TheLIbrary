@@ -1096,8 +1096,13 @@ the Pending author is tied to that OL key/name; an unverifiable name is refused
 rather than invented, so guesses can't spawn junk authors. It then **moves the
 file into that author's folder** and tracks it as one of their unmatched files,
 so it shows in their Unmatched section and can be matched to a book next. This is
-how untracked files get out of `__unknown` and onto an author. A header **Apply all N ISBN matches**
-button bulk-applies every
+how untracked files get out of `__unknown` and onto an author. A header **Add all
+N authors from OL (if needed)** button does this for **every** untracked row at
+once (`POST /api/identified/assign-authors-all`, capped per call — repeat until
+none remain); a row that carries a **series catalogue** is *kept* (now tagged with
+its new author) so its series can then be built with the same **Build series** /
+**Build all series** action as the tracked rows. A header **Apply all N ISBN
+matches** button bulk-applies every
 ISBN-backed guess in one go (capped per call so it can't time out against
 OpenLibrary's rate limit — repeat until none remain); title-only guesses are
 left for per-row review.

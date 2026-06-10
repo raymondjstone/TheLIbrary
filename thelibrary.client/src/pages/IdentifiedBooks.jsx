@@ -73,6 +73,7 @@ export default function IdentifiedBooks() {
 
     const isbnApplicable = (rows ?? []).filter(r => r.fileId != null && r.isbn).length
     const catalogApplicable = (rows ?? []).filter(r => r.authorId != null && r.seriesCatalog?.length > 0).length
+    const untrackedAssignable = (rows ?? []).filter(r => r.source === 'untracked' && (r.author || r.isbn || r.title)).length
 
     const [catalogBusy, setCatalogBusy] = useState(false)
     // Build series for EVERY author with a catalogue in one go — series only,
@@ -154,11 +155,35 @@ export default function IdentifiedBooks() {
             if (!r.ok) throw new Error(body.error || r.statusText)
             if (!body.assigned) { alert(body.reason || 'Could not assign.'); return }
             alert(`Filed under ${body.authorName}${body.bookId ? ' and matched to a book' : ''}.`)
-            setRows(prev => prev.filter(x => x.id !== id))
+            // Reload rather than drop the row: when the file carries a series
+            // catalogue it stays (now tagged with its author) so its series can be
+            // built with the same Build-series action as the tracked rows.
+            load()
         } catch (e) {
             alert(`Failed: ${e.message}`)
         } finally {
             setBusy(prev => { const n = new Set(prev); n.delete(id); return n })
+        }
+    }
+
+    const [assignAllBusy, setAssignAllBusy] = useState(false)
+    // Bulk "Add all authors from OL (if needed)": files every untracked row under
+    // its OL-resolved (or guessed) author, creating authors as needed. Rows with a
+    // series catalogue stay on the list so their series can then be built.
+    const assignAuthorsAll = async () => {
+        if (!window.confirm('File every untracked book under its author, creating authors from OpenLibrary where needed? Books are moved into the author folders. Series catalogues stay so you can then Build all series.')) return
+        setAssignAllBusy(true)
+        try {
+            const r = await fetch('/api/identified/assign-authors-all', { method: 'POST' })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            alert(`Filed ${body.assigned} book(s), skipped ${body.skipped}, failed ${body.failed}.`
+                + (body.remaining > 0 ? ` ${body.remaining} still to do — run again to continue.` : ''))
+            load()
+        } catch (e) {
+            alert(`Failed: ${e.message}`)
+        } finally {
+            setAssignAllBusy(false)
         }
     }
 
@@ -235,6 +260,16 @@ export default function IdentifiedBooks() {
                         {bulkBusy ? 'Applying…' : `Apply all ${isbnApplicable} ISBN match${isbnApplicable === 1 ? '' : 'es'}`}
                     </button>
                     <span className="subtle">ISBN-backed guesses are the reliable ones — title-only guesses still need a per-row check.</span>
+                </div>
+            )}
+
+            {untrackedAssignable > 0 && (
+                <div className="toolbar">
+                    <button onClick={assignAuthorsAll} disabled={assignAllBusy}
+                            title="File every untracked book under its author, creating authors from OpenLibrary where needed">
+                        {assignAllBusy ? 'Adding authors…' : `Add all ${untrackedAssignable} author${untrackedAssignable === 1 ? '' : 's'} from OL (if needed)`}
+                    </button>
+                    <span className="subtle">Files each untracked book under its author (created from OL if needed). Catalogues stay so you can then Build all series.</span>
                 </div>
             )}
 

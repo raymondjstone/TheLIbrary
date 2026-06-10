@@ -310,6 +310,53 @@ public class AuthorsControllerIntegrationTests
     }
 
     [Fact]
+    public async Task AssignUntrackedAuthorsAll_Files_Every_Untracked_Row_And_Keeps_Catalogue_Rows()
+    {
+        using var factory = new LibraryApiFactory();
+        var root = Path.Combine(Path.GetTempPath(), $"thelibrary-untracked-{Guid.NewGuid():N}");
+        var dir = Path.Combine(root, CalibreScanner.UnknownAuthorFolder, "Loose");
+        Directory.CreateDirectory(dir);
+        var f1 = Path.Combine(dir, "a.epub");
+        var f2 = Path.Combine(dir, "b.epub");
+        await File.WriteAllTextAsync(f1, "x");
+        await File.WriteAllTextAsync(f2, "x");
+        try
+        {
+            await SeedAsync(factory, db =>
+            {
+                db.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "D", Path = root, Enabled = true, CreatedAt = DateTime.UtcNow });
+                db.OpenLibraryAuthors.AddRange(
+                    new OpenLibraryAuthor { OlKey = "OL1A", Name = "Author One", NormalizedName = TheLibrary.Server.Services.Sync.TitleNormalizer.NormalizeAuthor("Author One"), ImportedAt = DateTime.UtcNow },
+                    new OpenLibraryAuthor { OlKey = "OL2A", Name = "Author Two", NormalizedName = TheLibrary.Server.Services.Sync.TitleNormalizer.NormalizeAuthor("Author Two"), ImportedAt = DateTime.UtcNow });
+                db.BookContentScans.AddRange(
+                    new BookContentScan { Id = 1, FullPath = f1, Source = "untracked", Author = "Author One", SeriesCatalogJson = "[{\"Series\":\"S\",\"Titles\":[\"T\"]}]", ScannedAt = DateTime.UtcNow },
+                    new BookContentScan { Id = 2, FullPath = f2, Source = "untracked", Author = "Author Two", ScannedAt = DateTime.UtcNow });
+            });
+            using var client = factory.CreateClient();
+
+            var resp = await client.PostAsync("/api/identified/assign-authors-all", null);
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            var body = await resp.Content.ReadFromJsonAsync<AuthorsController.AssignAuthorsAllResult>();
+            Assert.Equal(2, body!.Assigned);
+
+            using var scope = factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+            Assert.Equal(2, await db.Authors.CountAsync());
+            Assert.Equal(2, await db.LocalBookFiles.CountAsync(f => f.AuthorId != null));
+            // The catalogue row is kept (tagged with its author) so series can still be built…
+            var withCat = await db.BookContentScans.FindAsync(1);
+            Assert.False(withCat!.Reviewed);
+            Assert.NotNull(withCat.AuthorId);
+            // …while the catalogue-less row is cleared from the review list.
+            Assert.True((await db.BookContentScans.FindAsync(2))!.Reviewed);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task AssignUntrackedAuthor_Creates_Pending_Author_Only_When_Name_Is_A_Known_OL_Author()
     {
         using var factory = new LibraryApiFactory();
