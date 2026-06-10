@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import BookPreview from '../components/BookPreview.jsx'
 
@@ -27,6 +27,7 @@ export default function IdentifiedBooks() {
     const [preview, setPreview] = useState(null)
     const [expanded, setExpanded] = useState(() => new Set())
     const [filter, setFilter] = useState('')
+    const [authorEdit, setAuthorEdit] = useState(null) // { id, current }
 
     // Filter rows on the entered text appearing in ANY column.
     const filtered = useMemo(() => {
@@ -177,6 +178,28 @@ export default function IdentifiedBooks() {
         }
     }
 
+    // Overwrite the guessed author name on a scan row without acting on the file.
+    const setAuthor = async (id, newName) => {
+        try {
+            const r = await fetch(`/api/identified/${id}/author`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ author: newName }),
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setRows(prev => prev.map(x => x.id !== id ? x : {
+                ...x,
+                author: body.author ?? null,
+                authorId: body.authorId ?? null,
+                linkedAuthorName: body.linkedAuthorName ?? null,
+            }))
+            setAuthorEdit(null)
+        } catch (e) {
+            alert(`Failed: ${e.message}`)
+        }
+    }
+
     return (
         <div>
             <h1>Identified Books</h1>
@@ -232,129 +255,274 @@ export default function IdentifiedBooks() {
                 <p className="subtle">Nothing to review. Run the identify job to populate this.</p>
             ) : filtered.length === 0 ? (
                 <p className="subtle">No rows match “{filter.trim()}”. <button className="btn-ghost" onClick={() => setFilter('')}>Clear filter</button></p>
-            ) : (
-                <table className="grid">
-                    <thead>
-                        <tr>
-                            <th>File</th>
-                            <th>Source</th>
-                            <th>Guessed author</th>
-                            <th>Guessed title</th>
-                            <th>Series</th>
-                            <th>ISBN</th>
-                            <th>Also by</th>
-                            <th>Series catalogue</th>
-                            <th></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {filtered.map(r => (
-                            <Fragment key={r.id}>
-                            <tr>
-                                <td style={{ maxWidth: 320 }}>
-                                    <div style={{ fontSize: '0.8em', wordBreak: 'break-all' }}>{r.path}</div>
-                                    {r.linkedAuthorName && (
-                                        <div className="subtle" style={{ fontSize: '0.78em' }}>
-                                            linked to {r.authorId
-                                                ? <Link to={`/authors/${r.authorId}`}>{r.linkedAuthorName}</Link>
-                                                : r.linkedAuthorName}
-                                        </div>
-                                    )}
-                                </td>
-                                <td>{r.source}</td>
-                                <td>{r.author ?? '—'}</td>
-                                <td>{r.title ?? '—'}</td>
-                                <td>{r.series ? `${r.series}${r.seriesPosition ? ` #${r.seriesPosition}` : ''}` : '—'}</td>
-                                <td>{r.isbn ?? '—'}</td>
-                                <td style={{ maxWidth: 240 }}>
-                                    {r.alsoBy?.length
-                                        ? <span className="subtle" style={{ fontSize: '0.8em' }}>{r.alsoBy.join(' · ')}</span>
-                                        : '—'}
-                                </td>
-                                <td>
-                                    {r.seriesCatalog?.length
-                                        ? <button className="btn-ghost" onClick={() => toggleCatalog(r.id)}
-                                                  title="Show the series and titles found in this book's bibliography">
-                                            {expanded.has(r.id) ? '▾' : '▸'} {r.seriesCatalog.length} series
-                                            {' '}({r.seriesCatalog.reduce((n, s) => n + (s.titles?.length ?? 0), 0)} titles)
-                                          </button>
-                                        : '—'}
-                                    {r.seriesCatalog?.length > 0 && r.authorId != null && (
-                                        <div style={{ marginTop: '0.3rem' }}>
-                                            <button disabled={busy.has(r.id)}
-                                                    title="Create these series for the author and link matching owned books"
-                                                    onClick={() => applyCatalog(r.id)}>
-                                                {busy.has(r.id) ? '…' : 'Build series'}
-                                            </button>
-                                        </div>
-                                    )}
-                                </td>
-                                <td>
-                                    <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
-                                        {r.fileId != null && (
-                                            <button className="btn-ghost"
-                                                    onClick={() => setPreview({ fileId: r.fileId, format: r.format, title: r.title })}>
-                                                Preview
-                                            </button>
-                                        )}
-                                        {r.fileId != null && (r.isbn || r.title) && (
-                                            <button disabled={busy.has(r.id)}
-                                                    title="Match this file to an OpenLibrary work using the guess"
-                                                    onClick={() => apply(r.id)}>
-                                                {busy.has(r.id) ? '…' : 'Apply'}
-                                            </button>
-                                        )}
-                                        {r.fileId != null && r.authorId != null && r.source !== 'matched' && (
-                                            <button disabled={busy.has(r.id)}
-                                                    title={`Accept "${r.linkedAuthorName}" as the author and move the file to their folder`}
-                                                    onClick={() => acceptAuthor(r.id, r.linkedAuthorName ?? r.author ?? 'this author')}>
-                                                {busy.has(r.id) ? '…' : 'Accept author'}
-                                            </button>
-                                        )}
-                                        {r.source === 'untracked' && r.author && (
-                                            <button disabled={busy.has(r.id)}
-                                                    title={`File this untracked book under "${r.author}" (resolves via OpenLibrary or by name)`}
-                                                    onClick={() => assignAuthor(r.id, r.author)}>
-                                                {busy.has(r.id) ? '…' : `Assign to ${r.author}`}
-                                            </button>
-                                        )}
-                                        <button className="btn-ghost" disabled={busy.has(r.id)}
-                                                title="Mark reviewed and remove from this list"
-                                                onClick={() => dismiss(r.id)}>
-                                            Dismiss
-                                        </button>
-                                    </div>
-                                </td>
-                            </tr>
-                            {expanded.has(r.id) && r.seriesCatalog?.length > 0 && (
-                                <tr>
-                                    <td colSpan={9} style={{ background: 'var(--surface-2, #f6f6f6)' }}>
-                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', padding: '0.4rem 0.2rem' }}>
-                                            {r.seriesCatalog.map((s, i) => (
-                                                <div key={i} style={{ minWidth: 220 }}>
-                                                    <div style={{ fontWeight: 600 }}>
-                                                        {s.series}
-                                                        {s.genre && <span className="subtle" style={{ fontWeight: 400 }}> · {s.genre}</span>}
-                                                    </div>
-                                                    <ol style={{ margin: '0.25rem 0 0', paddingLeft: '1.4rem', fontSize: '0.85em' }}>
-                                                        {s.titles.map((t, j) => <li key={j}>{t}</li>)}
-                                                    </ol>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </td>
-                                </tr>
-                            )}
-                            </Fragment>
-                        ))}
-                    </tbody>
-                </table>
+            ) : (() => {
+                const untracked = filtered.filter(r => r.source === 'untracked')
+                const tracked   = filtered.filter(r => r.source !== 'untracked')
+                const tableProps = { busy, expanded, toggleCatalog, setPreview, apply, acceptAuthor, assignAuthor, applyCatalog, dismiss, setAuthorEdit }
+                return (
+                    <>
+                        <h2 style={{ marginTop: '1.5rem' }}>
+                            Untracked
+                            <span className="subtle" style={{ fontWeight: 400, fontSize: '0.85em', marginLeft: '0.5rem' }}>({untracked.length})</span>
+                        </h2>
+                        <p className="subtle" style={{ marginBottom: '0.5rem' }}>
+                            Files in the <code>__unknown</code> folder — not yet assigned to any author.
+                        </p>
+                        {untracked.length === 0
+                            ? <p className="subtle">None.</p>
+                            : <RowTable rows={untracked} {...tableProps} />}
+
+                        <h2 style={{ marginTop: '2rem' }}>
+                            Tracked
+                            <span className="subtle" style={{ fontWeight: 400, fontSize: '0.85em', marginLeft: '0.5rem' }}>({tracked.length})</span>
+                        </h2>
+                        <p className="subtle" style={{ marginBottom: '0.5rem' }}>
+                            Files already in an author folder — waiting to be matched to a specific book.
+                        </p>
+                        {tracked.length === 0
+                            ? <p className="subtle">None.</p>
+                            : <RowTable rows={tracked} {...tableProps} />}
+                    </>
+                )
+            })()}
+
+            {authorEdit && (
+                <AuthorEditPopover
+                    scanId={authorEdit.id}
+                    current={authorEdit.current}
+                    onSave={setAuthor}
+                    onClose={() => setAuthorEdit(null)} />
             )}
 
             {preview && (
                 <BookPreview fileId={preview.fileId} format={preview.format}
+                    srcUrl={preview.srcUrl}
                     title={preview.title} onClose={() => setPreview(null)} />
             )}
+        </div>
+    )
+}
+
+function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, acceptAuthor, assignAuthor, applyCatalog, dismiss, setAuthorEdit }) {
+    return (
+        <table className="grid">
+            <thead>
+                <tr>
+                    <th>File</th>
+                    <th>Guessed author</th>
+                    <th>Guessed title</th>
+                    <th>Series</th>
+                    <th>ISBN</th>
+                    <th>Also by</th>
+                    <th>Series catalogue</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows.map(r => (
+                    <Fragment key={r.id}>
+                    <tr>
+                        <td style={{ maxWidth: 320 }}>
+                            <div style={{ fontSize: '0.8em', wordBreak: 'break-all' }}>{r.path}</div>
+                            {r.linkedAuthorName && (
+                                <div className="subtle" style={{ fontSize: '0.78em' }}>
+                                    linked to {r.authorId
+                                        ? <Link to={`/authors/${r.authorId}`}>{r.linkedAuthorName}</Link>
+                                        : r.linkedAuthorName}
+                                </div>
+                            )}
+                        </td>
+                        <td>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                                <span>{r.author ?? '—'}</span>
+                                <button className="btn-ghost" style={{ fontSize: '0.75em', padding: '0.1em 0.35em' }}
+                                        title="Search for and change the guessed author"
+                                        onClick={() => setAuthorEdit({ id: r.id, current: r.author ?? '' })}>
+                                    ✎
+                                </button>
+                            </div>
+                        </td>
+                        <td>{r.title ?? '—'}</td>
+                        <td>{r.series ? `${r.series}${r.seriesPosition ? ` #${r.seriesPosition}` : ''}` : '—'}</td>
+                        <td>{r.isbn ?? '—'}</td>
+                        <td style={{ maxWidth: 240 }}>
+                            {r.alsoBy?.length
+                                ? <span className="subtle" style={{ fontSize: '0.8em' }}>{r.alsoBy.join(' · ')}</span>
+                                : '—'}
+                        </td>
+                        <td>
+                            {r.seriesCatalog?.length
+                                ? <button className="btn-ghost" onClick={() => toggleCatalog(r.id)}
+                                          title="Show the series and titles found in this book's bibliography">
+                                    {expanded.has(r.id) ? '▾' : '▸'} {r.seriesCatalog.length} series
+                                    {' '}({r.seriesCatalog.reduce((n, s) => n + (s.titles?.length ?? 0), 0)} titles)
+                                  </button>
+                                : '—'}
+                            {r.seriesCatalog?.length > 0 && r.authorId != null && (
+                                <div style={{ marginTop: '0.3rem' }}>
+                                    <button disabled={busy.has(r.id)}
+                                            title="Create these series for the author and link matching owned books"
+                                            onClick={() => applyCatalog(r.id)}>
+                                        {busy.has(r.id) ? '…' : 'Build series'}
+                                    </button>
+                                </div>
+                            )}
+                        </td>
+                        <td>
+                            <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+                                {r.fileId != null && (
+                                    <button className="btn-ghost"
+                                            onClick={() => setPreview({ fileId: r.fileId, format: r.format, title: r.title })}>
+                                        Preview
+                                    </button>
+                                )}
+                                {r.fileId == null && r.format && (
+                                    <button className="btn-ghost"
+                                            onClick={() => setPreview({
+                                                fileId: null,
+                                                format: r.format,
+                                                title: r.title,
+                                                srcUrl: `/api/identified/${r.id}/preview?format=${encodeURIComponent(r.format)}`,
+                                            })}>
+                                        Preview
+                                    </button>
+                                )}
+                                {r.fileId != null && (r.isbn || r.title) && (
+                                    <button disabled={busy.has(r.id)}
+                                            title="Match this file to an OpenLibrary work using the guess"
+                                            onClick={() => apply(r.id)}>
+                                        {busy.has(r.id) ? '…' : 'Apply'}
+                                    </button>
+                                )}
+                                {r.fileId != null && r.authorId != null && r.source !== 'matched' && (
+                                    <button disabled={busy.has(r.id)}
+                                            title={`Accept "${r.linkedAuthorName}" as the author and move the file to their folder`}
+                                            onClick={() => acceptAuthor(r.id, r.linkedAuthorName ?? r.author ?? 'this author')}>
+                                        {busy.has(r.id) ? '…' : 'Accept author'}
+                                    </button>
+                                )}
+                                {r.source === 'untracked' && r.author && (
+                                    <button disabled={busy.has(r.id)}
+                                            title={`File this untracked book under "${r.author}" (resolves via OpenLibrary or by name)`}
+                                            onClick={() => assignAuthor(r.id, r.author)}>
+                                        {busy.has(r.id) ? '…' : `Assign to ${r.author}`}
+                                    </button>
+                                )}
+                                <button className="btn-ghost" disabled={busy.has(r.id)}
+                                        title="Mark reviewed and remove from this list"
+                                        onClick={() => dismiss(r.id)}>
+                                    Dismiss
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                    {expanded.has(r.id) && r.seriesCatalog?.length > 0 && (
+                        <tr>
+                            <td colSpan={8} style={{ background: 'var(--surface-2, #f6f6f6)' }}>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.5rem', padding: '0.4rem 0.2rem' }}>
+                                    {r.seriesCatalog.map((s, i) => (
+                                        <div key={i} style={{ minWidth: 220 }}>
+                                            <div style={{ fontWeight: 600 }}>
+                                                {s.series}
+                                                {s.genre && <span className="subtle" style={{ fontWeight: 400 }}> · {s.genre}</span>}
+                                            </div>
+                                            <ol style={{ margin: '0.25rem 0 0', paddingLeft: '1.4rem', fontSize: '0.85em' }}>
+                                                {s.titles.map((t, j) => <li key={j}>{t}</li>)}
+                                            </ol>
+                                        </div>
+                                    ))}
+                                </div>
+                            </td>
+                        </tr>
+                    )}
+                    </Fragment>
+                ))}
+            </tbody>
+        </table>
+    )
+}
+
+// Inline popover that lets the user type an author name and search OpenLibrary.
+// Selecting a result writes the chosen name back to the scan row.
+function AuthorEditPopover({ scanId, current, onSave, onClose }) {
+    const [query, setQuery] = useState(current)
+    const [results, setResults] = useState(null)
+    const [searching, setSearching] = useState(false)
+    const [error, setError] = useState(null)
+    const debounce = useRef(null)
+    const inputRef = useRef(null)
+
+    useEffect(() => { inputRef.current?.focus() }, [])
+
+    useEffect(() => {
+        clearTimeout(debounce.current)
+        if (!query.trim()) { setResults(null); return }
+        setSearching(true)
+        debounce.current = setTimeout(async () => {
+            try {
+                const r = await fetch(`/api/openlibrary/search-authors?q=${encodeURIComponent(query.trim())}`)
+                if (!r.ok) throw new Error(r.statusText)
+                setResults(await r.json())
+            } catch (e) {
+                setError(String(e))
+                setResults([])
+            } finally {
+                setSearching(false)
+            }
+        }, 380)
+        return () => clearTimeout(debounce.current)
+    }, [query])
+
+    return (
+        <div className="modal-backdrop" style={{ zIndex: 1200 }} onClick={onClose}>
+            <div className="modal" style={{ width: 'min(480px, 94vw)', maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}
+                 onClick={e => e.stopPropagation()}>
+                <div className="modal-header">
+                    <h3 style={{ margin: 0 }}>Change guessed author</h3>
+                    <button className="btn-ghost" onClick={onClose}>&times;</button>
+                </div>
+                <div style={{ padding: '0.5rem 0 0.25rem' }}>
+                    <input
+                        ref={inputRef}
+                        value={query}
+                        onChange={e => { setQuery(e.target.value); setError(null) }}
+                        placeholder="Type to search OpenLibrary…"
+                        style={{ width: '100%', boxSizing: 'border-box' }} />
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                    <button onClick={() => onSave(scanId, query.trim())} disabled={!query.trim()}>
+                        Use "{query.trim() || '…'}"
+                    </button>
+                    <button className="btn-ghost" onClick={() => onSave(scanId, '')}>
+                        Clear
+                    </button>
+                </div>
+                {error && <p className="error" style={{ margin: '0 0 0.4rem' }}>{error}</p>}
+                {searching && <p className="subtle" style={{ margin: '0 0 0.4rem' }}>Searching…</p>}
+                {results !== null && (
+                    results.length === 0
+                        ? <p className="subtle" style={{ margin: '0 0 0.4rem' }}>No OpenLibrary matches.</p>
+                        : (
+                            <ul className="search-results" style={{ overflow: 'auto', margin: 0 }}>
+                                {results.map(r => (
+                                    <li key={r.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
+                                        <div>
+                                            <strong>{r.name}</strong>{' '}
+                                            <span className="subtle" style={{ fontSize: '0.85em' }}>
+                                                {r.birthDate ?? ''}{r.deathDate ? ` – ${r.deathDate}` : ''}
+                                                {r.workCount ? ` · ${r.workCount} works` : ''}
+                                                {r.topWork ? ` · ${r.topWork}` : ''}
+                                            </span>
+                                        </div>
+                                        <button onClick={() => onSave(scanId, r.name)}>
+                                            Use
+                                        </button>
+                                    </li>
+                                ))}
+                            </ul>
+                        )
+                )}
+            </div>
         </div>
     )
 }

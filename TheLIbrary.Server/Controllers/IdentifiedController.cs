@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.Sync;
 
 namespace TheLibrary.Server.Controllers;
@@ -372,6 +373,129 @@ public class IdentifiedController : ControllerBase
         await _db.SaveChangesAsync(ct);
         return new ApplyCatalogResult(created, reused, linked, fixedPos, unmatched, added, sourceRows.Count);
     }
+
+    /// <summary>
+    /// Streams the file for in-browser preview. Works for both tracked files
+    /// (in a library folder) and untracked files (in the quarantine folder).
+    /// GET /api/identified/{id}/preview?format=epub
+    /// </summary>
+    [HttpGet("{id:int}/preview")]
+    public async Task<IActionResult> Preview(int id, [FromQuery] string format, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(format))
+            return BadRequest(new { error = "format query parameter is required" });
+
+        var scan = await _db.BookContentScans.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.Id == id, ct);
+        if (scan is null) return NotFound(new { error = "Scan row not found." });
+        if (!System.IO.File.Exists(scan.FullPath))
+            return NotFound(new { error = "File no longer exists on disk." });
+
+        // Allow access from library locations AND the custom quarantine path.
+        var roots = await _db.LibraryLocations.AsNoTracking()
+            .Where(l => l.Enabled).Select(l => l.Path).ToListAsync(ct);
+        var customUnknown = await UnknownFolderResolver.GetCustomPathAsync(_db, ct);
+        var allowedRoots = customUnknown is null
+            ? (IReadOnlyList<string>)roots
+            : roots.Append(customUnknown).ToList();
+
+        if (!FilePreviewResolver.IsInsideAnyRoot(scan.FullPath, allowedRoots))
+            return StatusCode(403, new { error = "Refusing to serve a file outside enabled library locations." });
+
+        var fmt = format.ToLowerInvariant();
+        var ext = Path.GetExtension(scan.FullPath).TrimStart('.').ToLowerInvariant();
+        var supportedConversions = new[] { "mobi", "azw", "azw3", "fb2", "lit", "docx", "odt" };
+
+        // Convertible formats: serve as EPUB via Calibre. Trigger on either an
+        // explicit `epub` request OR the file's own extension, so the client passing
+        // the raw format (e.g. ?format=mobi) still gets a rendered EPUB — matching
+        // the Untracked page's preview rather than 415-ing.
+        if (supportedConversions.Contains(ext) && (fmt == "epub" || fmt == ext))
+        {
+            var converter = HttpContext.RequestServices.GetRequiredService<CalibreConverter>();
+            try
+            {
+                var convertedPath = await converter.ConvertToEpubAsync(scan.FullPath, ct);
+                if (System.IO.File.Exists(convertedPath))
+                {
+                    var bytes = await System.IO.File.ReadAllBytesAsync(convertedPath, ct);
+                    try { System.IO.File.Delete(convertedPath); } catch { /* best effort */ }
+                    Response.Headers["Content-Disposition"] =
+                        $"inline; filename=\"{Path.GetFileNameWithoutExtension(scan.FullPath)}.epub\"";
+                    return File(bytes, "application/epub+zip");
+                }
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = $"Conversion to EPUB failed: {ex.Message}" });
+            }
+        }
+
+        // RTF: convert to plain text on the fly (RtfPipe) for the txt pane, so the
+        // reader sees prose, not raw `{\rtf1 …}` markup.
+        if (fmt == "rtf")
+        {
+            try
+            {
+                var rtf = await System.IO.File.ReadAllTextAsync(scan.FullPath, ct);
+                return Content(RtfTextExtractor.ExtractText(rtf), "text/plain; charset=utf-8");
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = $"Could not read RTF: {ex.Message}" });
+            }
+        }
+
+        var resolution = FilePreviewResolver.Resolve(scan.FullPath, format, allowedRoots);
+        if (resolution.Ok is null)
+        {
+            return resolution.Failure switch
+            {
+                FilePreviewResolver.FailureKind.UnsupportedFormat
+                    => StatusCode(415, new { error = $"Preview not supported for '.{format}'." }),
+                FilePreviewResolver.FailureKind.OutsideLibrary
+                    => StatusCode(403, new { error = "Refusing to serve a file outside enabled library locations." }),
+                _ => NotFound(new { error = $"No '.{format}' file found at this path." }),
+            };
+        }
+
+        if (!FilePreviewResolver.SupportedFormats.TryGetValue(fmt, out var contentType))
+            contentType = "application/octet-stream";
+
+        // Range processing so the browser's native PDF viewer can seek large files.
+        return PhysicalFile(resolution.Ok.FullPath, contentType, enableRangeProcessing: true);
+    }
+
+    /// <summary>
+    /// Overwrites the guessed author name on a scan row with a new free-text
+    /// value. The row is NOT marked reviewed — the user still needs to act on
+    /// it. PATCH /api/identified/{id}/author
+    /// </summary>
+    [HttpPatch("{id:int}/author")]
+    public async Task<IActionResult> SetAuthor(int id, [FromBody] SetAuthorRequest body, CancellationToken ct)
+    {
+        var row = await _db.BookContentScans.FirstOrDefaultAsync(c => c.Id == id, ct);
+        if (row is null) return NotFound(new { error = "Scan row not found." });
+        row.Author = string.IsNullOrWhiteSpace(body.Author) ? null : body.Author.Trim();
+        // If the new name matches a watchlist author, link it.
+        if (row.Author is not null)
+        {
+            var match = await _db.Authors
+                .FirstOrDefaultAsync(a => a.Name == row.Author, ct);
+            row.AuthorId = match?.Id;
+        }
+        else
+        {
+            row.AuthorId = null;
+        }
+        await _db.SaveChangesAsync(ct);
+        var linkedName = row.AuthorId is int aid
+            ? await _db.Authors.Where(a => a.Id == aid).Select(a => a.Name).FirstOrDefaultAsync(ct)
+            : null;
+        return Ok(new { author = row.Author, authorId = row.AuthorId, linkedAuthorName = linkedName });
+    }
+
+    public sealed record SetAuthorRequest(string? Author);
 
     /// <summary>Marks a guess reviewed so it leaves the list. POST /api/identified/{id}/dismiss</summary>
     [HttpPost("{id:int}/dismiss")]

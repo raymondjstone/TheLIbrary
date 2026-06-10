@@ -101,4 +101,9 @@ public static class AppSettingKeys
     // front-matter extraction is heavier than a metadata read, so it's capped.
     // Unset = ContentScanService.DefaultMaxPerRun.
     public const string ContentScanMaxPerRun = "ContentScanMaxPerRun";
+
+    // When "true", the "Identify books from content" job processes untracked
+    // __unknown files before author-linked unmatched files (reverses the default
+    // tier order). Unset / "false" = matched/unmatched author files first.
+    public const string ContentScanUntrackedFirst = "ContentScanUntrackedFirst";
 }

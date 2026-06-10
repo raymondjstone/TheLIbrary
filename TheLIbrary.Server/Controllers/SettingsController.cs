@@ -181,6 +181,10 @@ public class SettingsController : ControllerBase
             settingRow.Value = newPath;
         await _db.SaveChangesAsync(ct);
 
+        // Immediately reindex the unknown/quarantine table so the content-scan
+        // job sees the new paths without waiting for the next full Sync.
+        await UnknownFileIndexer.RescanAsync(_db, locations, ct);
+
         var resolvedPath = newPath.Length > 0 ? newPath : null;
         return new UnknownFolderMigrationDto(
             resolvedPath,
@@ -655,17 +659,23 @@ public class SettingsController : ControllerBase
         return new IntegritySettingsDto(max, formats);
     }
 
-    public sealed record ContentScanSettingsDto(int MaxPerRun);
-    public sealed record ContentScanSettingsUpdate(int? MaxPerRun);
+    public sealed record ContentScanSettingsDto(int MaxPerRun, bool UntrackedFirst);
+    public sealed record ContentScanSettingsUpdate(int? MaxPerRun, bool? UntrackedFirst);
 
     [HttpGet("content-scan")]
     public async Task<ContentScanSettingsDto> GetContentScanSettings(CancellationToken ct)
     {
-        var raw = await _db.AppSettings.AsNoTracking()
-            .Where(s => s.Key == AppSettingKeys.ContentScanMaxPerRun)
-            .Select(s => s.Value).FirstOrDefaultAsync(ct);
-        var max = int.TryParse(raw, out var n) && n > 0 ? n : ContentScanService.DefaultMaxPerRun;
-        return new ContentScanSettingsDto(max);
+        var rows = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.ContentScanMaxPerRun
+                     || s.Key == AppSettingKeys.ContentScanUntrackedFirst)
+            .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
+
+        rows.TryGetValue(AppSettingKeys.ContentScanMaxPerRun, out var rawMax);
+        rows.TryGetValue(AppSettingKeys.ContentScanUntrackedFirst, out var rawFirst);
+
+        var max = int.TryParse(rawMax, out var n) && n > 0 ? n : ContentScanService.DefaultMaxPerRun;
+        var untrackedFirst = string.Equals(rawFirst, "true", StringComparison.OrdinalIgnoreCase);
+        return new ContentScanSettingsDto(max, untrackedFirst);
     }
 
     [HttpPut("content-scan")]
@@ -674,10 +684,13 @@ public class SettingsController : ControllerBase
     {
         var requested = body.MaxPerRun ?? 0;
         var max = Math.Clamp(requested <= 0 ? ContentScanService.DefaultMaxPerRun : requested, 1, 100_000);
+        var untrackedFirst = body.UntrackedFirst ?? false;
         await UpsertSettingAsync(AppSettingKeys.ContentScanMaxPerRun,
             max.ToString(System.Globalization.CultureInfo.InvariantCulture), ct);
+        await UpsertSettingAsync(AppSettingKeys.ContentScanUntrackedFirst,
+            untrackedFirst ? "true" : "false", ct);
         await _db.SaveChangesAsync(ct);
-        return new ContentScanSettingsDto(max);
+        return new ContentScanSettingsDto(max, untrackedFirst);
     }
 
     // Best-effort write check: can we create the directory and a temp file there?

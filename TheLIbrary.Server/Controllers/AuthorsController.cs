@@ -1454,11 +1454,28 @@ public class AuthorsController : ControllerBase
 
         // Which enabled library root does the file live under? (Needed to build
         // the destination author folder.)
-        var roots = await _db.LibraryLocations.AsNoTracking().Where(l => l.Enabled).Select(l => l.Path).ToListAsync(ct);
+        var locations = await _db.LibraryLocations.AsNoTracking().Where(l => l.Enabled).ToListAsync(ct);
+        var roots = locations.Select(l => l.Path).ToList();
         var root = roots.FirstOrDefault(r => sourcePath.StartsWith(
             r.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase));
+
+        // Files from the custom quarantine folder (e.g. /Books/TheLibrary_Unknown)
+        // are intentionally outside every library location — use the primary (or
+        // first enabled) location as the destination root instead.
         if (root is null)
-            return Ok(new AssignAuthorResult(false, null, null, null, null, "File is outside all enabled library locations."));
+        {
+            var customUnknown = await UnknownFolderResolver.GetCustomPathAsync(_db, ct);
+            var isUnderCustom = customUnknown is not null && sourcePath.StartsWith(
+                customUnknown.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase);
+            if (!isUnderCustom)
+                return Ok(new AssignAuthorResult(false, null, null, null, null, "File is outside all enabled library locations."));
+
+            root = locations.FirstOrDefault(l => l.IsPrimary)?.Path
+                   ?? roots.FirstOrDefault();
+            if (root is null)
+                return Ok(new AssignAuthorResult(false, null, null, null, null, "No enabled library location is configured."));
+        }
 
         // 1. Try OpenLibrary (ISBN, else title + author) — best author + a book.
         Author? author = null;

@@ -104,52 +104,68 @@ public sealed class ContentScanService
         var max = await LoadMaxPerRunAsync(db, ct);
         var archiveLeaf = await LoadArchiveLeafAsync(db, ct);
         var notArchived = ArchivedFilesController.NotUnderArchive(archiveLeaf);
+        var untrackedFirst = await LoadUntrackedFirstAsync(db, ct);
 
         // Process in priority tiers, each filling whatever capacity the previous
         // ones left (mirrors the aims of this job):
-        //   1. UNMATCHED books that sit in an author folder — match them to the
+        //   A. UNMATCHED books that sit in an author folder — match them to the
         //      right book. Starred authors (higher Author.Priority) first.
-        //   2. UNTRACKED files in the __unknown bucket — match them to an author.
-        //   3. THE REST — unmatched files with no author folder at all.
+        //   B. UNTRACKED files in the __unknown bucket — match them to an author.
+        //   C. THE REST — unmatched files with no author folder at all.
+        // When UntrackedFirst is set the order becomes B → A → C.
         var unmatchedBase = db.LocalBookFiles.AsNoTracking()
             .Where(f => f.BookId == null && f.IntegrityOk != false)
             .Where(LbfTextBearing)
             .Where(notArchived)
             .Where(f => !db.BookContentScans.Any(c => c.FullPath == f.FullPath && c.SizeBytes == f.SizeBytes));
 
-        // Tier 1: author-linked unmatched, starred authors first.
-        var items = await unmatchedBase
-            .Where(f => f.AuthorId != null)
-            .OrderByDescending(f => f.Author!.Priority)
-            .ThenBy(f => f.Id)
-            .Take(max)
-            .Select(f => new ScanItem(f.FullPath, f.SizeBytes, f.ModifiedAt, "unmatched", f.AuthorId))
-            .ToListAsync(ct);
-
-        // Tier 2: untracked __unknown files.
-        if (items.Count < max)
-        {
-            var untracked = await db.UnknownFiles.AsNoTracking()
-                .Where(UfTextBearing)
-                .Where(u => !db.BookContentScans.Any(c => c.FullPath == u.FullPath && c.SizeBytes == u.SizeBytes))
-                .OrderBy(u => u.Id)
-                .Take(max - items.Count)
-                .Select(u => new ScanItem(u.FullPath, u.SizeBytes, u.ModifiedAt, "untracked", null))
-                .ToListAsync(ct);
-            items = items.Concat(untracked).ToList();
-        }
-
-        // Tier 3: the rest — unmatched files not in any author folder.
-        if (items.Count < max)
-        {
-            var orphan = await unmatchedBase
-                .Where(f => f.AuthorId == null)
-                .OrderBy(f => f.Id)
-                .Take(max - items.Count)
+        async Task<List<ScanItem>> TierAuthorLinked(int remaining) =>
+            await unmatchedBase
+                .Where(f => f.AuthorId != null)
+                .OrderByDescending(f => f.Author!.Priority)
+                .ThenBy(f => f.Id)
+                .Take(remaining)
                 .Select(f => new ScanItem(f.FullPath, f.SizeBytes, f.ModifiedAt, "unmatched", f.AuthorId))
                 .ToListAsync(ct);
-            items = items.Concat(orphan).ToList();
+
+        async Task<List<ScanItem>> TierUntracked(int remaining) =>
+            await db.UnknownFiles.AsNoTracking()
+                .Where(UfTextBearing)
+                .Where(u => !db.BookContentScans.Any(c => c.FullPath == u.FullPath))
+                .OrderBy(u => u.Id)
+                .Take(remaining)
+                .Select(u => new ScanItem(u.FullPath, u.SizeBytes, u.ModifiedAt, "untracked", null))
+                .ToListAsync(ct);
+
+        async Task<List<ScanItem>> TierOrphan(int remaining) =>
+            await unmatchedBase
+                .Where(f => f.AuthorId == null)
+                .OrderBy(f => f.Id)
+                .Take(remaining)
+                .Select(f => new ScanItem(f.FullPath, f.SizeBytes, f.ModifiedAt, "unmatched", f.AuthorId))
+                .ToListAsync(ct);
+
+        List<ScanItem> items;
+        if (untrackedFirst)
+        {
+            // Tier 1: untracked __unknown files.
+            items = await TierUntracked(max);
+            // Tier 2: author-linked unmatched.
+            if (items.Count < max)
+                items = items.Concat(await TierAuthorLinked(max - items.Count)).ToList();
         }
+        else
+        {
+            // Tier 1: author-linked unmatched, starred authors first.
+            items = await TierAuthorLinked(max);
+            // Tier 2: untracked __unknown files.
+            if (items.Count < max)
+                items = items.Concat(await TierUntracked(max - items.Count)).ToList();
+        }
+
+        // Final tier (both modes): orphan unmatched with no author folder.
+        if (items.Count < max)
+            items = items.Concat(await TierOrphan(max - items.Count)).ToList();
 
         if (items.Count == 0)
         {
@@ -275,6 +291,13 @@ public sealed class ContentScanService
         row.SeriesPosition = Cap(det.SeriesPosition, 50);
         row.AlsoByTitles = det.AlsoByTitles.Count > 0 ? Cap(string.Join(";", det.AlsoByTitles), 2000) : null;
         row.ScannedAt = DateTime.UtcNow;
+
+        // Pre-provision a Pending Author row for every OL author that matches
+        // the guessed name so it is available for selection on the Identified page
+        // without the user having to trigger an OL lookup manually.
+        if (!string.IsNullOrWhiteSpace(det.Author))
+            await EnsurePendingAuthorsForGuessAsync(db, det.Author, ct);
+
         return det.HasAnything;
     }
 
@@ -313,6 +336,48 @@ public sealed class ContentScanService
         var ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
         return ext is "epub" or "pdf" or "fb2" or "docx" or "odt" or "rtf" or "txt"
             or "mobi" or "azw" or "azw3" or "lit";
+    }
+
+    // Looks up every OpenLibraryAuthor row whose normalized name matches the
+    // guessed author string and ensures a Pending watchlist Author row exists for
+    // each one. When the OL catalogue contains multiple authors with the same name
+    // (common for authors who share a name) ALL of them are pre-provisioned so the
+    // user can choose the right one on the Identified page. Existing Author rows
+    // (any status) are left untouched. Does NOT call SaveChanges — the scan loop
+    // batches that.
+    private static async Task EnsurePendingAuthorsForGuessAsync(
+        LibraryDbContext db,
+        string guessedAuthor,
+        CancellationToken ct)
+    {
+        var normalized = TitleNormalizer.NormalizeAuthor(guessedAuthor.Trim());
+        if (string.IsNullOrWhiteSpace(normalized)) return;
+
+        var olMatches = await db.OpenLibraryAuthors.AsNoTracking()
+            .Where(o => o.NormalizedName == normalized)
+            .ToListAsync(ct);
+        if (olMatches.Count == 0) return;
+
+        // Fetch all existing Author rows that share any of the matched OL keys so we
+        // can skip keys already represented without N individual DB round-trips.
+        var matchedKeys = olMatches.Select(o => o.OlKey).ToList();
+        var existingKeys = await db.Authors.AsNoTracking()
+            .Where(a => a.OpenLibraryKey != null && matchedKeys.Contains(a.OpenLibraryKey))
+            .Select(a => a.OpenLibraryKey!)
+            .ToListAsync(ct);
+        var existingKeySet = new HashSet<string>(existingKeys, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var ol in olMatches)
+        {
+            if (existingKeySet.Contains(ol.OlKey)) continue;
+            db.Authors.Add(new Author
+            {
+                Name = ol.Name,
+                OpenLibraryKey = ol.OlKey,
+                Status = AuthorStatus.Pending,
+            });
+            existingKeySet.Add(ol.OlKey); // guard against duplicate OL rows in same batch
+        }
     }
 
     private static string? Cap(string? s, int max)
@@ -355,5 +420,13 @@ public sealed class ContentScanService
             .Where(s => s.Key == AppSettingKeys.DedupeArchiveFolder)
             .Select(s => s.Value).FirstOrDefaultAsync(ct);
         return (string.IsNullOrWhiteSpace(raw) ? "__archive" : raw.Trim()).Replace('\\', '/').TrimEnd('/');
+    }
+
+    private static async Task<bool> LoadUntrackedFirstAsync(LibraryDbContext db, CancellationToken ct)
+    {
+        var raw = await db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.ContentScanUntrackedFirst)
+            .Select(s => s.Value).FirstOrDefaultAsync(ct);
+        return string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase);
     }
 }

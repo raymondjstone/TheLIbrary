@@ -63,10 +63,13 @@ public static class UnknownFileIndexer
                 ct.ThrowIfCancellationRequested();
                 var ext = Path.GetExtension(file).ToLowerInvariant();
                 if (!CalibreScanner.EbookExtensions.Contains(ext)) continue;
+                var fi = new FileInfo(file);
                 byPath[file] = new FileRow(
                     file,
                     Path.GetFileName(file),
-                    TitleNormalizer.Normalize(Path.GetFileNameWithoutExtension(file)));
+                    TitleNormalizer.Normalize(Path.GetFileNameWithoutExtension(file)),
+                    fi.Exists ? fi.Length : 0L,
+                    fi.Exists ? fi.LastWriteTimeUtc : now);
             }
         }
         var rows = byPath.Values;
@@ -97,7 +100,7 @@ public static class UnknownFileIndexer
                 dt.Columns.Add("ScannedAt", typeof(DateTime));
                 foreach (var r in rows)
                     dt.Rows.Add(r.FullPath, r.FileName,
-                        (object?)r.NormalizedTitle ?? DBNull.Value, 0L, now, now);
+                        (object?)r.NormalizedTitle ?? DBNull.Value, r.SizeBytes, r.ModifiedAt, now);
 
                 using var bc = new SqlBulkCopy(conn, SqlBulkCopyOptions.Default, tx)
                 {
@@ -119,5 +122,5 @@ public static class UnknownFileIndexer
         return new RescanResult(roots, missing, seen, seen, prior, seen);
     }
 
-    private readonly record struct FileRow(string FullPath, string FileName, string? NormalizedTitle);
+    private readonly record struct FileRow(string FullPath, string FileName, string? NormalizedTitle, long SizeBytes, DateTime ModifiedAt);
 }

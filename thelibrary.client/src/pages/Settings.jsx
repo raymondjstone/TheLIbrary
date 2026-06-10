@@ -64,6 +64,7 @@ export default function Settings() {
     const [integritySaved, setIntegritySaved] = useState(null)
     const [integritySaving, setIntegritySaving] = useState(false)
     const [contentScanMax, setContentScanMax] = useState(50)
+    const [contentScanUntrackedFirst, setContentScanUntrackedFirst] = useState(false)
     const [contentScanSaved, setContentScanSaved] = useState(null)
     const [contentScanSaving, setContentScanSaving] = useState(false)
 
@@ -211,6 +212,7 @@ export default function Settings() {
             if (!r.ok) throw new Error(r.statusText)
             const body = await r.json()
             setContentScanMax(body.maxPerRun > 0 ? body.maxPerRun : 50)
+            setContentScanUntrackedFirst(!!body.untrackedFirst)
             setContentScanSaved(body.maxPerRun)
         } catch (e) { setError(prev => prev ?? String(e)) }
     }
@@ -222,11 +224,15 @@ export default function Settings() {
             const r = await fetch('/api/settings/content-scan', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ maxPerRun: Math.max(1, Number(contentScanMax) || 50) }),
+                body: JSON.stringify({
+                    maxPerRun: Math.max(1, Number(contentScanMax) || 50),
+                    untrackedFirst: contentScanUntrackedFirst,
+                }),
             })
             const body = await r.json().catch(() => ({}))
             if (!r.ok) throw new Error(body.error || r.statusText)
             setContentScanMax(body.maxPerRun)
+            setContentScanUntrackedFirst(!!body.untrackedFirst)
             setContentScanSaved(body.maxPerRun)
         } catch (e) {
             setError(String(e.message ?? e))
@@ -964,6 +970,12 @@ export default function Settings() {
                         value={contentScanMax}
                         onChange={e => setContentScanMax(Number(e.target.value))}
                         style={{ width: '7rem' }} />
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <input type="checkbox"
+                        checked={contentScanUntrackedFirst}
+                        onChange={e => setContentScanUntrackedFirst(e.target.checked)} />
+                    <span>Scan untracked files first</span>
                 </label>
                 <button onClick={saveContentScan} disabled={contentScanSaving}>
                     {contentScanSaving ? 'Saving…' : 'Save'}
