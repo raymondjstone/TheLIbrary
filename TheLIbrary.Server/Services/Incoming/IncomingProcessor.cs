@@ -284,9 +284,12 @@ public sealed class IncomingProcessor
                     // or OL-only, upsert the row here so we never create a
                     // ghost folder the user would see as "not an author name".
                     // A null return downgrades the match to __unknown.
+                    var identifiedButUntracked = (string?)null;
                     if (matchedEntry is not null)
                     {
+                        var before = matchedEntry;
                         matchedEntry = await ResolveOrCreateAuthorAsync(matchedEntry, blacklistSet, ct);
+                        if (matchedEntry is null) identifiedButUntracked = before.DisplayName;
                     }
 
                     // Final guard: even after OL verification, reject any folder name
@@ -305,27 +308,37 @@ public sealed class IncomingProcessor
                     {
                         // In reprocess-unknown mode, leaving a still-unmatched
                         // file in place is the whole point — skip instead of
-                        // "moving" it right back where it already is.
+                        // "moving" it right back where it already is. Say WHY it
+                        // stayed: an identified-but-untracked author is the
+                        // watchlist policy at work (add the author, or use the
+                        // Identified page's assign flow), not a parsing failure.
                         if (leaveUnmatchedInPlace)
                         {
                             unknown++;
                             allMoved = false;
-                            Report(null, $"still unmatched: {file}");
+                            Report(null, identifiedButUntracked is not null
+                                ? $"author identified ({identifiedButUntracked}) but not on watchlist: {file}"
+                                : $"still unmatched: {file}");
                             continue;
                         }
                         unknown++;
 
                         // Don't invent a title folder from metadata when we
                         // couldn't match the author — bad metadata produced
-                        // garbage names like "DH___" under __unknown. Mirror
-                        // the file's relative path from the source root so
-                        // a later reprocess-unknown can still pick up any
-                        // folder-layout signal the user has in place.
+                        // garbage names like "DH___" under __unknown. Keep only
+                        // the TOP-LEVEL folder from the source layout: that
+                        // preserves the author-name signal a later
+                        // reprocess-unknown can use, while keeping files
+                        // directly under __unknown/<folder>/ — never in deeper
+                        // Title/... nesting the flatten job would have to undo.
                         var rel = Path.GetRelativePath(sourcePath, dir);
+                        var topFolder = string.IsNullOrEmpty(rel) || rel == "."
+                            ? null
+                            : rel.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)[0];
                         var unknownDestRoot = await UnknownFolderResolver.GetDestinationRootAsync(_db, destRoot, ct);
-                        destDir = string.IsNullOrEmpty(rel) || rel == "."
+                        destDir = topFolder is null
                             ? unknownDestRoot
-                            : Path.Combine(unknownDestRoot, rel);
+                            : Path.Combine(unknownDestRoot, topFolder);
                     }
                     else
                     {
@@ -363,6 +376,13 @@ public sealed class IncomingProcessor
                         Report(null, $"skip (already in place): {file}");
                         continue;
                     }
+
+                    // Unknown route only: collapsing source subfolders means two
+                    // different folders can carry the same filename — suffix the
+                    // newcomer instead of overwriting a different book. Matched
+                    // routes keep overwrite semantics (re-import of same title).
+                    if (matchedEntry is null && _fs.FileExists(destPath))
+                        destPath = UniqueDestPath(destPath);
 
                     MoveAndWait(file, destPath, overwrite: _fs.FileExists(destPath));
                     var destFolderLabel = matchedEntry?.FolderName ?? CalibreScanner.UnknownAuthorFolder;
@@ -424,7 +444,7 @@ public sealed class IncomingProcessor
     // __unknown quarantine folder) and asks the OpenLibrary catalog about
     // each name. First hit wins; the result is treated as an OL-only match
     // (IsTracked=false) so the caller routes files under
-    // __unknown/<AuthorName>/<Title>/. Results are cached per-run so a folder
+    // __unknown/<AuthorName>/. Results are cached per-run so a folder
     // with 200 subdirectories under one author only triggers one DB query.
     private async Task<(AuthorIndexEntry? Entry, string? Title)> ResolveFolderLayoutViaOpenLibraryAsync(
         string folderPath,
@@ -548,6 +568,15 @@ public sealed class IncomingProcessor
     {
         if (entry.IsTracked && entry.TrackedAuthorId is int trackedId)
         {
+            // An Excluded author must not attract files into a collection
+            // folder — the user banished them. The OL-only branch below already
+            // refuses Excluded; without this the tracked branch didn't.
+            var status = await _db.Authors.AsNoTracking()
+                .Where(a => a.Id == trackedId)
+                .Select(a => (AuthorStatus?)a.Status)
+                .FirstOrDefaultAsync(ct);
+            if (status is null or AuthorStatus.Excluded) return null;
+
             if (!string.IsNullOrEmpty(entry.OpenLibraryKey))
             {
                 // Guard against OL keys that were planted by the old work-count
@@ -649,22 +678,7 @@ public sealed class IncomingProcessor
 
     private EpubMetadata? ReadMetadata(string file)
     {
-        var ext = Path.GetExtension(file).ToLowerInvariant();
-        EpubMetadata? m = ext switch
-        {
-            ".epub" => EpubMetadataReader.TryReadFile(file),
-            ".fb2" or ".fbz" => Fb2MetadataReader.TryReadFile(file),
-            ".zip" when file.EndsWith(".fb2.zip", StringComparison.OrdinalIgnoreCase)
-                => Fb2MetadataReader.TryReadFile(file),
-            ".mobi" or ".azw" or ".azw3" or ".azw4" or ".kf8" or ".prc" or ".pdb"
-                => MobiMetadataReader.TryReadFile(file),
-            ".pdf" => PdfMetadataReader.TryReadFile(file, _log),
-            ".lit" => LitMetadataReader.TryReadFile(file),
-            ".cbz" => CbzMetadataReader.TryReadFile(file),
-            ".docx" or ".odt" => DocxMetadataReader.TryReadFile(file),
-            ".opf" => OpfMetadataReader.TryReadFile(file),
-            _ => null
-        };
+        var m = FileMetadataReader.TryRead(file, _log);
         if (m is not null && (m.Title is not null || m.Author is not null)) return m;
 
         // Fallback: infer from the filename.
@@ -761,6 +775,18 @@ public sealed class IncomingProcessor
         }
         // Final attempt without swallowing — let the caller log the failure.
         _fs.DeleteFile(path);
+    }
+
+    private string UniqueDestPath(string preferred)
+    {
+        var dir = Path.GetDirectoryName(preferred) ?? "";
+        var stem = Path.GetFileNameWithoutExtension(preferred);
+        var ext = Path.GetExtension(preferred);
+        for (int n = 1; ; n++)
+        {
+            var candidate = Path.Combine(dir, $"{stem}_{n}{ext}");
+            if (!_fs.FileExists(candidate)) return candidate;
+        }
     }
 
     private void MoveAndWait(string src, string dst, bool overwrite)

@@ -27,7 +27,9 @@ export default function UnknownFiles() {
 
     const purge = async (row) => {
         const label = row.extension === '(none)' ? 'files with no extension' : `"${row.extension}" files`
-        if (!confirm(`Permanently delete all ${row.count.toLocaleString()} ${label} from the unknown folder?\n\nThis cannot be undone.`)) return
+        // Confirm only when the purge is big — sub-100 deletes go straight through.
+        if (row.count > 100
+            && !confirm(`Permanently delete all ${row.count.toLocaleString()} ${label} from the unknown folder?\n\nThis cannot be undone.`)) return
         setPurging(row.extension)
         setError(null)
         setNotice(null)

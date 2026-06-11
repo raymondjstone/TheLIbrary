@@ -209,6 +209,7 @@ export default function Sync() {
                                                 { key: 'physicalStars',      label: 'Star physical authors', endpoint: '/api/jobs/physical-stars/start' },
                                                 { key: 'metadataCache',      label: 'Cache OL metadata',     endpoint: '/api/jobs/metadata-cache/start' },
                                                 { key: 'flattenUnknown',     label: 'Flatten __unknown',     endpoint: '/api/jobs/flatten-unknown/start' },
+                                                { key: 'dedupeUnknown',      label: 'Dedupe __unknown',      endpoint: '/api/jobs/dedupe-unknown/start' },
                                                 { key: 'adoptUnknownAuthors',label: 'Adopt unknown authors', endpoint: '/api/jobs/adopt-unknown-authors/start' },
                                                 { key: 'refreshStarred',     label: 'Refresh starred authors', endpoint: '/api/jobs/refresh-starred/start' },
                                                 { key: 'archiveForeign',     label: 'Archive foreign titles', endpoint: '/api/jobs/archive-foreign/start' },
@@ -216,6 +217,7 @@ export default function Sync() {
                                                 { key: 'checkIntegrity',     label: 'Check book integrity',  endpoint: '/api/jobs/check-integrity/start' },
                                                 { key: 'staleFiles',         label: 'Prune stale folder records', endpoint: '/api/jobs/prune-stale-files/start' },
                                                 { key: 'contentScan',        label: 'Identify books from content', endpoint: '/api/jobs/content-scan/start' },
+                                                { key: 'assignAuthors',      label: 'Assign untracked books to authors', endpoint: '/api/jobs/assign-authors/start' },
                                             ]
                                             const anyJobRunning = !!jobs.activeJob
                                             return (

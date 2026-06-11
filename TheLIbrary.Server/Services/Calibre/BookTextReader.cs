@@ -33,12 +33,11 @@ public sealed class BookTextReader
         {
             switch (ext)
             {
-                case "pdf": return Combine(ReadPdfHead(path, maxChars), ReadPdfTail(path, maxChars));
+                case "pdf": return ReadPdfHeadAndTail(path, maxChars);
                 case "epub":
                 {
-                    string head, tail;
-                    using (var s = _fs.OpenRead(path)) head = EpubInspector.ReadHeadText(s, maxChars);
-                    using (var s = _fs.OpenRead(path)) tail = EpubInspector.ReadTailText(s, maxChars);
+                    using var s = _fs.OpenRead(path);
+                    var (head, tail) = EpubInspector.ReadHeadAndTailText(s, maxChars);
                     return Combine(head, tail);
                 }
                 case "fb2":
@@ -146,17 +145,30 @@ public sealed class BookTextReader
         catch { return ""; }
     }
 
-    private string ReadPdfTail(string path, int maxChars)
+    // Head and tail in one open — a PDF on the NAS mount shouldn't be parsed
+    // twice just to read both ends.
+    private string ReadPdfHeadAndTail(string path, int maxChars)
     {
         try
         {
             using var doc = PdfDocument.Open(path);
-            var sb = new System.Text.StringBuilder();
+
+            var hb = new System.Text.StringBuilder();
+            foreach (var page in doc.GetPages())
+            {
+                hb.Append(page.Text).Append('\n');
+                if (hb.Length >= maxChars) break;
+            }
+            var head = Head(hb.ToString(), maxChars);
+
+            var tb = new System.Text.StringBuilder();
             // Walk pages from the last backward until the budget fills.
-            for (var n = doc.NumberOfPages; n >= 1 && sb.Length < maxChars; n--)
-                sb.Insert(0, doc.GetPage(n).Text + "\n");
-            var s = sb.ToString();
-            return s.Length > maxChars ? s[^maxChars..] : s;
+            for (var n = doc.NumberOfPages; n >= 1 && tb.Length < maxChars; n--)
+                tb.Insert(0, doc.GetPage(n).Text + "\n");
+            var t = tb.ToString();
+            var tail = t.Length > maxChars ? t[^maxChars..] : t;
+
+            return Combine(head, tail);
         }
         catch { return ""; }
     }
@@ -207,9 +219,8 @@ public sealed class BookTextReader
         catch (CalibreConversionException) { return ""; }
         try
         {
-            string head, tail;
-            using (var s = _fs.OpenRead(epub)) head = EpubInspector.ReadHeadText(s, maxChars);
-            using (var s = _fs.OpenRead(epub)) tail = EpubInspector.ReadTailText(s, maxChars);
+            using var s = _fs.OpenRead(epub);
+            var (head, tail) = EpubInspector.ReadHeadAndTailText(s, maxChars);
             return Combine(head, tail);
         }
         finally

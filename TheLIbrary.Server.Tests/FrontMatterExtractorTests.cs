@@ -87,6 +87,75 @@ public class FrontMatterExtractorTests
     }
 
     [Fact]
+    public void Title_Page_With_Generational_Suffix_Is_Parsed()
+    {
+        // Seen live: a textbook title page yielded NOTHING because ", Jr."
+        // stopped the whole-line byline regex from matching.
+        var det = FrontMatterExtractor.Parse(
+            "A Pamphlet For Lampwick\n\nBy Walter M. Quiller, Jr.\n\n1959\nChapter the First\n");
+        Assert.Equal("A Pamphlet For Lampwick", det.Title);
+        Assert.Equal("Walter M. Quiller, Jr", det.Author);
+    }
+
+    [Fact]
+    public void Single_Line_Title_By_Author_Is_Parsed()
+    {
+        var det = FrontMatterExtractor.Parse(
+            "The Glimmer by Arnold C. Quibble\n\nIt is three thousand light-years to the harbour.\n");
+        Assert.Equal("The Glimmer", det.Title);
+        Assert.Equal("Arnold C. Quibble", det.Author);
+    }
+
+    [Fact]
+    public void Prose_Containing_By_Is_Not_A_Title_Line()
+    {
+        // A mostly-lowercase sentence ending in a name must not become a title.
+        var det = FrontMatterExtractor.Parse(
+            "this ancient story was first written down by Brother Francis\nand more prose follows here\n");
+        Assert.Null(det.Title);
+        Assert.Null(det.Author);
+    }
+
+    [Fact]
+    public void Multi_Author_Credit_Keeps_The_First_Author_Whole()
+    {
+        // Seen live: the 4-word name cap used to truncate a two-author credit
+        // mid-name ("X and Thomas") — a name that resolves to nobody.
+        var det = FrontMatterExtractor.Parse("Title: Venus Minus\nAuthor: Frederich Plimworth and Thomas T. Tumble\n");
+        Assert.Equal("Frederich Plimworth", det.Author);
+    }
+
+    [Fact]
+    public void Publisher_In_Copyright_Line_Is_Not_An_Author()
+    {
+        // Seen live: "© 2021 <Imprint> Media" shipped the publisher as the
+        // guessed author — OpenLibrary can never resolve a publisher.
+        var det = FrontMatterExtractor.Parse("First published 2021\n© 2021 Teal Ember Media\n");
+        Assert.Null(det.Author);
+    }
+
+    [Fact]
+    public void Url_Author_Capture_Is_Rejected()
+    {
+        var det = FrontMatterExtractor.Parse("Author: http___www.spookmasters.com\n");
+        Assert.Null(det.Author);
+    }
+
+    [Fact]
+    public void Prose_Sentence_Mentioning_A_Series_Is_Not_Swallowed()
+    {
+        // Seen live: a whole back-cover paragraph became the "series" because the
+        // regex ran through the sentence boundary.
+        var det = FrontMatterExtractor.Parse(
+            "This is book 1 in the Regal Gammas series. It is its own self-contained story and enjoyable to read as a standalone novella!\n");
+        Assert.Null(det.Series);
+        // The legitimate short form still parses.
+        var ok = FrontMatterExtractor.Parse("Book 1 in the Regal Gammas series\n");
+        Assert.Equal("Regal Gammas", ok.Series);
+        Assert.Equal("1", ok.SeriesPosition);
+    }
+
+    [Fact]
     public void Builds_Series_Catalog_From_Grouped_Bibliography()
     {
         // Real-world layout (G R Jordan): a "Novels by" heading, then for each
@@ -224,6 +293,29 @@ public class FrontMatterExtractorTests
         Assert.DoesNotContain("Warning", det.AlsoByTitles);
         Assert.DoesNotContain(det.AlsoByTitles, t => t.Contains("stand-alone"));
         Assert.DoesNotContain(det.AlsoByTitles, t => t.StartsWith("This book"));
+    }
+
+    [Fact]
+    public void Numeric_Titles_Survive_The_List_Numbering_Strip()
+    {
+        // "3:10 To Yuma" begins with digits that are PART of the title — only
+        // explicit list numbering ("1. ", "2) ") and bullets are stripped, where
+        // the old any-leading-digit strip mangled it to ":10 To Yuma". All-numeric
+        // lines ("1984") stay excluded: in a bibliography they're far more likely
+        // a publication year or page number than a title.
+        var text =
+            "Also by Some Author\n" +
+            "3:10 To Yuma\n" +
+            "1. The First Book\n" +
+            "2) The Second Book\n" +
+            "• The Bulleted Book\n";
+
+        var det = FrontMatterExtractor.Parse(text);
+
+        Assert.Equal(new[]
+        {
+            "3:10 To Yuma", "The First Book", "The Second Book", "The Bulleted Book",
+        }, det.AlsoByTitles);
     }
 
     [Fact]

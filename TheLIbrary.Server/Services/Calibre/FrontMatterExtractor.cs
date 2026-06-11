@@ -72,9 +72,12 @@ public static class FrontMatterExtractor
     // (so "Detective series" -> "Detective"); kept words like "Mysteries" stay.
     private static readonly Regex TrailingSeriesWord = new(@"\s+series\s*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    // "Book Three of the Pern Chronicles" / "Book 3 of the X Series".
+    // "Book Three of the Pern Chronicles" / "Book 3 of the X Series". The name
+    // capture excludes sentence punctuation so a prose line ("…is book 1 in the
+    // Royal Alphas series. It is its own self-contained story…") can't smear a
+    // whole paragraph into the series name — seen in live data.
     private static readonly Regex SeriesLine = new(
-        @"\bbook\s+(\w+)\s+(?:of|in)\s+(?:the\s+)?(.+?)(?:\s+(?:series|saga|trilogy|cycle|chronicles))?\s*$",
+        @"\bbook\s+(\w+)\s+(?:of|in)\s+(?:the\s+)?([^.!?]+?)(?:\s+(?:series|saga|trilogy|cycle|chronicles))?\s*$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // A capitalised personal name of 1–4 words. Each word starts uppercase and
@@ -127,11 +130,12 @@ public static class FrontMatterExtractor
             }
         }
 
-        // Series line.
+        // Series line. Real series names are short — a long capture means the
+        // regex latched onto running prose, not a "Book N of the X" line.
         foreach (var l in lines.Take(80))
         {
             var sm = SeriesLine.Match(l);
-            if (sm.Success && LooksLikeTitle(sm.Groups[2].Value))
+            if (sm.Success && sm.Groups[2].Value.Trim().Length <= 60 && LooksLikeTitle(sm.Groups[2].Value))
             {
                 series = Clean(sm.Groups[2].Value);
                 var token = sm.Groups[1].Value;
@@ -319,17 +323,23 @@ public static class FrontMatterExtractor
         return bare.Success ? EpubMetadataReader.NormaliseIsbn(bare.Groups[1].Value) : null;
     }
 
+    // "Walter M. Miller, Jr." — a generational suffix after the name. Without
+    // this the whole-line byline regex fails on the comma and a textbook title
+    // page yields nothing (seen in live data).
+    private const string NameSuffixPattern = @"(?:\s*,\s*(?:Jr|Sr|II|III|IV)\.?)?";
+
     // Looks at the very top of the book for a title page: "<Title>" then "by
-    // <Author>". Deliberately conservative — the byline must be near the top and
-    // the title must sit just above it — so a stray "by X" attribution (an
-    // epigraph, a dedication, "foreword by …") deep in the front matter can't
-    // promote a random line of text into "the title".
+    // <Author>", or both on one line ("The Star by Arthur C. Clarke").
+    // Deliberately conservative — the byline must be near the top and the title
+    // must sit just above it (or before "by" on the same line) — so a stray
+    // "by X" attribution (an epigraph, a dedication, "foreword by …") deep in
+    // the front matter can't promote a random line of text into "the title".
     private static (string? Title, string? Author) TitlePageGuess(IReadOnlyList<string> lines)
     {
         var head = lines.Where(l => l.Length > 0).Take(12).ToList();
         for (var i = 0; i < head.Count; i++)
         {
-            var m = Regex.Match(head[i], @"^\s*by\s+(" + NamePattern + @")\s*$", RegexOptions.IgnoreCase);
+            var m = Regex.Match(head[i], @"^\s*by\s+(" + NamePattern + NameSuffixPattern + @")\s*$", RegexOptions.IgnoreCase);
             if (!m.Success) continue;
             var author = CleanAuthor(m.Groups[1].Value);
             // The title must be a plausible line within the 3 lines directly above
@@ -338,6 +348,20 @@ public static class FrontMatterExtractor
             for (var k = i - 1; k >= 0 && k >= i - 3; k--)
                 if (IsPlausibleTitle(head[k])) { title = Clean(head[k]); break; }
             return (title, author);
+        }
+
+        // Single-line "<Title> by <Author>" form. The title part must read like a
+        // listed title (title-cased, short) so a prose sentence containing "by"
+        // ("…handiwork made by God in the heavens…") can't match.
+        foreach (var l in head)
+        {
+            // "by" matched case-explicitly: IgnoreCase here would also relax the
+            // uppercase-first requirement inside NamePattern and let prose through.
+            var m = Regex.Match(l, @"^(?<t>.{2,90}?)\s+(?:by|By|BY)\s+(?<a>" + NamePattern + NameSuffixPattern + @")\s*$");
+            if (!m.Success) continue;
+            var titlePart = m.Groups["t"].Value.Trim();
+            if (!IsListedTitle(CleanListItem(titlePart))) continue;
+            return (Clean(titlePart), CleanAuthor(m.Groups["a"].Value));
         }
         return (null, null);
     }
@@ -402,7 +426,10 @@ public static class FrontMatterExtractor
 
     private static string CleanListItem(string s)
     {
-        s = Regex.Replace(s, @"^[\s•\-\*•\d.)]+", ""); // strip leading bullets / numbering
+        // Strip leading bullets and explicit list numbering ("3. ", "12) ") only.
+        // Bare digits stay — they're part of real titles ("1984", "3:10 to Yuma"),
+        // which the old any-leading-digit strip used to mangle or drop entirely.
+        s = Regex.Replace(s, @"^\s*(?:[•\-\*]+\s*)*(?:\d{1,3}\s*[.)]\s+)?", "");
         s = Clean(s);
         // A single trailing sentence period isn't part of a title ("Antisocial
         // Behaviour." → "Antisocial Behaviour"). Keep "!"/"?" — they occur in real
@@ -424,8 +451,26 @@ public static class FrontMatterExtractor
     // ends as soon as one shows up.
     private static readonly HashSet<string> AuthorBoilerplate = new(StringComparer.OrdinalIgnoreCase)
     {
-        "all", "rights", "reserved", "copyright", "published", "publishing",
+        "all", "rights", "reserved", "copyright", "published", "publishing", "ebook", "edition",
     };
+
+    // An "author" ending in one of these is a publisher / imprint pulled from the
+    // copyright page ("© 2021 Blue Fire Media"), not a person — refuse the whole
+    // capture rather than ship a name OpenLibrary can never resolve (live data:
+    // "Blue Fire Media", "ebook Carousel").
+    private static readonly HashSet<string> PublisherTailWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "media", "press", "publishing", "publications", "publishers", "books",
+        "inc", "inc.", "llc", "ltd", "ltd.", "limited", "group", "studio", "studios",
+    };
+
+    // Splits a multi-author capture ("Frederik Pohl and Thomas T. Thomas",
+    // "Scott Nicholson; J. R. Rain") down to the FIRST author. Only one author can
+    // be resolved/assigned anyway, and the 4-word name cap otherwise truncates the
+    // capture mid-name ("Frederik Pohl and Thomas" — live data), which resolves to
+    // nobody.
+    private static readonly Regex AuthorListSeparator = new(
+        @"\s*(?:;|&|\s+(?:and|AND|And|with)\s+)\s*", RegexOptions.Compiled);
 
     // A pure-initials token like "J." or "J.R.R." — its trailing period is part of
     // the name, not a sentence end, so it must NOT terminate the author.
@@ -441,6 +486,10 @@ public static class FrontMatterExtractor
         var cleaned = Clean(raw);
         if (string.IsNullOrWhiteSpace(cleaned)) return null;
 
+        // Multi-author credit → keep the first author whole.
+        cleaned = AuthorListSeparator.Split(cleaned)[0].Trim();
+        if (cleaned.Length == 0) return null;
+
         var kept = new List<string>();
         foreach (var w in cleaned.Split(' ', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -448,7 +497,14 @@ public static class FrontMatterExtractor
             if (w.EndsWith('.') && !InitialsToken.IsMatch(w)) { kept.Add(w.TrimEnd('.')); break; }
             kept.Add(w);
         }
-        var result = string.Join(' ', kept).Trim();
-        return result.Length == 0 ? null : result;
+        var result = string.Join(' ', kept).Trim().TrimEnd(',');
+        if (result.Length == 0) return null;
+        // URL fragments and publishers aren't authors.
+        var low = result.ToLowerInvariant();
+        if (low.Contains("http") || low.Contains("www.") || low.Contains(".com") || result.Contains('_'))
+            return null;
+        var lastWord = result.Split(' ')[^1];
+        if (kept.Count > 1 && PublisherTailWords.Contains(lastWord)) return null;
+        return result;
     }
 }

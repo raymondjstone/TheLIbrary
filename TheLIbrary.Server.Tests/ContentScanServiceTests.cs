@@ -84,6 +84,92 @@ public class ContentScanServiceTests
         Assert.True(scan.AlsoByTitles!.Length <= 2000, $"AlsoByTitles was {scan.AlsoByTitles.Length} chars"); // clamped to the column length
     }
 
+    [Fact]
+    public async Task Untracked_Scan_Prefers_Validated_Embedded_Metadata_Over_Prose_And_Filename()
+    {
+        // The quarantine pattern this guards: filename title truncated to ~30
+        // chars, author in "Last, First" — while the OPF carries the full title
+        // and a clean author. FileMetadataReader reads the REAL filesystem, so
+        // the epub goes on disk too (BookTextReader reads via the fake).
+        var dir = Path.Combine(Path.GetTempPath(), $"contentscan-meta-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "The Full Untruncated Stor - Fenwick, Quigley.epub");
+        var epub = TestEpub.BuildWithMetadata(
+            "The Full Untruncated Story Of Everything",
+            "Fenwick, Quigley",
+            ("c.xhtml", "<html><body><p>plain prose with no author signal at all</p></body></html>"));
+        try
+        {
+            await File.WriteAllBytesAsync(path, epub);
+            var fs = new FakeFileSystem();
+            fs.AddFile(path, epub);
+
+            var dbName = NewDb();
+            await using (var db = CreateDb(dbName))
+            {
+                db.LibraryLocations.Add(new LibraryLocation { Path = dir, Enabled = true });
+                db.UnknownFiles.Add(new UnknownFile
+                {
+                    FullPath = path,
+                    FileName = Path.GetFileName(path),
+                    SizeBytes = 1,
+                    ModifiedAt = DateTime.UtcNow,
+                    ScannedAt = DateTime.UtcNow,
+                });
+                db.OpenLibraryAuthors.Add(new OpenLibraryAuthor
+                {
+                    OlKey = "OL77A",
+                    Name = "Quigley Fenwick",
+                    NormalizedName = TitleNormalizer.NormalizeAuthor("Quigley Fenwick"),
+                    ImportedAt = DateTime.UtcNow,
+                });
+                await db.SaveChangesAsync();
+            }
+
+            var summary = await CreateService(fs, dbName).RunForTestsAsync(CancellationToken.None);
+            Assert.Equal(1, summary.Scanned);
+            Assert.Equal(1, summary.WithInfo);
+
+            await using var verify = CreateDb(dbName);
+            var scan = await verify.BookContentScans.SingleAsync();
+            Assert.Equal("Quigley Fenwick", scan.Author); // validated, display orientation
+            Assert.Equal("The Full Untruncated Story Of Everything", scan.Title);
+            // The validated guess also pre-provisions the Pending author.
+            Assert.Contains(await verify.Authors.ToListAsync(),
+                a => a.OpenLibraryKey == "OL77A" && a.Status == AuthorStatus.Pending);
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Enrich_Fills_Missing_Title_From_Filename_That_Agrees_With_Author_Guess()
+    {
+        // The stuck-row shape: content gave an author but no title, so the
+        // assigner's OL work search could never run. The filename has it.
+        var dbName = NewDb();
+        await using var db = CreateDb(dbName);
+        db.BookContentScans.Add(new BookContentScan
+        {
+            Id = 1,
+            FullPath = "/Books/TheLibrary_Unknown/Through Mist - Parker Jaywick.azw3",
+            Source = "untracked",
+            Author = "Parker Jaywick",
+            ScannedAt = DateTime.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        var enriched = await CreateService(new FakeFileSystem(), dbName)
+            .EnrichUntrackedFromFilenamesAsync(db, CancellationToken.None);
+
+        Assert.Equal(1, enriched);
+        var row = await db.BookContentScans.SingleAsync();
+        Assert.Equal("Through Mist", row.Title);
+        Assert.Equal("Parker Jaywick", row.Author); // author untouched
+    }
+
     private static string NewDb() => $"contentscan-tests-{System.Guid.NewGuid():N}";
     private static LibraryDbContext CreateDb(string name)
         => new(new DbContextOptionsBuilder<LibraryDbContext>().UseInMemoryDatabase(name).Options);

@@ -49,11 +49,17 @@ public class AuthorMatcherMoreTests
     }
 
     [Fact]
-    public void Resolve_Returns_Null_For_Reverse_Filename_With_Missing_Side()
+    public void Resolve_Handles_Reverse_Filename_With_Missing_Side()
     {
         var matcher = new AuthorMatcher(new[] { Tracked("Isaac Asimov", id: 2) });
 
-        Assert.Null(matcher.Resolve(null, null, @"X:\drop\ - Isaac Asimov.epub"));
+        // The title side is empty but the author is plainly there — the
+        // trailing-words probe now matches it (it used to require both sides).
+        var hit = matcher.Resolve(null, null, @"X:\drop\ - Isaac Asimov.epub");
+        Assert.NotNull(hit);
+        Assert.Equal(2, hit!.Entry.TrackedAuthorId);
+
+        // The author side empty still yields nothing — a bare title is not a name.
         Assert.Null(matcher.Resolve(null, null, @"X:\drop\Foundation - .epub"));
     }
 

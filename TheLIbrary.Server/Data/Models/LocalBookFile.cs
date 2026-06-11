@@ -83,4 +83,21 @@ public class LocalBookFile
     public int? IntegrityPages { get; set; }
 
     public DateTime? IntegrityCheckedAt { get; set; }
+
+    // Forget the last integrity result so the next check-integrity run examines
+    // this file again. Needed after a move into an author folder: moving keeps
+    // SizeBytes/ModifiedAt, so the stamps above would still match and the file
+    // would never be re-checked in its new home. A damaged verdict is kept (the
+    // file stays on the Damaged page) — the move didn't fix it; only the
+    // re-check can clear it.
+    public void ResetIntegrity()
+    {
+        IntegrityCheckedSize = null;
+        IntegrityCheckedModified = null;
+        if (IntegrityOk == false) return;
+        IntegrityOk = null;
+        IntegrityError = null;
+        IntegrityPages = null;
+        IntegrityCheckedAt = null;
+    }
 }

@@ -130,7 +130,14 @@ public class SchedulesController : ControllerBase
             ScheduleJobIds.StarPhysicalAuthors => methodName == "RunStarPhysicalAuthors",
             ScheduleJobIds.CacheOpenLibraryMetadata => methodName == "RunCacheOpenLibraryMetadata",
             ScheduleJobIds.FlattenUnknown => methodName == "RunFlattenUnknown",
+            ScheduleJobIds.DedupeUnknown => methodName == "RunDedupeUnknown",
             ScheduleJobIds.AdoptUnknownAuthors => methodName == "RunAdoptUnknownAuthors",
+            ScheduleJobIds.ArchiveForeign => methodName == "RunArchiveForeign",
+            ScheduleJobIds.MergeLinkedAuthors => methodName == "RunMergeLinkedAuthors",
+            ScheduleJobIds.CheckIntegrity => methodName == "RunCheckIntegrity",
+            ScheduleJobIds.PruneStaleFiles => methodName == "RunPruneStaleFiles",
+            ScheduleJobIds.ContentScan => methodName == "RunContentScan",
+            ScheduleJobIds.AssignAuthors => methodName == "RunAssignAuthors",
             _ => false,
         };
     }

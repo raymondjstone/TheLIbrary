@@ -167,23 +167,39 @@ export default function IdentifiedBooks() {
     }
 
     const [assignAllBusy, setAssignAllBusy] = useState(false)
-    // Bulk "Add all authors from OL (if needed)": files every untracked row under
-    // its OL-resolved (or guessed) author, creating authors as needed. Rows with a
-    // series catalogue stay on the list so their series can then be built.
+    const [assignAllProgress, setAssignAllProgress] = useState(null) // { assigned, skipped, failed }
+    // Bulk "Assign all untracked books to authors": one click attempts EVERY
+    // untracked row, right now — in effect clicking each row's "Assign to …"
+    // button. The server processes a capped batch per request (OpenLibrary rate
+    // limits), so this loops with the returned cursor until the whole backlog has
+    // been attempted once. Rows that can't be resolved are left in place; rows
+    // with a series catalogue stay so their series can then be built.
     const assignAuthorsAll = async () => {
-        if (!window.confirm('File every untracked book under its author, creating authors from OpenLibrary where needed? Books are moved into the author folders. Series catalogues stay so you can then Build all series.')) return
+        if (!window.confirm('Assign every untracked book to its author now, creating authors from OpenLibrary where needed? Books are moved into the author folders; any that can\'t be resolved stay in the list. Series catalogues stay so you can then Build all series.')) return
         setAssignAllBusy(true)
+        const totals = { assigned: 0, skipped: 0, failed: 0 }
+        setAssignAllProgress({ ...totals })
         try {
-            const r = await fetch('/api/identified/assign-authors-all', { method: 'POST' })
-            const body = await r.json().catch(() => ({}))
-            if (!r.ok) throw new Error(body.error || r.statusText)
-            alert(`Filed ${body.assigned} book(s), skipped ${body.skipped}, failed ${body.failed}.`
-                + (body.remaining > 0 ? ` ${body.remaining} still to do — run again to continue.` : ''))
-            load()
+            let afterId = 0
+            for (;;) {
+                const r = await fetch(`/api/identified/assign-authors-all?afterId=${afterId}`, { method: 'POST' })
+                const body = await r.json().catch(() => ({}))
+                if (!r.ok) throw new Error(body.error || r.statusText)
+                totals.assigned += body.assigned
+                totals.skipped += body.skipped
+                totals.failed += body.failed
+                setAssignAllProgress({ ...totals })
+                if (body.lastId == null || body.remaining === 0) break
+                afterId = body.lastId
+            }
+            alert(`Assigned ${totals.assigned} book(s) to authors; ${totals.skipped} couldn't be resolved and stay in the list`
+                + (totals.failed > 0 ? `; ${totals.failed} failed` : '') + '.')
         } catch (e) {
-            alert(`Failed: ${e.message}`)
+            alert(`Failed after assigning ${totals.assigned}: ${e.message}`)
         } finally {
             setAssignAllBusy(false)
+            setAssignAllProgress(null)
+            load()
         }
     }
 
@@ -266,10 +282,12 @@ export default function IdentifiedBooks() {
             {untrackedAssignable > 0 && (
                 <div className="toolbar">
                     <button onClick={assignAuthorsAll} disabled={assignAllBusy}
-                            title="File every untracked book under its author, creating authors from OpenLibrary where needed">
-                        {assignAllBusy ? 'Adding authors…' : `Add all ${untrackedAssignable} author${untrackedAssignable === 1 ? '' : 's'} from OL (if needed)`}
+                            title="Assign every untracked book to its author now — like clicking each row's Assign button">
+                        {assignAllBusy
+                            ? `Assigning… ${assignAllProgress?.assigned ?? 0} done, ${assignAllProgress?.skipped ?? 0} skipped`
+                            : `Assign all ${untrackedAssignable} untracked book${untrackedAssignable === 1 ? '' : 's'} to authors`}
                     </button>
-                    <span className="subtle">Files each untracked book under its author (created from OL if needed). Catalogues stay so you can then Build all series.</span>
+                    <span className="subtle">Like clicking every row's "Assign to …" button: each untracked book is filed under its determined author (created from OL if needed), right now. Books that can't be resolved stay in the list. Catalogues stay so you can then Build all series. The <Link to="/schedules">assign-authors schedule</Link> also works through these in the background.</span>
                 </div>
             )}
 

@@ -91,6 +91,58 @@ public class IncomingProcessorTests
     }
 
     [Fact]
+    public async Task ProcessAsync_Unmatched_Nested_File_Lands_Directly_Under_Top_Level_Unknown_Folder()
+    {
+        await using var db = CreateDb();
+        db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.IncomingFolder, Value = "C:\\incoming" });
+        db.LibraryLocations.Add(new LibraryLocation { Id = 1, Path = "C:\\library", IsPrimary = true, Enabled = true, Label = "Default", CreatedAt = DateTime.UtcNow });
+        await db.SaveChangesAsync();
+
+        var fs = new FakeFileSystem();
+        fs.CreateDirectory("C:\\incoming");
+        fs.CreateDirectory("C:\\library");
+        fs.AddDirectoryChild("C:\\incoming", "C:\\incoming\\drop");
+        fs.AddDirectoryChild("C:\\incoming\\drop", "C:\\incoming\\drop\\some title");
+        fs.AddFile("C:\\incoming\\drop\\some title\\mystery.bin");
+
+        var sut = new IncomingProcessor(db, fs, NullLogger<IncomingProcessor>.Instance);
+
+        var result = await sut.ProcessAsync(CancellationToken.None);
+
+        Assert.Equal(1, result.Processed);
+        Assert.Equal(1, result.UnknownAuthor);
+        Assert.True(fs.FileExists("C:\\library\\__unknown\\drop\\mystery.bin"));
+        Assert.False(fs.FileExists("C:\\library\\__unknown\\drop\\some title\\mystery.bin"));
+    }
+
+    [Fact]
+    public async Task ProcessAsync_Unmatched_Same_Filename_From_Different_Subfolders_Is_Suffixed_Not_Overwritten()
+    {
+        await using var db = CreateDb();
+        db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.IncomingFolder, Value = "C:\\incoming" });
+        db.LibraryLocations.Add(new LibraryLocation { Id = 1, Path = "C:\\library", IsPrimary = true, Enabled = true, Label = "Default", CreatedAt = DateTime.UtcNow });
+        await db.SaveChangesAsync();
+
+        var fs = new FakeFileSystem();
+        fs.CreateDirectory("C:\\incoming");
+        fs.CreateDirectory("C:\\library");
+        fs.AddDirectoryChild("C:\\incoming", "C:\\incoming\\drop");
+        fs.AddDirectoryChild("C:\\incoming\\drop", "C:\\incoming\\drop\\title one");
+        fs.AddDirectoryChild("C:\\incoming\\drop", "C:\\incoming\\drop\\title two");
+        fs.AddFile("C:\\incoming\\drop\\title one\\mystery.bin");
+        fs.AddFile("C:\\incoming\\drop\\title two\\mystery.bin");
+
+        var sut = new IncomingProcessor(db, fs, NullLogger<IncomingProcessor>.Instance);
+
+        var result = await sut.ProcessAsync(CancellationToken.None);
+
+        Assert.Equal(2, result.Processed);
+        Assert.Equal(2, result.UnknownAuthor);
+        Assert.True(fs.FileExists("C:\\library\\__unknown\\drop\\mystery.bin"));
+        Assert.True(fs.FileExists("C:\\library\\__unknown\\drop\\mystery_1.bin"));
+    }
+
+    [Fact]
     public async Task ProcessAsync_Deletes_Junk_File_And_Cleans_Empty_Directory()
     {
         await using var db = CreateDb();

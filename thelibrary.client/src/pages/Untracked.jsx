@@ -363,10 +363,41 @@ export default function Untracked() {
         )
     })
 
+    // Opens the match pane for a loose file sitting directly at the __unknown
+    // root (no folder to browse into) — left pane stays empty, right pane
+    // searches OpenLibrary for the filename stem.
+    const openFileMatcher = (u) => {
+        const rootPath = u.rootPaths?.[0]
+        if (!rootPath) {
+            setError(`Cannot match "${u.authorFolder}" — no root path available.`)
+            return
+        }
+        const stem = u.authorFolder.replace(/\.[^.]+$/, '')
+        setFolderBrowser({
+            bucket: 'unknown',
+            folder: u.authorFolder,
+            rootPath,
+            currentPath: '',
+            parentPath: null,
+            entries: [],
+            expandedPaths: {},
+            nestedEntries: {},
+            nestedLoadingPaths: {},
+            nestedErrorPaths: {},
+            selectedRelativePath: '',
+            selectedSearchQuery: stem,
+            selectedLabel: u.authorFolder,
+            selectedIsDirectory: false,
+            loading: false,
+            loadError: null,
+            isFile: true,
+        })
+    }
+
     const useOpenLibraryMatch = async (work) => {
         if (!folderBrowser) return
         setMatchingPath(folderBrowser.selectedRelativePath || folderBrowser.currentPath || `${folderBrowser.bucket}:${folderBrowser.folder}`)
-        const { bucket, folder, rootPath, currentPath } = folderBrowser
+        const { bucket, folder, rootPath, currentPath, isFile } = folderBrowser
         try {
             const r = await fetch('/api/untracked/match-openlibrary', {
                 method: 'POST',
@@ -386,10 +417,17 @@ export default function Untracked() {
                 }),
             })
             if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText)
-            // Always refresh the current folder view; never auto-close.
-            // The user closes the pane manually with the Close button.
-            await browseFolder(bucket, folder, rootPath, currentPath)
-            await load()
+            if (isFile) {
+                // A loose file was just moved out of __unknown — there's no
+                // folder left to refresh, so close the pane.
+                setFolderBrowser(null)
+                await load()
+            } else {
+                // Always refresh the current folder view; never auto-close.
+                // The user closes the pane manually with the Close button.
+                await browseFolder(bucket, folder, rootPath, currentPath)
+                await load()
+            }
         } finally {
             setMatchingPath(null)
         }
@@ -462,11 +500,15 @@ export default function Untracked() {
     const [deletingFolder, setDeletingFolder] = useState(null)
     const [deletingEntry, setDeletingEntry] = useState(null)
 
-    const deleteUntrackedPath = async ({ bucket, folder, rootPath, path, label }) => {
-        const confirmMsg = path
-            ? `Permanently delete "${label || path}" from disk?\n\nThis cannot be undone.`
-            : `Permanently delete the entire folder "${folder}" from disk?\n\nThis removes every file inside and cannot be undone.`
-        if (!window.confirm(confirmMsg)) return false
+    // Deleting is permanent, but a popup on every small delete is friction —
+    // confirm only when the blast radius is big (> 100 items) or unknown
+    // (a sub-folder whose contents haven't been counted).
+    const deleteUntrackedPath = async ({ bucket, folder, rootPath, path, label, itemCount }) => {
+        if (itemCount == null || itemCount > 100) {
+            const what = path ? `"${label || path}"` : `the entire folder "${folder}"`
+            const size = itemCount != null ? ` (${itemCount} items)` : ''
+            if (!window.confirm(`Permanently delete ${what}${size} from disk?\n\nThis cannot be undone.`)) return false
+        }
         const qs = new URLSearchParams({ bucket, folder, rootPath })
         if (path) qs.set('path', path)
         const r = await fetch(`/api/untracked?${qs.toString()}`, { method: 'DELETE' })
@@ -483,7 +525,7 @@ export default function Untracked() {
         setDeletingFolder(`${bucket}:${u.authorFolder}`)
         setError(null)
         try {
-            const ok = await deleteUntrackedPath({ bucket, folder: u.authorFolder, rootPath })
+            const ok = await deleteUntrackedPath({ bucket, folder: u.authorFolder, rootPath, itemCount: u.fileCount })
             if (ok) await load()
         } catch (e) { setError(String(e.message || e)) }
         finally { setDeletingFolder(null) }
@@ -500,6 +542,9 @@ export default function Untracked() {
                 rootPath: folderBrowser.rootPath,
                 path: entry.relativePath,
                 label: entry.name,
+                // A single file is a small, known blast radius; a sub-folder's
+                // contents haven't been counted, so its confirm stays.
+                itemCount: entry.isDirectory ? null : 1,
             })
             if (!ok) return
             // Refresh either the current folder, or close if we just deleted it.
@@ -755,7 +800,7 @@ export default function Untracked() {
             {filteredUnknownFolders.length > 0 && (
                 <div className="callout">
                     <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-                        <strong>{filteredUnknownFolders.length} folder(s) in __unknown (not yet tracked).</strong>
+                        <strong>{filteredUnknownFolders.length} item(s) in __unknown (not yet tracked).</strong>
                         <button
                             className="btn-ghost"
                             disabled={busyMatching}
@@ -784,24 +829,50 @@ export default function Untracked() {
                     <ul className="unclaimed-list">
                         {pagedUnknownFolders.map(u => (
                             <li key={u.authorFolder}>
-                                <span title="Folder" style={{ marginRight: '0.3rem' }}>📁</span>
-                                <code>{u.authorFolder}</code> <span className="subtle">(folder · {u.fileCount} item{u.fileCount === 1 ? '' : 's'}{u.formats?.length ? ` · ${u.formats.map(f => f.toUpperCase()).join(', ')}` : ''})</span>
-                                <button className="btn-ghost"
-                                    onClick={() => fetchSuggestions(u.authorFolder)}
-                                    disabled={suggestionsByFolder[u.authorFolder]?.loading}>
-                                    Suggest from OL
-                                </button>
-                                <OlSuggestionPanel state={suggestionsByFolder[u.authorFolder]}
-                                                   onQuickAdd={quickAdd}
-                                                   quickAddBusy={quickAddBusy} />
-                                <button className="btn-ghost" onClick={() => setDialog({ initialQuery: u.authorFolder, fromUnknown: true })}>
-                                    Find on OpenLibrary &amp; add
-                                </button>
-                                {u.rootPaths?.[0] && (
+                                <span title={u.isFile ? 'File' : 'Folder'} style={{ marginRight: '0.3rem' }}>{u.isFile ? '📄' : '📁'}</span>
+                                <code>{u.authorFolder}</code> <span className="subtle">({u.isFile ? 'file' : `folder · ${u.fileCount} item${u.fileCount === 1 ? '' : 's'}`}{u.formats?.length ? ` · ${u.formats.map(f => f.toUpperCase()).join(', ')}` : ''})</span>
+                                {!u.isFile && (
+                                    <>
+                                        <button className="btn-ghost"
+                                            onClick={() => fetchSuggestions(u.authorFolder)}
+                                            disabled={suggestionsByFolder[u.authorFolder]?.loading}>
+                                            Suggest from OL
+                                        </button>
+                                        <OlSuggestionPanel state={suggestionsByFolder[u.authorFolder]}
+                                                           onQuickAdd={quickAdd}
+                                                           quickAddBusy={quickAddBusy} />
+                                        <button className="btn-ghost" onClick={() => setDialog({ initialQuery: u.authorFolder, fromUnknown: true })}>
+                                            Find on OpenLibrary &amp; add
+                                        </button>
+                                    </>
+                                )}
+                                {!u.isFile && u.rootPaths?.[0] && (
                                     <button className="btn-ghost"
                                             onClick={() => browseFolder('unknown', u.authorFolder, u.rootPaths[0])}
                                             disabled={folderBrowserBusy}>
                                         Browse files
+                                    </button>
+                                )}
+                                {u.isFile && u.rootPaths?.[0] && PREVIEWABLE_EXTS.has(fileExtension(u.authorFolder)) && (
+                                    <button className="btn-ghost"
+                                            title={`Preview this ${fileExtension(u.authorFolder).toUpperCase()} file`}
+                                            onClick={() => setPreview({
+                                                bucket: 'unknown',
+                                                folder: u.authorFolder,
+                                                rootPath: u.rootPaths[0],
+                                                path: '',
+                                                format: fileExtension(u.authorFolder),
+                                                title: u.authorFolder,
+                                            })}
+                                            disabled={folderBrowserBusy}>
+                                        👁 Preview
+                                    </button>
+                                )}
+                                {u.isFile && u.rootPaths?.[0] && (
+                                    <button className="btn-ghost"
+                                            onClick={() => openFileMatcher(u)}
+                                            disabled={folderBrowserBusy}>
+                                        Match to book
                                     </button>
                                 )}
                                 <button
@@ -814,7 +885,7 @@ export default function Untracked() {
                                 <button
                                     className="btn-ghost btn-danger"
                                     disabled={deletingFolder === `unknown:${u.authorFolder}` || !u.rootPaths?.[0]}
-                                    title="Permanently delete this folder and all files inside"
+                                    title={u.isFile ? 'Permanently delete this file' : 'Permanently delete this folder and all files inside'}
                                     onClick={() => deleteTopLevelFolder('unknown', u)}
                                 >
                                     {deletingFolder === `unknown:${u.authorFolder}` ? 'Deleting…' : '🗑 Delete'}
@@ -842,17 +913,19 @@ export default function Untracked() {
                                 </div>
                             </div>
                             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                                <button className="btn-ghost"
-                                        onClick={() => setFolderBrowser(prev => prev ? {
-                                            ...prev,
-                                            selectedRelativePath: prev.currentPath,
-                                            selectedSearchQuery: prev.currentPath?.split('/').at(-1) || prev.folder,
-                                            selectedLabel: prev.currentPath || prev.folder,
-                                            selectedIsDirectory: true,
-                                        } : prev)}
-                                        disabled={folderBrowserBusy || !!matchingPath}>
-                                    Use current folder
-                                </button>
+                                {!folderBrowser.isFile && (
+                                    <button className="btn-ghost"
+                                            onClick={() => setFolderBrowser(prev => prev ? {
+                                                ...prev,
+                                                selectedRelativePath: prev.currentPath,
+                                                selectedSearchQuery: prev.currentPath?.split('/').at(-1) || prev.folder,
+                                                selectedLabel: prev.currentPath || prev.folder,
+                                                selectedIsDirectory: true,
+                                            } : prev)}
+                                            disabled={folderBrowserBusy || !!matchingPath}>
+                                        Use current folder
+                                    </button>
+                                )}
                                 {folderBrowser.parentPath !== null && (
                                     <button className="btn-ghost"
                                             onClick={() => browseFolder(folderBrowser.bucket, folderBrowser.folder, folderBrowser.rootPath, folderBrowser.parentPath)}

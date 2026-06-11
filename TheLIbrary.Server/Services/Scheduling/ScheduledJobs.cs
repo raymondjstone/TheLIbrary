@@ -28,12 +28,14 @@ public sealed class ScheduledJobs
     private readonly PhysicalAuthorStarService _physicalStars;
     private readonly OpenLibraryMetadataCacheService _metadataCache;
     private readonly UnknownFolderFlattenerService _flattenUnknown;
+    private readonly UnknownDuplicateRemovalService _dedupeUnknown;
     private readonly UnknownAuthorAdoptionService _adoptUnknownAuthors;
     private readonly ForeignArchiveService _archiveForeign;
     private readonly LinkedAuthorMergeService _mergeLinkedAuthors;
     private readonly BookIntegrityService _integrity;
     private readonly StaleFileCleanupService _pruneStaleFiles;
     private readonly ContentScanService _contentScan;
+    private readonly UntrackedAuthorAssignmentService _assignAuthors;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -48,21 +50,23 @@ public sealed class ScheduledJobs
         PhysicalAuthorStarService physicalStars,
         OpenLibraryMetadataCacheService metadataCache,
         UnknownFolderFlattenerService flattenUnknown,
+        UnknownDuplicateRemovalService dedupeUnknown,
         UnknownAuthorAdoptionService adoptUnknownAuthors,
         ForeignArchiveService archiveForeign,
         LinkedAuthorMergeService mergeLinkedAuthors,
         BookIntegrityService integrity,
         StaleFileCleanupService pruneStaleFiles,
         ContentScanService contentScan,
+        UntrackedAuthorAssignmentService assignAuthors,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
     {
         _sync = sync; _incoming = incoming; _organizer = organizer; _unzip = unzip;
         _disambiguator = disambiguator; _sameNames = sameNames; _physicalStars = physicalStars; _metadataCache = metadataCache;
-        _flattenUnknown = flattenUnknown; _adoptUnknownAuthors = adoptUnknownAuthors; _archiveForeign = archiveForeign;
+        _flattenUnknown = flattenUnknown; _dedupeUnknown = dedupeUnknown; _adoptUnknownAuthors = adoptUnknownAuthors; _archiveForeign = archiveForeign;
         _mergeLinkedAuthors = mergeLinkedAuthors; _integrity = integrity; _pruneStaleFiles = pruneStaleFiles;
-        _contentScan = contentScan;
+        _contentScan = contentScan; _assignAuthors = assignAuthors;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -156,6 +160,12 @@ public sealed class ScheduledJobs
         () => _flattenUnknown.IsRunning);
 
     [AutomaticRetry(Attempts = 0)]
+    public Task RunDedupeUnknown(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.DedupeUnknown, manualTrigger,
+        ct => _dedupeUnknown.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _dedupeUnknown.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
     public Task RunAdoptUnknownAuthors(bool manualTrigger = false) => RunWithPolling(
         ScheduleJobIds.AdoptUnknownAuthors, manualTrigger,
         ct => _adoptUnknownAuthors.TryStart(ct, out var err) ? (true, err) : (false, err),
@@ -190,6 +200,27 @@ public sealed class ScheduledJobs
         ScheduleJobIds.ContentScan, manualTrigger,
         ct => _contentScan.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _contentScan.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunAssignAuthors(bool manualTrigger = false)
+    {
+        // Fires every 15 minutes by default — when a long job (sync, integrity)
+        // holds the single Hangfire worker, the missed firings pile up in the
+        // queue. Skip when the queue is already backed up rather than burning
+        // the backlog one stale instance at a time.
+        if (!manualTrigger && GetTotalHangfireQueueLength() > 3)
+        {
+            _log.LogInformation(
+                "Scheduled job {Job} skipped because the Hangfire queue length is above the threshold",
+                ScheduleJobIds.AssignAuthors);
+            return Task.CompletedTask;
+        }
+
+        return RunWithPolling(
+            ScheduleJobIds.AssignAuthors, manualTrigger,
+            ct => _assignAuthors.TryStart(ct, out var err) ? (true, err) : (false, err),
+            () => _assignAuthors.IsRunning);
+    }
 
     internal Task RunWithPollingForTests(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,

@@ -593,6 +593,8 @@ public class IdentifiedController : ControllerBase
         file.AuthorFolder = authorFolderName;
         file.BookId = null;
         file.ManuallyUnmatched = false;
+        if (!alreadyThere)
+            file.ResetIntegrity(); // moved into the author folder — re-check it there
 
         // Mark the scan row reviewed so it leaves the list.
         scan.Reviewed = true;

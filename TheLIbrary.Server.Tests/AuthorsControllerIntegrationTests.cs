@@ -226,6 +226,121 @@ public class AuthorsControllerIntegrationTests
     }
 
     [Fact]
+    public async Task ListUnknownFolders_Includes_Loose_Files_At_Quarantine_Root()
+    {
+        using var factory = new LibraryApiFactory();
+        var root = Path.Combine(Path.GetTempPath(), $"thelibrary-unknownlist-{Guid.NewGuid():N}");
+        var unknownRoot = Path.Combine(root, CalibreScanner.UnknownAuthorFolder);
+        var folderDir = Path.Combine(unknownRoot, "Quigley Fenwick");
+        Directory.CreateDirectory(folderDir);
+        await File.WriteAllTextAsync(Path.Combine(folderDir, "story.epub"), "x");
+        await File.WriteAllTextAsync(Path.Combine(unknownRoot, "loose tale.epub"), "x");
+        await File.WriteAllTextAsync(Path.Combine(unknownRoot, "notes.nfo"), "x"); // junk — must not be listed
+
+        try
+        {
+            await SeedAsync(factory, db =>
+                db.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "Default", Path = root, Enabled = true, CreatedAt = DateTime.UtcNow }));
+            using var client = factory.CreateClient();
+
+            var res = await client.GetFromJsonAsync<List<AuthorsController.UnknownFolder>>("/api/unknown-folders");
+
+            Assert.NotNull(res);
+            var folder = Assert.Single(res!, u => u.AuthorFolder == "Quigley Fenwick");
+            Assert.False(folder.IsFile);
+            var file = Assert.Single(res, u => u.AuthorFolder == "loose tale.epub");
+            Assert.True(file.IsFile);
+            Assert.Equal(1, file.FileCount);
+            Assert.Contains("epub", file.Formats);
+            Assert.DoesNotContain(res, u => u.AuthorFolder == "notes.nfo");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ReturnUnknownFolder_Moves_Loose_Root_File_Back_To_Incoming()
+    {
+        using var factory = new LibraryApiFactory();
+        var root = Path.Combine(Path.GetTempPath(), $"thelibrary-unknownreturn-{Guid.NewGuid():N}");
+        var incoming = Path.Combine(root, "incoming");
+        var libRoot = Path.Combine(root, "lib");
+        var unknownRoot = Path.Combine(libRoot, CalibreScanner.UnknownAuthorFolder);
+        Directory.CreateDirectory(incoming);
+        Directory.CreateDirectory(unknownRoot);
+        var looseFile = Path.Combine(unknownRoot, "loose tale.epub");
+        await File.WriteAllTextAsync(looseFile, "x");
+
+        try
+        {
+            await SeedAsync(factory, db =>
+            {
+                db.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "Default", Path = libRoot, Enabled = true, CreatedAt = DateTime.UtcNow });
+                db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.IncomingFolder, Value = incoming });
+            });
+            using var client = factory.CreateClient();
+
+            var resp = await client.DeleteAsync($"/api/unknown-folders?folder={Uri.EscapeDataString("loose tale.epub")}");
+
+            Assert.Equal(HttpStatusCode.NoContent, resp.StatusCode);
+            Assert.False(File.Exists(looseFile));
+            Assert.True(File.Exists(Path.Combine(incoming, "loose tale.epub")));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task MatchUntrackedToOpenLibrary_Handles_Loose_File_At_Quarantine_Root()
+    {
+        using var factory = new LibraryApiFactory();
+        var root = Path.Combine(Path.GetTempPath(), $"thelibrary-unknownmatch-{Guid.NewGuid():N}");
+        var unknownRoot = Path.Combine(root, CalibreScanner.UnknownAuthorFolder);
+        Directory.CreateDirectory(unknownRoot);
+        var looseFile = Path.Combine(unknownRoot, "Loose Match.epub");
+        await File.WriteAllTextAsync(looseFile, "test");
+
+        try
+        {
+            await SeedAsync(factory, db =>
+                db.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "Default", Path = root, Enabled = true, CreatedAt = DateTime.UtcNow }));
+            using var client = factory.CreateClient();
+
+            var response = await client.PostAsJsonAsync("/api/untracked/match-openlibrary",
+                new AuthorsController.MatchUntrackedOpenLibraryRequest(
+                    "unknown",
+                    "Loose Match.epub",
+                    root,
+                    "",
+                    "/works/OL999W",
+                    "Loose Match",
+                    2001,
+                    42,
+                    "Target Author",
+                    "OL123A",
+                    "Target Author"));
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var scope = factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+            var author = Assert.Single(db.Authors);
+            var file = Assert.Single(db.LocalBookFiles);
+            Assert.Equal(author.Id, file.AuthorId);
+            Assert.False(File.Exists(looseFile));
+            Assert.True(File.Exists(file.FullPath));
+            Assert.DoesNotContain("__unknown", file.FullPath, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task AssignUntrackedAuthor_Resolves_Via_OpenLibrary_And_Files_Under_Author()
     {
         using var factory = new LibraryApiFactory((request, _) =>
@@ -338,6 +453,10 @@ public class AuthorsControllerIntegrationTests
             Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
             var body = await resp.Content.ReadFromJsonAsync<AuthorsController.AssignAuthorsAllResult>();
             Assert.Equal(2, body!.Assigned);
+            // Cursor contract for the one-click full sweep: LastId tells the
+            // client where to resume; Remaining 0 ends the loop.
+            Assert.Equal(2, body.LastId);
+            Assert.Equal(0, body.Remaining);
 
             using var scope = factory.Services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
@@ -354,6 +473,129 @@ public class AuthorsControllerIntegrationTests
         {
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task AssignAuthorsScheduledJob_Files_Untracked_Rows_Like_The_Endpoint()
+    {
+        using var factory = new LibraryApiFactory();
+        var root = Path.Combine(Path.GetTempPath(), $"thelibrary-untracked-{Guid.NewGuid():N}");
+        var dir = Path.Combine(root, CalibreScanner.UnknownAuthorFolder, "Loose");
+        Directory.CreateDirectory(dir);
+        var f1 = Path.Combine(dir, "a.epub");
+        var f2 = Path.Combine(dir, "b.epub");
+        await File.WriteAllTextAsync(f1, "x");
+        await File.WriteAllTextAsync(f2, "x");
+        try
+        {
+            await SeedAsync(factory, db =>
+            {
+                db.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "D", Path = root, Enabled = true, CreatedAt = DateTime.UtcNow });
+                db.OpenLibraryAuthors.Add(
+                    new OpenLibraryAuthor { OlKey = "OL1A", Name = "Author One", NormalizedName = TitleNormalizer.NormalizeAuthor("Author One"), ImportedAt = DateTime.UtcNow });
+                db.BookContentScans.AddRange(
+                    new BookContentScan { Id = 1, FullPath = f1, Source = "untracked", Author = "Author One", ScannedAt = DateTime.UtcNow },
+                    // Not a known OL author — skipped, and remembered as skipped.
+                    new BookContentScan { Id = 2, FullPath = f2, Source = "untracked", Author = "Nobody In Particular", ScannedAt = DateTime.UtcNow });
+                // Pre-existing untracked row with a stale integrity verdict: the
+                // move into the author folder must reset it so it's re-checked.
+                db.LocalBookFiles.Add(new LocalBookFile
+                {
+                    FullPath = f1, AuthorFolder = CalibreScanner.UnknownAuthorFolder, TitleFolder = "a",
+                    IntegrityOk = true, IntegrityCheckedSize = 1, IntegrityCheckedModified = DateTime.UtcNow,
+                    IntegrityPages = 99, IntegrityCheckedAt = DateTime.UtcNow,
+                });
+            });
+
+            var job = factory.Services.GetRequiredService<UntrackedAuthorAssignmentService>();
+            var summary = await job.RunForTestsAsync(CancellationToken.None);
+
+            Assert.Equal(1, summary.Assigned);
+            Assert.Equal(1, summary.Skipped);
+            Assert.Equal(0, summary.Failed);
+            Assert.Equal(1, summary.Remaining); // the unresolvable row stays a candidate
+
+            using var scope = factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+            var author = Assert.Single(db.Authors);
+            Assert.Equal("OL1A", author.OpenLibraryKey);
+            var file = Assert.Single(db.LocalBookFiles);
+            Assert.Equal(author.Id, file.AuthorId);
+            // The move must wipe the old integrity verdict so check-integrity
+            // re-examines the file in its new home (a move keeps size/modified,
+            // so the stamp comparison alone would never trigger a re-check).
+            Assert.Null(file.IntegrityOk);
+            Assert.Null(file.IntegrityCheckedSize);
+            Assert.Null(file.IntegrityCheckedModified);
+            Assert.Null(file.IntegrityPages);
+            Assert.Null(file.IntegrityCheckedAt);
+            Assert.True((await db.BookContentScans.FindAsync(1))!.Reviewed);
+            Assert.False((await db.BookContentScans.FindAsync(2))!.Reviewed);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ContentScan_Enriches_Untracked_Rows_From_Filenames()
+    {
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.OpenLibraryAuthors.Add(new OpenLibraryAuthor
+            {
+                OlKey = "OL9A", Name = "Arnold C. Quibble",
+                NormalizedName = TitleNormalizer.NormalizeAuthor("Arnold C. Quibble"), ImportedAt = DateTime.UtcNow,
+            });
+            db.BookContentScans.AddRange(
+                // Content scan found nothing — the filename carries everything.
+                new BookContentScan { Id = 5, FullPath = "/Books/TheLibrary_Unknown/The Glimmer by Arnold C. Quibble.txt", Source = "untracked", ScannedAt = DateTime.UtcNow },
+                // Neither orientation matches a known author — must stay empty.
+                new BookContentScan { Id = 6, FullPath = "/Books/TheLibrary_Unknown/Some Title - Nobody Knowable.txt", Source = "untracked", ScannedAt = DateTime.UtcNow });
+        });
+
+        using var scope = factory.Services.CreateScope();
+        var db2 = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        var svc = factory.Services.GetRequiredService<ContentScanService>();
+        var enriched = await svc.EnrichUntrackedFromFilenamesAsync(db2, CancellationToken.None);
+
+        Assert.Equal(1, enriched);
+        var row = await db2.BookContentScans.FindAsync(5);
+        Assert.Equal("Arnold C. Quibble", row!.Author);
+        Assert.Equal("The Glimmer", row.Title);
+        Assert.Null((await db2.BookContentScans.FindAsync(6))!.Author);
+        // The matched OL author is pre-provisioned as Pending for the page.
+        Assert.Contains(await db2.Authors.ToListAsync(), a => a.OpenLibraryKey == "OL9A");
+    }
+
+    [Fact]
+    public void ResetIntegrity_Clears_Stamps_But_Keeps_A_Damaged_Verdict()
+    {
+        var when = DateTime.UtcNow;
+        var damaged = new LocalBookFile
+        {
+            IntegrityOk = false, IntegrityError = "won't open", IntegrityPages = 3,
+            IntegrityCheckedSize = 1, IntegrityCheckedModified = when, IntegrityCheckedAt = when,
+        };
+        damaged.ResetIntegrity();
+        // Stamps cleared → re-checked next run; verdict kept → stays on Damaged.
+        Assert.Null(damaged.IntegrityCheckedSize);
+        Assert.Null(damaged.IntegrityCheckedModified);
+        Assert.False(damaged.IntegrityOk);
+        Assert.Equal("won't open", damaged.IntegrityError);
+
+        var ok = new LocalBookFile
+        {
+            IntegrityOk = true, IntegrityPages = 200,
+            IntegrityCheckedSize = 1, IntegrityCheckedModified = when, IntegrityCheckedAt = when,
+        };
+        ok.ResetIntegrity();
+        Assert.Null(ok.IntegrityCheckedSize);
+        Assert.Null(ok.IntegrityOk);
+        Assert.Null(ok.IntegrityPages);
+        Assert.Null(ok.IntegrityCheckedAt);
     }
 
     [Fact]

@@ -6,16 +6,22 @@ const labels = {
     'author-updates': 'Apply author updates',
     'incoming': 'Process incoming folder',
     'reprocess-unknown': 'Reprocess __unknown folder',
+    'refresh-works': 'Refresh due OpenLibrary works',
+    'organize-series': 'Organise series folders',
+    'unzip': 'Unzip archives in library folders',
+    'disambiguate-folders': 'Disambiguate same-name author folders',
     'same-name-authors': 'Add same-name OpenLibrary authors',
     'star-physical-authors': 'Give 1 star to physical-book authors',
     'cache-openlibrary-metadata': 'Cache OpenLibrary covers and subjects',
     'flatten-unknown': 'Flatten __unknown subfolders (off by default)',
+    'dedupe-unknown': 'Remove byte-identical duplicate files from __unknown (off by default)',
     'adopt-unknown-authors': 'Adopt _OLkey folders from __unknown → add author + return to incoming',
     'archive-foreign': 'Archive files of confirmed-foreign titles into the dedupe archive folder',
     'merge-linked-authors': 'Fully merge user-linked duplicate authors into their canonical',
     'check-integrity': 'Check book integrity (open/convert each ebook, flag damaged on the Damaged page)',
     'prune-stale-files': 'Prune stale folder records (remove leftover empty title-folder rows)',
     'content-scan': 'Identify books from content (read front matter of unmatched/untracked files)',
+    'assign-authors': 'Assign untracked books to authors (created from OL if needed)',
 }
 
 const fmtNextRun = (iso) => {

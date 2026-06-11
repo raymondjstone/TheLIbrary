@@ -1,0 +1,417 @@
+using Microsoft.EntityFrameworkCore;
+using TheLibrary.Server.Data;
+using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.Calibre;
+using TheLibrary.Server.Services.IO;
+using TheLibrary.Server.Services.OpenLibrary;
+
+namespace TheLibrary.Server.Services.Sync;
+
+public sealed record UntrackedAssignOutcome(
+    bool Assigned, int? AuthorId, string? AuthorName, int? BookId, string? Path, string? Reason);
+
+public sealed record EnsuredOpenLibraryBook(Book? Book, string? Error);
+
+// Aim 2: take an UNTRACKED __unknown file, work out whose it is, and file it
+// under that author. Scoped — shares the request's (or job scope's) DbContext so
+// the caller's change tracking stays coherent. Extracted from AuthorsController
+// so the same logic serves both the Identified-page endpoints and the
+// "assign-authors" scheduled job.
+public sealed class UntrackedAuthorAssigner
+{
+    private readonly LibraryDbContext _db;
+    private readonly OpenLibraryClient _ol;
+    private readonly IFileSystem _fs;
+
+    public UntrackedAuthorAssigner(LibraryDbContext db, OpenLibraryClient ol, IFileSystem fs)
+    {
+        _db = db;
+        _ol = ol;
+        _fs = fs;
+    }
+
+    // Files one scan row's file under its author. The author is resolved the most
+    // reliable way available:
+    //   1. the OpenLibrary work for the guessed ISBN/title — gives a real author
+    //      (matched/created by OL key) and also links the book; else
+    //   2. an existing author whose name matches the guessed author; else
+    //   3. a new Pending author created from the guessed name — but only when the
+    //      name is a real OpenLibrary author.
+    // The file is then moved into that author's folder and tracked as one of
+    // their unmatched files. Saves its own changes.
+    public async Task<UntrackedAssignOutcome> AssignAsync(BookContentScan scan, CancellationToken ct)
+    {
+        var sourcePath = scan.FullPath;
+        if (!_fs.FileExists(sourcePath) && !_fs.DirectoryExists(sourcePath))
+            return new UntrackedAssignOutcome(false, null, null, null, null, "File no longer exists on disk.");
+
+        var existingFile = await _db.LocalBookFiles.FirstOrDefaultAsync(f => f.FullPath == sourcePath, ct);
+        if (existingFile?.AuthorId is not null)
+            return new UntrackedAssignOutcome(false, null, null, null, null, "This file is already linked to an author.");
+
+        // Which enabled library root does the file live under? (Needed to build
+        // the destination author folder.)
+        var locations = await _db.LibraryLocations.AsNoTracking().Where(l => l.Enabled).ToListAsync(ct);
+        var roots = locations.Select(l => l.Path).ToList();
+        var root = roots.FirstOrDefault(r => sourcePath.StartsWith(
+            r.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase));
+
+        // Files from the custom quarantine folder (e.g. /Books/TheLibrary_Unknown)
+        // are intentionally outside every library location — use the primary (or
+        // first enabled) location as the destination root instead.
+        if (root is null)
+        {
+            var customUnknown = await UnknownFolderResolver.GetCustomPathAsync(_db, ct);
+            var isUnderCustom = customUnknown is not null && sourcePath.StartsWith(
+                customUnknown.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase);
+            if (!isUnderCustom)
+                return new UntrackedAssignOutcome(false, null, null, null, null, "File is outside all enabled library locations.");
+
+            root = locations.FirstOrDefault(l => l.IsPrimary)?.Path
+                   ?? roots.FirstOrDefault();
+            if (root is null)
+                return new UntrackedAssignOutcome(false, null, null, null, null, "No enabled library location is configured.");
+        }
+
+        // The scan row's guesses come from prose parsing or an (often truncated)
+        // filename. The file's own embedded metadata is usually the cleaner
+        // signal — when its author validates against the catalogue, its author
+        // and full title drive the OpenLibrary search instead.
+        var embedded = FileMetadataReader.TryRead(sourcePath);
+        var embeddedAuthor = await AuthorNameValidator.ValidateAsync(_db, embedded?.Author, ct);
+        var searchTitle = embeddedAuthor is not null && !string.IsNullOrWhiteSpace(embedded!.Title)
+            ? embedded.Title : scan.Title;
+        var searchAuthor = embeddedAuthor ?? scan.Author;
+        var searchIsbn = !string.IsNullOrWhiteSpace(scan.Isbn) ? scan.Isbn
+            : embeddedAuthor is not null ? embedded!.Isbn : null;
+
+        // An author guess with NO title is a dead end: the OL work search never
+        // runs, and an author missing from the local OL dump can then never be
+        // confirmed — such rows used to be retried forever. Recover the title
+        // from the embedded metadata (unvalidated is fine, it only feeds the
+        // search) or from the filename interpretation that AGREES with the
+        // author guess ("Through Death - Parker Jaysen.azw3").
+        if (string.IsNullOrWhiteSpace(searchTitle))
+        {
+            if (!string.IsNullOrWhiteSpace(embedded?.Title))
+                searchTitle = embedded!.Title;
+            else if (!string.IsNullOrWhiteSpace(searchAuthor))
+            {
+                var wanted = TitleNormalizer.NormalizeAuthor(searchAuthor);
+                searchTitle = FilenameGuesser.Interpret(sourcePath)
+                    .FirstOrDefault(g => g.Title is not null && g.Author is not null
+                        && TitleNormalizer.NormalizeAuthor(g.Author) == wanted)?.Title;
+            }
+        }
+
+        // 1. Try OpenLibrary (ISBN, else title + author) — best author + a book.
+        Author? author = null;
+        Book? book = null;
+        WorkSearchResponse? search = null;
+        if (!string.IsNullOrWhiteSpace(searchIsbn))
+            search = await _ol.SearchByIsbnAsync(searchIsbn, ct);
+        if ((search?.Docs is null || search.Docs.Count == 0) && !string.IsNullOrWhiteSpace(searchTitle))
+            search = await _ol.SearchWorksAsync(searchTitle!, searchAuthor, ct);
+        var doc = search?.Docs?.FirstOrDefault();
+        if (doc is not null && !string.IsNullOrWhiteSpace(doc.Key))
+        {
+            author = await ResolveTargetAuthorAsync(
+                null, doc.AuthorKeys?.FirstOrDefault(),
+                doc.AuthorNames?.FirstOrDefault(),
+                doc.AuthorNames is { Count: > 0 } ? string.Join(", ", doc.AuthorNames) : null, ct);
+            if (author is not null)
+            {
+                var add = await EnsureOpenLibraryBookAsync(
+                    author.Id, doc.Key, doc.Title, doc.FirstPublishYear, doc.CoverId, owned: false, ct);
+                book = add.Book; // a book-creation hiccup shouldn't block the author assignment
+            }
+        }
+
+        // 2/3. Fall back to the guessed author name — reuse an existing author, or
+        //      create a Pending one.
+        if (author is null && !string.IsNullOrWhiteSpace(searchAuthor))
+            author = await ResolveAuthorByNameAsync(searchAuthor!.Trim(), ct);
+
+        if (author is null)
+            return new UntrackedAssignOutcome(false, null, null, null, null,
+                string.IsNullOrWhiteSpace(searchAuthor)
+                    ? "Couldn't determine an author — no usable ISBN, title, or author was guessed for this file."
+                    : $"Couldn't confirm \"{searchAuthor}\" — not found via OpenLibrary, so no author was created.");
+
+        var file = existingFile ?? new LocalBookFile();
+        if (existingFile is null) _db.LocalBookFiles.Add(file);
+
+        var finalPath = await MoveUntrackedPathToAuthorFolderAsync(sourcePath, root, null, author, ct);
+        file.AuthorId = author.Id;
+        file.BookId = book?.Id;
+        file.ManuallyUnmatched = false;
+        file.AuthorFolder = author.CalibreFolderName ?? author.Name;
+        file.TitleFolder = Directory.Exists(finalPath)
+            ? Path.GetFileName(finalPath)
+            : Path.GetFileNameWithoutExtension(finalPath);
+        file.FullPath = finalPath;
+        file.NormalizedTitle = TitleNormalizer.Normalize(file.TitleFolder);
+        file.ResetIntegrity(); // moved into the author folder — re-check it there
+
+        // The file now lives under an author, so the scan row follows it. Keep the
+        // row when it carries a series catalogue (now tagged with its author) so the
+        // same Build-series action as the tracked rows can still be run on it;
+        // otherwise it's done, so clear it from the review list.
+        scan.FullPath = finalPath;
+        scan.AuthorId = author.Id;
+        scan.Source = "unmatched";
+        scan.Reviewed = scan.SeriesCatalogJson is null;
+
+        await _db.SaveChangesAsync(ct);
+        return new UntrackedAssignOutcome(true, author.Id, author.Name, book?.Id, finalPath, null);
+    }
+
+    // Resolves a guessed author name to an Author for the untracked-assign
+    // fallback (used only when OpenLibrary couldn't resolve the work itself):
+    //   1. reuse an existing watchlist Author with that name; else
+    //   2. only if the name matches a real OpenLibrary author (the OL authors
+    //      catalogue), create a Pending Author tied to that OL key + name.
+    // A name that isn't a known OL author yields null — we never invent an author
+    // out of an unverifiable guess.
+    private async Task<Author?> ResolveAuthorByNameAsync(string name, CancellationToken ct)
+    {
+        var existing = await _db.Authors.FirstOrDefaultAsync(a => a.Name == name, ct);
+        if (existing is not null) return existing;
+
+        var normalized = TitleNormalizer.NormalizeAuthor(name);
+        var olRow = await _db.OpenLibraryAuthors
+            .FirstOrDefaultAsync(o => o.NormalizedName == normalized, ct);
+        if (olRow is null) return null; // not a known OL author — don't create
+
+        // Reuse the watchlist author for that OL key if we already have one.
+        var byKey = await _db.Authors.FirstOrDefaultAsync(a => a.OpenLibraryKey == olRow.OlKey, ct);
+        if (byKey is not null) return byKey;
+
+        var author = new Author { Name = olRow.Name, OpenLibraryKey = olRow.OlKey, Status = AuthorStatus.Pending };
+        _db.Authors.Add(author);
+        await _db.SaveChangesAsync(ct);
+        return author;
+    }
+
+    // Resolves the author an OpenLibrary work should be filed under: the current
+    // author when the keys agree, an existing watchlist author owning the key,
+    // else a new Pending author named from the work doc (fetching the OL author
+    // record when the doc carries no name).
+    public async Task<Author?> ResolveTargetAuthorAsync(
+        Author? currentAuthor,
+        string? primaryAuthorKey,
+        string? primaryAuthorName,
+        string? fallbackAuthors,
+        CancellationToken ct)
+    {
+        var key = primaryAuthorKey?.Trim();
+        if (string.IsNullOrWhiteSpace(key)) return currentAuthor;
+        if (key.StartsWith("/authors/", StringComparison.OrdinalIgnoreCase))
+            key = key[("/authors/".Length)..];
+
+        if (currentAuthor is not null && string.Equals(currentAuthor.OpenLibraryKey, key, StringComparison.OrdinalIgnoreCase))
+            return currentAuthor;
+
+        var existing = await _db.Authors.FirstOrDefaultAsync(a => a.OpenLibraryKey == key, ct);
+        if (existing is not null) return existing;
+
+        var name = primaryAuthorName?.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+            name = fallbackAuthors?.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            try
+            {
+                var fetched = await _ol.FetchAuthorAsync(key, ct);
+                name = fetched?.Name?.Trim();
+            }
+            catch (OpenLibraryRequestFailedException)
+            {
+                name = null;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(name)) return null;
+
+        var author = new Author
+        {
+            Name = name,
+            OpenLibraryKey = key,
+            Status = AuthorStatus.Pending,
+        };
+        _db.Authors.Add(author);
+        await _db.SaveChangesAsync(ct);
+        return author;
+    }
+
+    // Creates (or reuses) the author's Book row for an OpenLibrary work key.
+    public async Task<EnsuredOpenLibraryBook> EnsureOpenLibraryBookAsync(
+        int authorId,
+        string? rawWorkKey,
+        string? rawTitle,
+        int? firstPublishYear,
+        int? coverId,
+        bool owned,
+        CancellationToken ct)
+    {
+        var workKey = rawWorkKey?.Trim();
+        if (string.IsNullOrWhiteSpace(workKey))
+            return new EnsuredOpenLibraryBook(null, "OpenLibrary work key is required");
+        if (workKey.StartsWith("/works/", StringComparison.OrdinalIgnoreCase))
+            workKey = workKey[("/works/".Length)..];
+
+        var existing = await _db.Books.FirstOrDefaultAsync(
+            b => b.AuthorId == authorId && b.OpenLibraryWorkKey == workKey,
+            ct);
+        if (existing is not null)
+        {
+            if (owned && !existing.ManuallyOwned)
+            {
+                existing.ManuallyOwned = true;
+                existing.ManuallyOwnedAt = DateTime.UtcNow;
+            }
+            return new EnsuredOpenLibraryBook(existing, null);
+        }
+
+        var cleanTitle = rawTitle?.Trim();
+        if (string.IsNullOrWhiteSpace(cleanTitle))
+            return new EnsuredOpenLibraryBook(null, "Title is required");
+
+        var book = new Book
+        {
+            AuthorId = authorId,
+            OpenLibraryWorkKey = workKey,
+            Title = cleanTitle,
+            NormalizedTitle = TitleNormalizer.Normalize(cleanTitle),
+            FirstPublishYear = firstPublishYear,
+            CoverId = coverId,
+            ManuallyOwned = owned,
+            ManuallyOwnedAt = owned ? DateTime.UtcNow : null,
+            Subjects = "",
+        };
+
+        _db.Books.Add(book);
+        await _db.SaveChangesAsync(ct);
+        return new EnsuredOpenLibraryBook(book, null);
+    }
+
+    // Moves an untracked file (or folder) into the target author's folder under
+    // the given library root, keeping any relative sub-path and avoiding name
+    // collisions. Returns the final path.
+    public async Task<string> MoveUntrackedPathToAuthorFolderAsync(
+        string sourcePath,
+        string rootPath,
+        string? relativePath,
+        Author targetAuthor,
+        CancellationToken ct)
+    {
+        var targetFolder = SanitizeSegment(targetAuthor.CalibreFolderName ?? targetAuthor.Name);
+        if (string.IsNullOrWhiteSpace(targetAuthor.CalibreFolderName))
+            targetAuthor.CalibreFolderName = targetFolder;
+
+        var root = rootPath.TrimEnd('\\', '/');
+        var relative = NormalizeRelativePath(relativePath);
+        var destPath = string.IsNullOrWhiteSpace(relative)
+            ? Path.Combine(root, targetFolder, Path.GetFileName(sourcePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)))
+            : Path.Combine(root, targetFolder, relative.Replace('/', Path.DirectorySeparatorChar));
+
+        // Already in the right place — don't move onto self (otherwise the
+        // UniqueFilePath/UniqueDirectoryPath collision check below would see the
+        // existing entry and pointlessly rename it to "_2").
+        if (FsPath.SameLocation(sourcePath, destPath))
+            return sourcePath;
+
+        if (File.Exists(sourcePath))
+        {
+            var destDir = Path.GetDirectoryName(destPath);
+            if (!string.IsNullOrWhiteSpace(destDir))
+                Directory.CreateDirectory(destDir);
+            var final = UniqueFilePath(destPath);
+            File.Move(sourcePath, final);
+            await PruneEmptyParentsAsync(Path.GetDirectoryName(sourcePath), root, ct);
+            return final;
+        }
+
+        if (Directory.Exists(sourcePath))
+        {
+            var destParent = Path.GetDirectoryName(destPath) ?? Path.Combine(root, targetFolder);
+            Directory.CreateDirectory(destParent);
+            var final = UniqueDirectoryPath(destParent, Path.GetFileName(destPath));
+            Directory.Move(sourcePath, final);
+            await PruneEmptyParentsAsync(Path.GetDirectoryName(sourcePath), root, ct);
+            return final;
+        }
+
+        return destPath;
+    }
+
+    // ---- Path helpers shared with AuthorsController (single source of truth) ----
+
+    internal static string SanitizeSegment(string name)
+    {
+        var sb = new System.Text.StringBuilder(name.Length);
+        foreach (var c in name)
+            sb.Append(InvalidSegmentChars.Contains(c) ? '_' : c);
+        var s = sb.ToString().Trim().TrimEnd('.', ' ');
+        return string.IsNullOrEmpty(s) ? "returned" : s;
+    }
+
+    private static readonly HashSet<char> InvalidSegmentChars =
+        new(Path.GetInvalidFileNameChars());
+
+    internal static string NormalizeRelativePath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return "";
+        var parts = path.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return string.Join('/', parts.Where(p => p != "." && p != ".."));
+    }
+
+    internal static string UniqueFilePath(string desired)
+    {
+        if (!File.Exists(desired) && !Directory.Exists(desired)) return desired;
+        var dir = Path.GetDirectoryName(desired) ?? "";
+        var stem = Path.GetFileNameWithoutExtension(desired);
+        var ext = Path.GetExtension(desired);
+        for (var i = 2; i < 1000; i++)
+        {
+            var next = Path.Combine(dir, $"{stem}_{i}{ext}");
+            if (!File.Exists(next) && !Directory.Exists(next)) return next;
+        }
+        return Path.Combine(dir, $"{stem}_{DateTime.UtcNow:yyyyMMddHHmmss}{ext}");
+    }
+
+    internal static string UniqueDirectoryPath(string parent, string leaf)
+    {
+        var candidate = Path.Combine(parent, leaf);
+        if (!Directory.Exists(candidate) && !File.Exists(candidate)) return candidate;
+        for (var i = 2; i < 1000; i++)
+        {
+            var next = Path.Combine(parent, $"{leaf} ({i})");
+            if (!Directory.Exists(next) && !File.Exists(next)) return next;
+        }
+        return Path.Combine(parent, $"{leaf} ({DateTime.UtcNow:yyyyMMddHHmmss})");
+    }
+
+    internal static async Task PruneEmptyParentsAsync(string? startPath, string stopRoot, CancellationToken ct)
+    {
+        var stop = Path.GetFullPath(stopRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var current = startPath;
+        while (!string.IsNullOrWhiteSpace(current))
+        {
+            ct.ThrowIfCancellationRequested();
+            var full = Path.GetFullPath(current).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (!full.StartsWith(stop, StringComparison.OrdinalIgnoreCase) || string.Equals(full, stop, StringComparison.OrdinalIgnoreCase))
+                break;
+            if (Directory.Exists(full) && !Directory.EnumerateFileSystemEntries(full).Any())
+            {
+                try { Directory.Delete(full); }
+                catch { break; }
+                current = Path.GetDirectoryName(full);
+                continue;
+            }
+            break;
+        }
+        await Task.CompletedTask;
+    }
+}

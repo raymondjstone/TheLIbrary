@@ -16,6 +16,7 @@ public class JobsController : ControllerBase
     private readonly PhysicalAuthorStarService _physicalStars;
     private readonly OpenLibraryMetadataCacheService _metadataCache;
     private readonly UnknownFolderFlattenerService _flattenUnknown;
+    private readonly UnknownDuplicateRemovalService _dedupeUnknown;
     private readonly UnknownAuthorAdoptionService _adoptUnknownAuthors;
     private readonly StarredAuthorRefreshService _refreshStarred;
     private readonly ForeignArchiveService _archiveForeign;
@@ -23,6 +24,7 @@ public class JobsController : ControllerBase
     private readonly BookIntegrityService _checkIntegrity;
     private readonly StaleFileCleanupService _staleFiles;
     private readonly ContentScanService _contentScan;
+    private readonly UntrackedAuthorAssignmentService _assignAuthors;
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly OpenLibraryRateLimiter _rateLimiter;
@@ -36,6 +38,7 @@ public class JobsController : ControllerBase
         PhysicalAuthorStarService physicalStars,
         OpenLibraryMetadataCacheService metadataCache,
         UnknownFolderFlattenerService flattenUnknown,
+        UnknownDuplicateRemovalService dedupeUnknown,
         UnknownAuthorAdoptionService adoptUnknownAuthors,
         StarredAuthorRefreshService refreshStarred,
         ForeignArchiveService archiveForeign,
@@ -43,6 +46,7 @@ public class JobsController : ControllerBase
         BookIntegrityService checkIntegrity,
         StaleFileCleanupService staleFiles,
         ContentScanService contentScan,
+        UntrackedAuthorAssignmentService assignAuthors,
         BackgroundTaskCoordinator coordinator,
         IHostApplicationLifetime lifetime,
         OpenLibraryRateLimiter rateLimiter,
@@ -55,6 +59,7 @@ public class JobsController : ControllerBase
         _physicalStars = physicalStars;
         _metadataCache = metadataCache;
         _flattenUnknown = flattenUnknown;
+        _dedupeUnknown = dedupeUnknown;
         _adoptUnknownAuthors = adoptUnknownAuthors;
         _refreshStarred = refreshStarred;
         _archiveForeign = archiveForeign;
@@ -62,6 +67,7 @@ public class JobsController : ControllerBase
         _checkIntegrity = checkIntegrity;
         _staleFiles = staleFiles;
         _contentScan = contentScan;
+        _assignAuthors = assignAuthors;
         _coordinator = coordinator;
         _lifetime = lifetime;
         _rateLimiter = rateLimiter;
@@ -89,6 +95,7 @@ public class JobsController : ControllerBase
             physicalStars = new { isRunning = _physicalStars.IsRunning, message = _physicalStars.CurrentMessage },
             metadataCache = new { isRunning = _metadataCache.IsRunning, message = _metadataCache.CurrentMessage },
             flattenUnknown = new { isRunning = _flattenUnknown.IsRunning, message = _flattenUnknown.CurrentMessage },
+            dedupeUnknown = new { isRunning = _dedupeUnknown.IsRunning, message = _dedupeUnknown.CurrentMessage },
             adoptUnknownAuthors = new { isRunning = _adoptUnknownAuthors.IsRunning, message = _adoptUnknownAuthors.CurrentMessage },
             refreshStarred = new { isRunning = _refreshStarred.IsRunning, message = _refreshStarred.CurrentMessage },
             archiveForeign = new { isRunning = _archiveForeign.IsRunning, message = _archiveForeign.CurrentMessage },
@@ -96,6 +103,7 @@ public class JobsController : ControllerBase
             checkIntegrity = new { isRunning = _checkIntegrity.IsRunning, message = _checkIntegrity.CurrentMessage },
             staleFiles = new { isRunning = _staleFiles.IsRunning, message = _staleFiles.CurrentMessage },
             contentScan = new { isRunning = _contentScan.IsRunning, message = _contentScan.CurrentMessage },
+            assignAuthors = new { isRunning = _assignAuthors.IsRunning, message = _assignAuthors.CurrentMessage },
         });
     }
 
@@ -155,6 +163,14 @@ public class JobsController : ControllerBase
         return Accepted();
     }
 
+    [HttpPost("dedupe-unknown/start")]
+    public IActionResult StartDedupeUnknown()
+    {
+        if (!_dedupeUnknown.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
     [HttpPost("adopt-unknown-authors/start")]
     public IActionResult StartAdoptUnknownAuthors()
     {
@@ -207,6 +223,14 @@ public class JobsController : ControllerBase
     public IActionResult StartContentScan()
     {
         if (!_contentScan.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("assign-authors/start")]
+    public IActionResult StartAssignAuthors()
+    {
+        if (!_assignAuthors.TryStart(_lifetime.ApplicationStopping, out var err))
             return Conflict(new { error = err });
         return Accepted();
     }

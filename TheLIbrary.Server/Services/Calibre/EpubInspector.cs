@@ -49,6 +49,47 @@ public static class EpubInspector
         catch { return ""; }
     }
 
+    // Head and tail in one pass: the zip is opened and the spine resolved once,
+    // and each content document is decompressed at most once (short books would
+    // otherwise be read twice over). Equivalent to calling ReadHeadText and
+    // ReadTailText on two separate streams, at half the I/O.
+    public static (string Head, string Tail) ReadHeadAndTailText(Stream stream, int maxChars)
+    {
+        try
+        {
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: true);
+            var docs = ResolveSpineDocuments(zip);
+            var texts = new string?[docs.Count];
+            string TextOf(int i) => texts[i] ??= ReadDocText(docs[i]);
+
+            var sb = new StringBuilder();
+            for (var i = 0; i < docs.Count && sb.Length < maxChars; i++)
+            {
+                var text = TextOf(i);
+                if (text.Length > 0) sb.Append(text).Append('\n');
+            }
+            var head = sb.Length > maxChars ? sb.ToString(0, maxChars) : sb.ToString();
+
+            var collected = new List<string>();
+            var total = 0;
+            for (var i = docs.Count - 1; i >= 0 && total < maxChars; i--)
+            {
+                var text = TextOf(i);
+                if (text.Length == 0) continue;
+                collected.Add(text);
+                total += text.Length + 1;
+            }
+            collected.Reverse(); // back to reading order
+            var tb = new StringBuilder();
+            foreach (var t in collected) tb.Append(t).Append('\n');
+            // Keep the *last* maxChars so the tail end (where the list sits) wins.
+            var tail = tb.Length > maxChars ? tb.ToString(tb.Length - maxChars, maxChars) : tb.ToString();
+
+            return (head, tail);
+        }
+        catch { return ("", ""); }
+    }
+
     // Returns up to maxChars of *trailing* readable text in spine order — the
     // back matter, where "Also by / Novels by / Other books" bibliographies and
     // series listings most often live. Reads spine documents from the end until

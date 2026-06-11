@@ -212,7 +212,10 @@ public sealed class BookIntegrityService
 
             var isDamaged = result.Status != IntegrityStatus.Ok;
             file.IntegrityOk = !isDamaged;
-            file.IntegrityError = isDamaged ? result.Error : null;
+            // Cap to the column length — an uncapped converter/parser message
+            // would fail SaveChanges and (before per-file persistence) threw
+            // away the whole run's progress.
+            file.IntegrityError = isDamaged ? Cap(result.Error, 1000) : null;
             file.IntegrityPages = result.Pages;
             file.IntegrityCheckedSize = file.SizeBytes;
             file.IntegrityCheckedModified = file.ModifiedAt;
@@ -238,8 +241,18 @@ public sealed class BookIntegrityService
                 if (moved is not null) { file.FullPath = moved; archivedOrphans++; }
             }
 
-            // Persist incrementally so a long, cancelled run keeps its progress.
-            if ((i + 1) % 25 == 0) await db.SaveChangesAsync(ct);
+            // Persist PER FILE: a single check can take minutes (a .lit/.mobi
+            // conversion runs up to the 10-minute Calibre timeout), so batching
+            // meant a restart/redeploy/cancel mid-batch lost every result since
+            // the last boundary — and the next run re-picked the exact same
+            // candidates ("processing the same books each time"). A row that
+            // can't be saved is detached so it can't poison the rest of the run.
+            try { await db.SaveChangesAsync(ct); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log.LogWarning(ex, "Book-integrity: could not persist result for {Path}", file.FullPath);
+                db.Entry(file).State = EntityState.Detached;
+            }
         }
 
         await db.SaveChangesAsync(ct);
@@ -388,7 +401,15 @@ public sealed class BookIntegrityService
                 }
             }
 
-            if ((i + 1) % 25 == 0) await db.SaveChangesAsync(ct);
+            // Per-file persistence, same reasoning as the author-linked phase:
+            // progress must survive a cancelled/killed run. Candidates here are
+            // no-tracking, so clearing the tracker on a failed save is safe.
+            try { await db.SaveChangesAsync(ct); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _log.LogWarning(ex, "Book-integrity: could not persist untracked result for {Path}", uf.FullPath);
+                db.ChangeTracker.Clear();
+            }
         }
 
         await db.SaveChangesAsync(ct);
@@ -417,6 +438,9 @@ public sealed class BookIntegrityService
             existing.CheckedAt = DateTime.UtcNow;
         }
     }
+
+    private static string? Cap(string? s, int max)
+        => s is null ? null : s.Length <= max ? s : s[..max];
 
     private static async Task<int> LoadMaxBooksPerRunAsync(LibraryDbContext db, CancellationToken ct)
     {

@@ -30,20 +30,22 @@ public static class ScheduleJobIds
     public const string StarPhysicalAuthors = "star-physical-authors";
     public const string CacheOpenLibraryMetadata = "cache-openlibrary-metadata";
     public const string FlattenUnknown = "flatten-unknown";
+    public const string DedupeUnknown = "dedupe-unknown";
     public const string AdoptUnknownAuthors = "adopt-unknown-authors";
     public const string ArchiveForeign = "archive-foreign";
     public const string MergeLinkedAuthors = "merge-linked-authors";
     public const string CheckIntegrity = "check-integrity";
     public const string PruneStaleFiles = "prune-stale-files";
     public const string ContentScan = "content-scan";
+    public const string AssignAuthors = "assign-authors";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
         Sync, Seed, AuthorUpdates, Incoming, ReprocessUnknown, RefreshWorks,
         OrganizeSeries, Unzip, DisambiguateFolders, SameNameAuthors,
         StarPhysicalAuthors, CacheOpenLibraryMetadata, FlattenUnknown,
-        AdoptUnknownAuthors, ArchiveForeign, MergeLinkedAuthors, CheckIntegrity,
-        PruneStaleFiles, ContentScan
+        DedupeUnknown, AdoptUnknownAuthors, ArchiveForeign, MergeLinkedAuthors,
+        CheckIntegrity, PruneStaleFiles, ContentScan, AssignAuthors
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -66,6 +68,10 @@ public static class ScheduleJobIds
             [StarPhysicalAuthors] = new() { Cron = "0 10 * * *", Enabled = true },
             [CacheOpenLibraryMetadata] = new() { Cron = "30 10 * * *", Enabled = true },
             [FlattenUnknown] = new() { Cron = "0 9 * * *", Enabled = false },
+            // Delete byte-identical duplicate files inside the quarantine,
+            // keeping one copy per content hash. Destructive, so it ships
+            // disabled — the user opts in on the Schedules page.
+            [DedupeUnknown] = new() { Cron = "30 9 * * *", Enabled = false },
             [AdoptUnknownAuthors] = new() { Cron = "0 8 * * *", Enabled = true },
             // Archive files of confirmed-foreign titles into the dedupe archive
             // folder — once a day at 23:00, enabled by default.
@@ -84,5 +90,10 @@ public static class ScheduleJobIds
             // author, title and series. Heavy (opens each file), so capped per
             // run and disabled by default — opt in on the Schedules page.
             [ContentScan] = new() { Cron = "0 21 * * *", Enabled = false },
+            // File untracked content-scan rows under their author (created from
+            // OpenLibrary if needed) — the Identified page's "Add all authors
+            // from OL" bulk action. Capped per run (OL rate limits), so it runs
+            // every 15 minutes to work through the backlog.
+            [AssignAuthors] = new() { Cron = "*/15 * * * *", Enabled = true },
         };
 }

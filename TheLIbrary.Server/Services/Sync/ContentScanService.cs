@@ -106,6 +106,15 @@ public sealed class ContentScanService
         var notArchived = ArchivedFilesController.NotUnderArchive(archiveLeaf);
         var untrackedFirst = await LoadUntrackedFirstAsync(db, ct);
 
+        // Cheap DB-only pass first: untracked rows whose CONTENT yielded no author
+        // (DRM'd AZW3s, prose-from-line-one .txt) often carry it in the FILENAME
+        // ("The Star by Arthur C. Clarke.txt"). Catalogue-validated, so it also
+        // repairs rows scanned before filename parsing existed.
+        _currentMessage = "Reading author/title from untracked filenames";
+        var enriched = await EnrichUntrackedFromFilenamesAsync(db, ct);
+        if (enriched > 0)
+            _log.LogInformation("Content-scan: filled {Count} untracked guesses from filenames", enriched);
+
         // Process in priority tiers, each filling whatever capacity the previous
         // ones left (mirrors the aims of this job):
         //   A. UNMATCHED books that sit in an author folder — match them to the
@@ -131,7 +140,9 @@ public sealed class ContentScanService
         async Task<List<ScanItem>> TierUntracked(int remaining) =>
             await db.UnknownFiles.AsNoTracking()
                 .Where(UfTextBearing)
-                .Where(u => !db.BookContentScans.Any(c => c.FullPath == u.FullPath))
+                // Size-qualified like the unmatched tiers, so an untracked file
+                // that changed since its last scan is read again.
+                .Where(u => !db.BookContentScans.Any(c => c.FullPath == u.FullPath && c.SizeBytes == u.SizeBytes))
                 .OrderBy(u => u.Id)
                 .Take(remaining)
                 .Select(u => new ScanItem(u.FullPath, u.SizeBytes, u.ModifiedAt, "untracked", null))
@@ -292,13 +303,111 @@ public sealed class ContentScanService
         row.AlsoByTitles = det.AlsoByTitles.Count > 0 ? Cap(string.Join(";", det.AlsoByTitles), 2000) : null;
         row.ScannedAt = DateTime.UtcNow;
 
+        // The file's OWN embedded metadata (EPUB OPF dc:creator/dc:title, MOBI
+        // EXTH, FB2, PDF info) beats both prose parsing and the filename: the
+        // quarantine is full of files whose filename title is truncated to ~30
+        // chars while the OPF carries the full title and a clean author. Only a
+        // catalogue-validated author is trusted, so swapped/garbage metadata
+        // ("Dark Prince" as dc:creator) fails validation and falls through to
+        // the existing guesses.
+        var embedded = FileMetadataReader.TryRead(item.FullPath, _log);
+        if (embedded is not null
+            && await AuthorNameValidator.ValidateAsync(db, embedded.Author, ct) is { } embeddedAuthor)
+        {
+            row.Author = Cap(embeddedAuthor, 500);
+            if (!string.IsNullOrWhiteSpace(embedded.Title)) row.Title = Cap(embedded.Title, 500);
+            row.Series ??= Cap(embedded.Series, 500);
+            row.SeriesPosition ??= Cap(embedded.SeriesPosition, 50);
+            row.Isbn ??= Cap(embedded.Isbn, 20);
+        }
+
+        // Content gave no author but the filename may carry one ("Title - Author",
+        // "Title by Author", "Last, First - Series NN - Title"). Only a guess whose
+        // author matches the OL/watchlist catalogue is taken, so the orientation
+        // ambiguity ("Author - Title" vs "Title - Author") resolves itself.
+        if (item.Source == "untracked" && row.Author is null
+            && await ValidateFilenameGuessAsync(db, item.FullPath, ct) is { } fg)
+        {
+            row.Author = Cap(fg.Author, 500);
+            row.Title ??= Cap(fg.Title, 500);
+            row.Series ??= Cap(fg.Series, 500);
+            row.SeriesPosition ??= Cap(fg.SeriesPosition, 50);
+        }
+
         // Pre-provision a Pending Author row for every OL author that matches
         // the guessed name so it is available for selection on the Identified page
         // without the user having to trigger an OL lookup manually.
-        if (!string.IsNullOrWhiteSpace(det.Author))
-            await EnsurePendingAuthorsForGuessAsync(db, det.Author, ct);
+        if (!string.IsNullOrWhiteSpace(row.Author))
+            await EnsurePendingAuthorsForGuessAsync(db, row.Author, ct);
 
-        return det.HasAnything;
+        return det.HasAnything || row.Author is not null;
+    }
+
+    // Fills missing author/title on EXISTING unreviewed untracked rows from their
+    // filenames — no disk I/O, so the whole backlog is done in one pass. Only
+    // rows with no author guess at all are touched, and only with a
+    // catalogue-validated name; content-derived guesses are never overwritten.
+    internal async Task<int> EnrichUntrackedFromFilenamesAsync(LibraryDbContext db, CancellationToken ct)
+    {
+        var rows = await db.BookContentScans
+            .Where(c => !c.Reviewed && c.Source == "untracked" && c.AuthorId == null && c.Author == null)
+            .ToListAsync(ct);
+
+        var enriched = 0;
+        foreach (var row in rows)
+        {
+            ct.ThrowIfCancellationRequested();
+            var fg = await ValidateFilenameGuessAsync(db, row.FullPath, ct);
+            if (fg is null) continue;
+            row.Author = Cap(fg.Author, 500);
+            row.Title ??= Cap(fg.Title, 500);
+            row.Series ??= Cap(fg.Series, 500);
+            row.SeriesPosition ??= Cap(fg.SeriesPosition, 50);
+            await EnsurePendingAuthorsForGuessAsync(db, fg.Author!, ct);
+            enriched++;
+            if (enriched % 100 == 0) await db.SaveChangesAsync(ct);
+        }
+
+        // Rows whose content gave an AUTHOR but no title are equally stuck —
+        // without a title the assigner's OL work search never runs, so an
+        // author missing from the local OL dump can never be confirmed. The
+        // filename usually has the title ("Through Death - Parker Jaysen.azw3"):
+        // take it from the interpretation that AGREES with the author guess.
+        var titleless = await db.BookContentScans
+            .Where(c => !c.Reviewed && c.Source == "untracked" && c.AuthorId == null
+                && c.Author != null && c.Title == null)
+            .ToListAsync(ct);
+        foreach (var row in titleless)
+        {
+            ct.ThrowIfCancellationRequested();
+            var wanted = TitleNormalizer.NormalizeAuthor(row.Author!);
+            var g = FilenameGuesser.Interpret(row.FullPath).FirstOrDefault(x =>
+                x.Title is not null && x.Author is not null
+                && TitleNormalizer.NormalizeAuthor(x.Author) == wanted);
+            if (g is null) continue;
+            row.Title = Cap(g.Title, 500);
+            row.Series ??= Cap(g.Series, 500);
+            row.SeriesPosition ??= Cap(g.SeriesPosition, 50);
+            enriched++;
+            if (enriched % 100 == 0) await db.SaveChangesAsync(ct);
+        }
+
+        await db.SaveChangesAsync(ct);
+        return enriched;
+    }
+
+    // Picks the first filename interpretation whose author is a real, known name:
+    // an OpenLibrary-catalogue match or an existing watchlist author — never a
+    // blacklisted one. An unvalidated name is refused outright (same rule as the
+    // assigner), so "Title - Author" vs "Author - Title" can't fill in garbage.
+    private static async Task<FilenameGuess?> ValidateFilenameGuessAsync(
+        LibraryDbContext db, string fullPath, CancellationToken ct)
+    {
+        foreach (var g in FilenameGuesser.Interpret(fullPath))
+        {
+            if (await AuthorNameValidator.ValidateAsync(db, g.Author, ct) is not null) return g;
+        }
+        return null;
     }
 
     // Folded into the integrity job: that job has just opened/read this file, so
@@ -352,6 +461,11 @@ public sealed class ContentScanService
     {
         var normalized = TitleNormalizer.NormalizeAuthor(guessedAuthor.Trim());
         if (string.IsNullOrWhiteSpace(normalized)) return;
+
+        // Names the user explicitly excluded must not be resurrected as Pending
+        // rows by a mere content guess (same rule as the adopt-unknown job).
+        if (await db.AuthorBlacklist.AsNoTracking().AnyAsync(b => b.NormalizedName == normalized, ct))
+            return;
 
         var olMatches = await db.OpenLibraryAuthors.AsNoTracking()
             .Where(o => o.NormalizedName == normalized)

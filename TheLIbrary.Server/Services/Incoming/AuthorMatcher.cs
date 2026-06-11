@@ -87,30 +87,25 @@ public sealed class AuthorMatcher
     //   1. metadata author (or its "Last, First" sort form)
     //   2. "Author - Title.ext" filename pattern (embedded in ExtractKeys)
     //   3. reverse "Title - Author.ext" filename pattern
+    //   4. each individual author of a multi-author metadata credit ("A & B",
+    //      "A; B" — one EPUB dc:creator / MOBI EXTH field often carries both)
+    //   5. every FilenameGuesser interpretation ("Title by Author", "[Series NN]"
+    //      tags, "et al", format tags, "Last, First" inversion, …)
     // Returns null on total miss — caller then tries folder layout and finally
     // an OpenLibrary catalog lookup via GetProbeKeys.
     public AuthorMatchResult? Resolve(string? metadataAuthor, string? metadataAuthorSort, string filePath)
     {
-        var (primaryKey, sortKey) = ExtractKeys(metadataAuthor, metadataAuthorSort, filePath);
-        foreach (var probe in CandidateKeys(primaryKey, sortKey))
-            if (_index.TryGetValue(probe, out var hit))
-                return new AuthorMatchResult(hit, null);
-
-        var reversed = TryReverseFilename(filePath);
-        if (reversed is not null)
-        {
-            foreach (var probe in AuthorKeyVariants(reversed.Value.Author))
-                if (_index.TryGetValue(probe, out var hit))
-                    return new AuthorMatchResult(hit, reversed.Value.Title);
-        }
+        foreach (var (key, rewrittenTitle) in GetProbeKeys(metadataAuthor, metadataAuthorSort, filePath))
+            if (_index.TryGetValue(key, out var hit))
+                return new AuthorMatchResult(hit, rewrittenTitle);
         return null;
     }
 
-    // The full list of normalized probe keys that Resolve would have tried,
-    // in priority order (forward first, reverse-filename last). Exposed so an
-    // external store (e.g. the OpenLibrary catalog) can be queried with the
-    // same keys when in-memory resolution misses. Pairs each key with the
-    // rewritten title to use if that key matches via reverse filename.
+    // The full list of normalized probe keys that Resolve tries, in priority
+    // order (metadata first, filename-derived last). Exposed so an external
+    // store (e.g. the OpenLibrary catalog) can be queried with the same keys
+    // when in-memory resolution misses. Pairs each key with the rewritten
+    // title to use if that key matches via a filename interpretation.
     public IEnumerable<(string Key, string? RewrittenTitle)> GetProbeKeys(
         string? metadataAuthor, string? metadataAuthorSort, string filePath)
     {
@@ -125,7 +120,36 @@ public sealed class AuthorMatcher
             foreach (var k in AuthorKeyVariants(reversed.Value.Author))
                 if (seen.Add(k)) yield return (k, reversed.Value.Title);
         }
+
+        // A joint credit in ONE metadata field ("A & B", "A; B", "A and B")
+        // normalizes to a key that matches nobody — probe each author alone.
+        foreach (var raw in new[] { metadataAuthor, metadataAuthorSort })
+        {
+            if (string.IsNullOrWhiteSpace(raw)) continue;
+            var parts = MultiAuthorSeparator.Split(raw);
+            if (parts.Length < 2) continue;
+            foreach (var part in parts)
+                foreach (var k in AuthorKeyVariants(part))
+                    if (seen.Add(k)) yield return (k, null);
+        }
+
+        // Filename interpretations beyond the plain dash split: "Title by
+        // Author", "[Series NN] - Title - Author", "et al" credits, "(mobi)"
+        // tags, "Last, First" inversion — the forms the quarantine folder is
+        // actually full of.
+        foreach (var g in FilenameGuesser.Interpret(filePath))
+        {
+            if (string.IsNullOrWhiteSpace(g.Author)) continue;
+            foreach (var k in AuthorKeyVariants(g.Author))
+                if (seen.Add(k)) yield return (k, g.Title);
+        }
     }
+
+    // ";", "&", "/" or a spaced "and"/"with" joining several names in one
+    // author field.
+    private static readonly System.Text.RegularExpressions.Regex MultiAuthorSeparator = new(
+        @"\s*(?:;|&|/|\s+(?:and|AND|And|with)\s+)\s*",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
 
     // Walks ancestors of `folderPath` upward (exclusive of `sourceRoot`) and
     // returns the first tracked or OL-matched entry. Skips the __unknown

@@ -99,12 +99,14 @@ public sealed class ScheduleService
             ScheduleJobIds.StarPhysicalAuthors => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunStarPhysicalAuthors(true)),
             ScheduleJobIds.CacheOpenLibraryMetadata => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunCacheOpenLibraryMetadata(true)),
             ScheduleJobIds.FlattenUnknown => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunFlattenUnknown(true)),
+            ScheduleJobIds.DedupeUnknown => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunDedupeUnknown(true)),
             ScheduleJobIds.AdoptUnknownAuthors => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunAdoptUnknownAuthors(true)),
             ScheduleJobIds.ArchiveForeign => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunArchiveForeign(true)),
             ScheduleJobIds.MergeLinkedAuthors => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunMergeLinkedAuthors(true)),
             ScheduleJobIds.CheckIntegrity => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunCheckIntegrity(true)),
             ScheduleJobIds.PruneStaleFiles => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunPruneStaleFiles(true)),
             ScheduleJobIds.ContentScan => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunContentScan(true)),
+            ScheduleJobIds.AssignAuthors => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunAssignAuthors(true)),
             _ => throw new ArgumentException($"Unknown job id '{jobId}'", nameof(jobId)),
         };
     }
@@ -202,6 +204,9 @@ public sealed class ScheduleService
                 case ScheduleJobIds.FlattenUnknown:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunFlattenUnknown(), entry.Cron);
                     break;
+                case ScheduleJobIds.DedupeUnknown:
+                    _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunDedupeUnknown(), entry.Cron);
+                    break;
                 case ScheduleJobIds.AdoptUnknownAuthors:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunAdoptUnknownAuthors(), entry.Cron);
                     break;
@@ -219,6 +224,9 @@ public sealed class ScheduleService
                     break;
                 case ScheduleJobIds.ContentScan:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunContentScan(), entry.Cron);
+                    break;
+                case ScheduleJobIds.AssignAuthors:
+                    _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunAssignAuthors(), entry.Cron);
                     break;
             }
             _log.LogInformation("Schedule {Job}: enabled with cron '{Cron}'", jobId, entry.Cron);

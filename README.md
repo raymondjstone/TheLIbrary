@@ -52,7 +52,7 @@ local files at all as a pure author/works tracker and wishlist.
 | Damaged | `/damaged` | Ebook files the integrity job couldn't open/convert, or that have fewer than 20 pages — **grouped by book**, with NZB replacement-search links, per-book "add to Wanted" + "archive all bad copies", per-file preview/mark-OK/recheck/remove/restore-from-archive, an on-demand **Check now**, and a **★ Starred authors only** filter (starred authors are flagged with a ★ on each group). See [Book integrity check](#book-integrity-check) |
 | Identified | `/identified` | Author/title/series guessed from the front matter of unmatched & untracked files (the *Identify books from content* job), to review, preview, **Apply** (match to an OpenLibrary work), or dismiss. See [Identifying books from content](#identifying-books-from-content) |
 | Manual Books | `/manual-books` | Every manually-added book (works not on OpenLibrary), with inline edit and delete |
-| Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket (with one-click "Try matching all" against the current watchlist). The browse pane drills into a folder, previews EPUB/PDF/TXT files in-place, matches a single file to an OpenLibrary work, and deletes files/folders (disk + DB) — and stays open after matching when other files remain |
+| Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket — folders AND loose book files sitting directly at the quarantine root (with one-click "Try matching all" against the current watchlist). The browse pane drills into a folder, previews EPUB/PDF/TXT files in-place, matches a single file to an OpenLibrary work, and deletes files/folders (disk + DB) — and stays open after matching when other files remain; loose files get Preview / Match to book / Return to Incoming / Delete |
 | Unmatched physical | `/physical-unmatched` | Editable list of physical-books-import rows that couldn't be matched; "Re-run matching" re-tries the whole list against the current library |
 | Sync | `/sync` | Live sync dashboard with phase tracking and progress |
 | Schedules | `/schedules` | Cron expressions and enabled/disabled flags for background jobs; per-job last-N-run history panel |
@@ -609,12 +609,28 @@ before they're slotted into the library.
   (`OpenLibraryAuthor`). Either kind of match routes the file to
   `<primary library>/<AuthorName>/<Title>/` — OL-only matches then appear in
   the UI's "unclaimed" list so you can promote the author to the watchlist
-  with one click. Files that match neither stay in `__unknown` mirroring
-  their source-relative path.
+  with one click. Files that match neither go to `__unknown/<top-level
+  source folder>/` — only the first path segment of the source layout is
+  kept (it carries the author-name signal for a later reprocess); deeper
+  `Title/...` nesting is never recreated, so files sit directly inside their
+  quarantine folder the way the flatten-unknown job expects. Filename
+  collisions caused by collapsing subfolders are resolved with `_N`
+  suffixing, never by overwriting.
 - **Reprocess __unknown** — re-runs the author-matching pass against everything
   already sitting in `__unknown`. Files that still can't resolve stay put; the
   rest move to their proper author folder. Useful after adding new authors to
-  the watchlist.
+  the watchlist. **Only watchlist authors qualify** — a file whose author is
+  identified via the OL catalogue but isn't tracked stays put, and the run log
+  says so explicitly ("author identified (X) but not on watchlist") so a low
+  match count isn't mistaken for a parsing failure; use the Identified page's
+  assign flow (which creates Pending authors) for those.
+- **Author probes** — beyond the metadata author and the plain
+  "Author - Title" / "Title - Author" filename splits, matching also probes
+  each individual author of a joint credit ("A & B", "A; B" — one EPUB
+  dc:creator / MOBI EXTH field often carries both) and every filename
+  interpretation from the same parser the content scan uses ("Title by
+  Author", "[Series NN]" tags, "et al", "(mobi)" tags, "Last, First"
+  inversion).
 - **Folder-layout matching** — if a file's metadata is unreadable but any
   ancestor folder name matches a tracked author, the whole folder is treated
   as `<Author>/<Title>/<files>` so multi-format books stay together.
@@ -811,6 +827,27 @@ transaction.
 Enable it on the **Schedules** page (`flatten-unknown` job, default cron
 `0 9 * * *`) — or run it once manually via **Run now**.
 
+## Dedupe-unknown job
+
+Off by default. Finds byte-identical duplicate files anywhere inside the
+quarantine (`__unknown/` across all enabled locations, or the custom quarantine
+path) and deletes all but one copy of each. "Duplicate" means identical
+contents, nothing less: files are grouped by size first (no file reads — cheap
+on the NAS mount), and only same-size groups are read and SHA-256-hashed.
+Different names with the same bytes are duplicates; the same name with
+different bytes is not — both stay (the run logs a `NearDuplicates` count and
+samples of "same name and size but different contents" so a zero-deletion run
+is explainable). The kept copy is the one with the shortest full path
+(alphabetical tiebreak), so un-suffixed originals win over `_1`-style
+collision copies. **Zero-byte files are deleted outright** — an empty ebook is
+junk, not a duplicate. DB rows pointing at a deleted path (the
+`UnknownFiles` index, `UnknownFileChecks`, `LocalBookFiles`,
+`BookContentScans`) are removed in the same run.
+
+Enable it on the **Schedules** page (`dedupe-unknown` job, default cron
+`30 9 * * *`) — or run it once manually via **Run now** or the Sync page's
+**Dedupe __unknown** button (`POST /api/jobs/dedupe-unknown/start`).
+
 ## Book integrity check
 
 Off by default. The `check-integrity` job opens every matched ebook file and
@@ -912,6 +949,13 @@ each, starred authors (higher `Author.Priority`) first** — i.e. starred-unarch
 the live library, so its health matters least.) Enable or schedule it on the
 **Schedules** page (`check-integrity`, default cron `0 12 * * *`).
 
+**Results persist per file**, not in batches: a single check can take minutes
+(a `.lit`/`.mobi` conversion runs up to the 10-minute Calibre timeout), so a
+restart, redeploy, or cancel mid-run keeps every result already produced — the
+next run picks up where this one stopped instead of re-checking the same head
+of the backlog. Error messages are capped to the column length, and a row that
+can't be saved is logged and detached rather than aborting the run.
+
 Whenever a run touches a file that belongs to a **book**, it also folds in
 **every other still-unchecked file of that same book/title** and checks them in
 the same run — *even past the per-run cap*. Checking all copies of a title
@@ -963,7 +1007,8 @@ Novels by / Other books" bibliography and series listings live in the **back of
 the book** at least as often as the front, so a head-only read missed most of
 them. It reuses the same text extractors as the integrity check (EPUB / PDF /
 FB2 / DOCX / ODT / RTF / TXT natively; MOBI / AZW / LIT via Calibre; image-only
-formats are skipped), then applies heuristics: ISBN (copyright page),
+formats are skipped) — EPUBs and PDFs are opened **once** for both ends, not
+parsed twice — then applies heuristics: ISBN (copyright page),
 `Title:`/`Author:` headers (Project Gutenberg), "Copyright © YEAR by NAME",
 "Also by / Novels by NAME" lists (every such block, front and back, merged and
 deduped), and "Book N of the X" series lines. A captured author name is trimmed of
@@ -977,7 +1022,60 @@ title is used instead. List parsing keeps only genuine
 **title-cased** lines and stops at section headings (Warning, Dedication,
 Acknowledgements, About the Author, …), so a hard-wrapped dedication, warning or
 epigraph isn't slurped in as fake titles — a real problem for plain-text books
-where every prose line is short.
+where every prose line is short. Leading bullets and explicit list numbering
+("1. ", "2) ") are stripped from list entries, but digits that are part of a
+real title ("3:10 To Yuma") are kept. Author capture survives the messy forms
+found in real front matter: a title page byline with a generational suffix
+("By W. M. Quiller, Jr."), a single-line "Title by Author" page, and
+multi-author credits (the first author is kept whole instead of the old
+truncated "X and Thomas"). Publishers ("… Media", "… Press") and URL fragments
+are refused as authors, and a "Book N in the X series" mention inside running
+prose can no longer smear a whole sentence into the series name.
+
+**Embedded metadata comes first.** Before trusting prose heuristics, the scan
+reads the file's own embedded metadata (EPUB OPF `dc:creator`/`dc:title`, MOBI
+EXTH, FB2, PDF info, DOCX/ODT core properties — the same readers the incoming
+processor uses, via the shared `FileMetadataReader`). When the metadata author
+**validates against the catalogue** (an OpenLibrary-catalogue or watchlist
+name, in either "First Last" or "Last, First" orientation, never blacklisted —
+`AuthorNameValidator`), the metadata author *and its full title* replace the
+prose guesses. This matters enormously for the quarantine: its filenames are
+typically truncated to ~30 characters ("Rescued by the Mountain Man_ An -
+Nyla Lily.epub") while the OPF inside carries the complete title — and the
+assign-authors job's OpenLibrary work search needs the full title to land on
+the right work. Swapped or junk metadata ("Dark Prince" as the creator) fails
+validation and falls through to the prose/filename guesses. The same
+metadata-first rule applies again at **assignment time**: the assign-authors
+job re-reads the embedded metadata of each file it's about to file and, when
+the author validates, searches OpenLibrary with that author + full title
+instead of the (possibly older, filename-derived) scan guesses.
+
+**Filename parsing** backs the content read up. Untracked files are often DRM'd
+or prose-from-line-one, yielding no content guess at all — but their names
+plainly carry the answer ("Title - Author", "Title by Author", "Last, First -
+Series NN - Title", "[Series NN] - Title - Author", "Title_ Subtitle - Author"
+with "_" read as the sanitised ":"). Placeholder segments ("<X> - Unknown",
+"- Anonymous") are dropped before interpretation and **never offered as author
+candidates** (the OL catalogue contains literal "Unknown"/"Anonymous" author
+records, so an unfiltered placeholder would wrongly validate). Beyond the " - "
+splits, the parser also reads an author from **trailing parentheses**
+("Inferno (Troy Denning)"), probes **smashed-together names** with no separator
+at all ("Almuric Robert E. Howard" → trailing/leading word groups as the
+author), and splits on a **hyphen without spaces** ("Charles L. Harness-Lethary
+Fair"). Since a filename can't say which side is the author, every plausible
+interpretation is generated and the first whose author matches the
+**OpenLibrary authors catalogue** (or an existing watchlist author, never a
+blacklisted name) wins — so "Author - Title" vs "Title - Author" disambiguates
+itself and garbage can't get in. Catalogue validation also bridges
+**initials-run spellings** ("CS Lewis" matches the catalogue's "C. S. Lewis"). This runs for new scans
+AND as a cheap DB-only pass at the start of every content-scan run that
+back-fills author/title onto existing guess-less untracked rows (filename
+guesses never overwrite content-derived ones).
+
+When a scan guesses an author name, every OpenLibrary author with that
+(normalised) name is pre-provisioned as a **Pending** watchlist row so it's
+selectable on the Identified page without a manual lookup — unless the name is
+on the **author blacklist**, which a content guess must never resurrect.
 
 The flat **"also by"** list is review context only (shown in the *Also by*
 column); the part that actually **builds series** is the structured **series
@@ -1096,16 +1194,34 @@ the Pending author is tied to that OL key/name; an unverifiable name is refused
 rather than invented, so guesses can't spawn junk authors. It then **moves the
 file into that author's folder** and tracks it as one of their unmatched files,
 so it shows in their Unmatched section and can be matched to a book next. This is
-how untracked files get out of `__unknown` and onto an author. A header **Add all
-N authors from OL (if needed)** button does this for **every** untracked row at
-once (`POST /api/identified/assign-authors-all`, capped per call — repeat until
-none remain); a row that carries a **series catalogue** is *kept* (now tagged with
+how untracked files get out of `__unknown` and onto an author. A header **Assign
+all N untracked books to authors** button does this for **every** untracked row in
+one click — in effect clicking each row's *Assign to …* button. The client loops
+`POST /api/identified/assign-authors-all?afterId=N` with the returned cursor
+(each request is capped because OpenLibrary is rate-limited) until the whole
+backlog has been attempted once, showing running progress on the button; books
+whose author can't be resolved are skipped and stay in the list; a row that carries a **series catalogue** is *kept* (now tagged with
 its new author) so its series can then be built with the same **Build series** /
-**Build all series** action as the tracked rows. A header **Apply all N ISBN
+**Build all series** action as the tracked rows. The same bulk action also runs
+as a **scheduled job** (`assign-authors`, default `*/15 * * * *`, enabled by
+default — capped at 100 rows per run so each firing stays within OpenLibrary's
+rate limit and the 15-minute schedule works through the backlog). Rows it
+couldn't resolve (an unverifiable author name, a vanished file) are remembered
+in-process and only retried with leftover capacity, so a wall of unresolvable
+rows can't stall progress on fresh ones. A header **Apply all N ISBN
 matches** button bulk-applies every
 ISBN-backed guess in one go (capped per call so it can't time out against
 OpenLibrary's rate limit — repeat until none remain); title-only guesses are
 left for per-row review.
+
+Any file these actions **move into an author folder** (per-row *Assign*, the
+bulk button, the `assign-authors` job, *Accept author*, or an OL match that
+resolves to a different author) gets its **integrity result reset** so the next
+`check-integrity` run re-checks it in its new home — a move keeps the file's
+size/modified fingerprint, so without the reset the integrity job would never
+look at it again. A file already flagged **damaged** keeps that verdict (it
+stays on the Damaged page) — moving it didn't fix it; only the re-check can
+clear it.
 
 Each row's existence is also the "already scanned" marker, so **a file is read
 only once** (unless it changes). **Damaged** files (flagged by the integrity
@@ -1299,9 +1415,11 @@ on every startup.
 | `star-physical-authors` | `0 10 * * *` | Give 1 star to any author with at least one manually-owned physical book whose current star rating is 0 |
 | `cache-openlibrary-metadata` | `30 10 * * *` | Backfill missing subjects and cache large OpenLibrary covers for existing books |
 | `flatten-unknown` | `0 9 * * *` (disabled by default) | Flatten any subfolders inside each quarantine author folder so each contains only files. See [Flatten-unknown job](#flatten-unknown-job) |
+| `dedupe-unknown` | `30 9 * * *` (disabled by default) | Delete byte-identical duplicate files inside the quarantine (size-grouped, then SHA-256-verified), keeping the shortest-path copy of each. See [Dedupe-unknown job](#dedupe-unknown-job) |
 | `check-integrity` | `0 12 * * *` (disabled by default) | Open/convert every matched ebook file and flag any that won't open or have fewer than 20 pages onto the Damaged page. See [Book integrity check](#book-integrity-check) |
 | `prune-stale-files` | `0 20 * * *` | Remove leftover folder-pointer `LocalBookFile` rows (empty/missing title folders) so they stop showing as bogus duplicates. NAS-guarded: only folder-shaped rows, only when the library root is mounted |
 | `content-scan` | `0 21 * * *` (disabled by default) | Read the front matter of unmatched/untracked files to guess author/title/series; results land on the Identified Books page. See [Identifying books from content](#identifying-books-from-content) |
+| `assign-authors` | `*/15 * * * *` | File identified untracked books under their author, creating Pending authors from OpenLibrary where needed — the Identified page's "Assign all untracked books to authors" bulk action on a schedule. Capped at 100 rows per run (OpenLibrary rate limits); skips a firing when the Hangfire queue is already backed up |
 
 Hangfire runs with `WorkerCount=1`, and all background work also passes through
 a single `BackgroundTaskCoordinator`, so a manual UI run and a cron tick can't
@@ -1771,14 +1889,14 @@ itself lives in the same registry.
 | GET    | `/api/unclaimed` | Calibre folders with no matching tracked author |
 | DELETE | `/api/unclaimed?folder=` | Move a folder back to incoming and blacklist the name |
 | DELETE | `/api/unclaimed/all` | Move all unclaimed folders back to incoming |
-| GET    | `/api/unknown-folders` | Author-level folders inside `__unknown` (or the custom quarantine path when set) |
+| GET    | `/api/unknown-folders` | Author-level folders AND loose book files inside `__unknown` (or the custom quarantine path when set); loose files carry `isFile: true` |
 | POST   | `/api/unknown-folders/match` | Try matching every `__unknown` folder against the current watchlist (incl. OL alternate names) and move matches into the canonical author folder |
-| DELETE | `/api/unknown-folders?folder=` | Move one `__unknown` folder back to incoming |
-| DELETE | `/api/unknown-folders/all` | Move all `__unknown` folders back to incoming |
+| DELETE | `/api/unknown-folders?folder=` | Move one `__unknown` folder (or loose root file) back to incoming |
+| DELETE | `/api/unknown-folders/all` | Move all `__unknown` folders and loose root files back to incoming |
 | GET    | `/api/untracked/contents` | List files and subfolders inside a single unclaimed / unknown author folder, used by the Untracked browse pane |
 | GET    | `/api/untracked/preview?format=` | Stream an EPUB / PDF / TXT file from inside the quarantine bucket for the in-browser preview modal |
 | POST   | `/api/untracked/match-openlibrary` | Match a single file or sub-folder inside the browse pane to an OpenLibrary work, creating the author if needed and moving the file onto disk |
-| DELETE | `/api/untracked` | Delete a file or folder under the unclaimed / unknown bucket from disk and prune matching `LocalBookFile` rows |
+| DELETE | `/api/untracked` | Delete a file or folder under the unclaimed / unknown bucket from disk and prune matching `LocalBookFile` rows. The Untracked page only asks for confirmation when the deletion is big (> 100 items) or of unknown size (an uncounted sub-folder); single files and small folders delete without a popup |
 
 ### Locations, settings, and ignored folders
 

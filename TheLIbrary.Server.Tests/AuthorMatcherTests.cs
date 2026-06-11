@@ -372,4 +372,51 @@ public class AuthorMatcherTests
         // the caller should use when that probe hits.
         Assert.Contains(entries, e => e.Key == "isaac asimov" && e.RewrittenTitle == "Foundation");
     }
+
+    // ---------- multi-author metadata credits ---------------------------------
+
+    [Fact]
+    public void Matches_each_author_of_a_joint_metadata_credit()
+    {
+        // One EPUB dc:creator / MOBI EXTH field often carries BOTH names —
+        // the joint string matches nobody, the individual names must.
+        var m = BuildMatcher();
+        var r = m.Resolve("Ari Mercer & Tobin Quist", null, @"X:\drop\book.mobi");
+        Assert.NotNull(r);
+        Assert.Equal("Ari Mercer", r!.Entry.DisplayName);
+
+        var semi = m.Resolve("Tobin Quist; Elin Ward", null, @"X:\drop\book.epub");
+        Assert.NotNull(semi);
+        Assert.Equal("Elin Ward", semi!.Entry.DisplayName);
+    }
+
+    // ---------- FilenameGuesser-backed probes ----------------------------------
+
+    [Fact]
+    public void Matches_author_from_title_by_author_filename()
+    {
+        var m = BuildMatcher();
+        var r = m.Resolve(null, null, @"X:\drop\The Quiet Lantern by Ari Mercer.txt");
+        Assert.NotNull(r);
+        Assert.Equal("Ari Mercer", r!.Entry.DisplayName);
+        Assert.Equal("The Quiet Lantern", r.RewrittenTitle);
+    }
+
+    [Fact]
+    public void Matches_author_despite_et_al_and_format_tag()
+    {
+        var m = BuildMatcher();
+        var r = m.Resolve(null, null, @"X:\drop\Patchwork Skies - Elin Ward et al_ (mobi).mobi");
+        Assert.NotNull(r);
+        Assert.Equal("Elin Ward", r!.Entry.DisplayName);
+    }
+
+    [Fact]
+    public void Matches_inverted_author_with_bracketed_series_segment()
+    {
+        var m = BuildMatcher();
+        var r = m.Resolve(null, null, @"X:\drop\[Cinder Vale 02] - The Glass Orchard - Mercer, Ari.epub");
+        Assert.NotNull(r);
+        Assert.Equal("Ari Mercer", r!.Entry.DisplayName);
+    }
 }
