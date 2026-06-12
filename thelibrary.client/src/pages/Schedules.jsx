@@ -15,6 +15,7 @@ const labels = {
     'cache-openlibrary-metadata': 'Cache OpenLibrary covers and subjects',
     'flatten-unknown': 'Flatten __unknown subfolders (off by default)',
     'dedupe-unknown': 'Remove byte-identical duplicate files from __unknown (off by default)',
+    'promote-manual-books': 'Link manual books to OpenLibrary works once OL lists them (keeps series/files/ownership)',
     'adopt-unknown-authors': 'Adopt _OLkey folders from __unknown → add author + return to incoming',
     'archive-foreign': 'Archive files of confirmed-foreign titles into the dedupe archive folder',
     'merge-linked-authors': 'Fully merge user-linked duplicate authors into their canonical',

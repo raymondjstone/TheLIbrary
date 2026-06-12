@@ -100,6 +100,7 @@ public sealed class ScheduleService
             ScheduleJobIds.CacheOpenLibraryMetadata => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunCacheOpenLibraryMetadata(true)),
             ScheduleJobIds.FlattenUnknown => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunFlattenUnknown(true)),
             ScheduleJobIds.DedupeUnknown => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunDedupeUnknown(true)),
+            ScheduleJobIds.PromoteManualBooks => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunPromoteManualBooks(true)),
             ScheduleJobIds.AdoptUnknownAuthors => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunAdoptUnknownAuthors(true)),
             ScheduleJobIds.ArchiveForeign => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunArchiveForeign(true)),
             ScheduleJobIds.MergeLinkedAuthors => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunMergeLinkedAuthors(true)),
@@ -206,6 +207,9 @@ public sealed class ScheduleService
                     break;
                 case ScheduleJobIds.DedupeUnknown:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunDedupeUnknown(), entry.Cron);
+                    break;
+                case ScheduleJobIds.PromoteManualBooks:
+                    _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunPromoteManualBooks(), entry.Cron);
                     break;
                 case ScheduleJobIds.AdoptUnknownAuthors:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunAdoptUnknownAuthors(), entry.Cron);

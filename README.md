@@ -50,8 +50,8 @@ local files at all as a pure author/works tracker and wishlist.
 | Stats | `/stats` | KPI cards, books-read-by-year chart, top genres, per-author coverage, file-format breakdown chart, files-acquired-by-month chart |
 | Duplicates | `/duplicates` | Books matched to more than one **real** local copy (a file, or a folder that actually holds an ebook — empty/stale title-folder rows are not counted). Each copy shows its integrity status (✓ ok / ✗ damaged / ? unchecked) and the **keeper is never a damaged copy** when a healthy one exists |
 | Damaged | `/damaged` | Ebook files the integrity job couldn't open/convert, or that have fewer than 20 pages — **grouped by book**, with NZB replacement-search links, per-book "add to Wanted" + "archive all bad copies", per-file preview/mark-OK/recheck/remove/restore-from-archive, an on-demand **Check now**, and a **★ Starred authors only** filter (starred authors are flagged with a ★ on each group). See [Book integrity check](#book-integrity-check) |
-| Identified | `/identified` | Author/title/series guessed from the front matter of unmatched & untracked files (the *Identify books from content* job), to review, preview, **Apply** (match to an OpenLibrary work), or dismiss. See [Identifying books from content](#identifying-books-from-content) |
-| Manual Books | `/manual-books` | Every manually-added book (works not on OpenLibrary), with inline edit and delete |
+| Identified | `/identified` | Author/title/series guessed from the front matter of unmatched & untracked files (the *Identify books from content* job), to review, preview, **Apply** (match to an OpenLibrary work), or dismiss. A per-row **Find on OL** opens the OpenLibrary title search and the selected work is **matched immediately** — author resolved/created, book ensured, file moved and linked, row retired — no separate Apply click. See [Identifying books from content](#identifying-books-from-content) |
+| Manual Books | `/manual-books` | Every manually-added book (works not on OpenLibrary), **grouped by author** with a filter per column (title, author, year, series, owned), inline edit and delete. The daily [promote-manual-books job](#promote-manual-books-job) links each one to its real OpenLibrary work once OL lists it |
 | Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket — folders AND loose book files sitting directly at the quarantine root (with one-click "Try matching all" against the current watchlist). The browse pane drills into a folder, previews EPUB/PDF/TXT files in-place, matches a single file to an OpenLibrary work, and deletes files/folders (disk + DB) — and stays open after matching when other files remain; loose files get Preview / Match to book / Return to Incoming / Delete |
 | Unmatched physical | `/physical-unmatched` | Editable list of physical-books-import rows that couldn't be matched; "Re-run matching" re-tries the whole list against the current library |
 | Sync | `/sync` | Live sync dashboard with phase tracking and progress |
@@ -848,6 +848,27 @@ Enable it on the **Schedules** page (`dedupe-unknown` job, default cron
 `30 9 * * *`) — or run it once manually via **Run now** or the Sync page's
 **Dedupe __unknown** button (`POST /api/jobs/dedupe-unknown/start`).
 
+## Promote-manual-books job
+
+On by default, daily at 07:30. Searches OpenLibrary for every manually-
+catalogued book (synthetic `XX` work key — hand-added entries and the
+placeholder books the series builder mints) and links each one to the real
+OL work once OpenLibrary lists the title. The author-refresh job already does
+this in place for refreshed authors; this job covers everything else by
+searching per book (capped per run — OL is rate-limited — with an in-memory
+skip set so not-yet-listed books don't burn the cap every day).
+
+A match requires BOTH the title (normalized-equal or very close) and the
+author (OL key when the watchlist row has one, else normalized name) to agree
+— a title-only hit never rebinds a book to someone else's work. Promotion is
+**in place**: the `Book.Id` is kept, so series link, position, read status,
+ownership, files and custom cover all carry over; only the OL-sourced fields
+(work key, canonical title, year, cover) are refreshed. When the author
+already has a row for that OL work, the manual row is **merged** into it
+instead: series/position fill blanks on the target, ownership/read-status/
+wanted carry over, file links (including omnibus references) follow, and the
+manual duplicate is deleted — no series info is ever lost.
+
 ## Book integrity check
 
 Off by default. The `check-integrity` job opens every matched ebook file and
@@ -1082,6 +1103,15 @@ column); the part that actually **builds series** is the structured **series
 catalogue** (a list grouped under a named series header). A bare also-by list
 with no series header therefore populates the column but won't, on its own,
 create a series.
+
+**Stale guesses are pruned.** Scan rows are keyed by file path, and files move
+(flatten, return-to-incoming, manual deletes, accept-author). Every content-scan
+run starts with a DB-only pass that removes unreviewed rows whose path is no
+longer claimed by any index (`LocalBookFiles`, or the `UnknownFiles` quarantine
+index that sync rebuilds from disk) — so the Identified page stops showing
+entries for locations files are no longer at. Reviewed rows survive even when
+stale, since catalogue-carrying ones still feed apply-catalog; a moved file's
+new location simply gets scanned fresh as its own row.
 
 The job works through files in **priority tiers**, each filling whatever capacity
 the previous left — matching the job's aims:
@@ -1416,6 +1446,7 @@ on every startup.
 | `cache-openlibrary-metadata` | `30 10 * * *` | Backfill missing subjects and cache large OpenLibrary covers for existing books |
 | `flatten-unknown` | `0 9 * * *` (disabled by default) | Flatten any subfolders inside each quarantine author folder so each contains only files. See [Flatten-unknown job](#flatten-unknown-job) |
 | `dedupe-unknown` | `30 9 * * *` (disabled by default) | Delete byte-identical duplicate files inside the quarantine (size-grouped, then SHA-256-verified), keeping the shortest-path copy of each. See [Dedupe-unknown job](#dedupe-unknown-job) |
+| `promote-manual-books` | `30 7 * * *` | Search OpenLibrary for each manually-catalogued book and link it to the real work once OL lists it — in place, or merged into the author's existing row for that work. See [Promote-manual-books job](#promote-manual-books-job) |
 | `check-integrity` | `0 12 * * *` (disabled by default) | Open/convert every matched ebook file and flag any that won't open or have fewer than 20 pages onto the Damaged page. See [Book integrity check](#book-integrity-check) |
 | `prune-stale-files` | `0 20 * * *` | Remove leftover folder-pointer `LocalBookFile` rows (empty/missing title folders) so they stop showing as bogus duplicates. NAS-guarded: only folder-shaped rows, only when the library root is mounted |
 | `content-scan` | `0 21 * * *` (disabled by default) | Read the front matter of unmatched/untracked files to guess author/title/series; results land on the Identified Books page. See [Identifying books from content](#identifying-books-from-content) |
@@ -1852,6 +1883,8 @@ itself lives in the same registry.
 | PUT    | `/api/books/{id}` | Edit a book's title, publish year, and/or author |
 | DELETE | `/api/books/{id}` | Delete a book (its local files fall back to unmatched) |
 | GET    | `/api/books/manual` | List every manually-added book |
+| POST   | `/api/identified/{id}/use-work` | Match a scan row's file to a user-picked OpenLibrary work, fully applied: author resolved/created Pending, Book ensured, file moved into the author folder and linked, row retired |
+| POST   | `/api/jobs/promote-manual-books/start` | Manually start the promote-manual-books job |
 | PUT    | `/api/books/{id}/cover` | Set or clear a custom cover image URL |
 | GET    | `/api/books/cover-search?q=` | Cover-image candidates from Google Books |
 

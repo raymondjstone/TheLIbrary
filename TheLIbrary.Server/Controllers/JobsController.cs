@@ -17,6 +17,7 @@ public class JobsController : ControllerBase
     private readonly OpenLibraryMetadataCacheService _metadataCache;
     private readonly UnknownFolderFlattenerService _flattenUnknown;
     private readonly UnknownDuplicateRemovalService _dedupeUnknown;
+    private readonly ManualBookPromotionService _promoteManualBooks;
     private readonly UnknownAuthorAdoptionService _adoptUnknownAuthors;
     private readonly StarredAuthorRefreshService _refreshStarred;
     private readonly ForeignArchiveService _archiveForeign;
@@ -39,6 +40,7 @@ public class JobsController : ControllerBase
         OpenLibraryMetadataCacheService metadataCache,
         UnknownFolderFlattenerService flattenUnknown,
         UnknownDuplicateRemovalService dedupeUnknown,
+        ManualBookPromotionService promoteManualBooks,
         UnknownAuthorAdoptionService adoptUnknownAuthors,
         StarredAuthorRefreshService refreshStarred,
         ForeignArchiveService archiveForeign,
@@ -60,6 +62,7 @@ public class JobsController : ControllerBase
         _metadataCache = metadataCache;
         _flattenUnknown = flattenUnknown;
         _dedupeUnknown = dedupeUnknown;
+        _promoteManualBooks = promoteManualBooks;
         _adoptUnknownAuthors = adoptUnknownAuthors;
         _refreshStarred = refreshStarred;
         _archiveForeign = archiveForeign;
@@ -96,6 +99,7 @@ public class JobsController : ControllerBase
             metadataCache = new { isRunning = _metadataCache.IsRunning, message = _metadataCache.CurrentMessage },
             flattenUnknown = new { isRunning = _flattenUnknown.IsRunning, message = _flattenUnknown.CurrentMessage },
             dedupeUnknown = new { isRunning = _dedupeUnknown.IsRunning, message = _dedupeUnknown.CurrentMessage },
+            promoteManualBooks = new { isRunning = _promoteManualBooks.IsRunning, message = _promoteManualBooks.CurrentMessage },
             adoptUnknownAuthors = new { isRunning = _adoptUnknownAuthors.IsRunning, message = _adoptUnknownAuthors.CurrentMessage },
             refreshStarred = new { isRunning = _refreshStarred.IsRunning, message = _refreshStarred.CurrentMessage },
             archiveForeign = new { isRunning = _archiveForeign.IsRunning, message = _archiveForeign.CurrentMessage },
@@ -167,6 +171,14 @@ public class JobsController : ControllerBase
     public IActionResult StartDedupeUnknown()
     {
         if (!_dedupeUnknown.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("promote-manual-books/start")]
+    public IActionResult StartPromoteManualBooks()
+    {
+        if (!_promoteManualBooks.TryStart(_lifetime.ApplicationStopping, out var err))
             return Conflict(new { error = err });
         return Accepted();
     }

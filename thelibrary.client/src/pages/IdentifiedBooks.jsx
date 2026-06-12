@@ -1,6 +1,13 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import BookPreview from '../components/BookPreview.jsx'
+import OpenLibraryWorkSearch from '../components/OpenLibraryWorkSearch.jsx'
+
+const fileStem = (path) => {
+    const name = (path ?? '').split(/[\\/]/).pop() ?? ''
+    const dot = name.lastIndexOf('.')
+    return dot > 0 ? name.slice(0, dot) : name
+}
 
 // Flattens every column's text for a row into one lowercased string so a single
 // filter box can match against ANY column (path, author, title, series, ISBN,
@@ -28,6 +35,7 @@ export default function IdentifiedBooks() {
     const [expanded, setExpanded] = useState(() => new Set())
     const [filter, setFilter] = useState('')
     const [authorEdit, setAuthorEdit] = useState(null) // { id, current }
+    const [workSearch, setWorkSearch] = useState(null) // { id, initialQuery }
 
     // Filter rows on the entered text appearing in ANY column.
     const filtered = useMemo(() => {
@@ -219,6 +227,34 @@ export default function IdentifiedBooks() {
         }
     }
 
+    // Match the row's file to an OpenLibrary work the user picked in the
+    // work-search pane — fully applied in one step (author resolved/created,
+    // book ensured, file moved and linked, row retired), so no separate Apply
+    // click is needed afterwards.
+    const useWork = async (id, work) => {
+        const r = await fetch(`/api/identified/${id}/use-work`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                workKey: work.key,
+                title: work.title,
+                firstPublishYear: work.firstPublishYear,
+                coverId: work.coverId,
+                authors: work.authors,
+                primaryAuthorKey: work.primaryAuthorKey,
+                primaryAuthorName: work.primaryAuthorName,
+            }),
+        })
+        const body = await r.json().catch(() => ({}))
+        if (!r.ok) throw new Error(body.error || r.statusText)
+        if (!body.assigned) throw new Error(body.reason || 'Could not match this file to the selected work.')
+        setWorkSearch(null)
+        alert(`Matched to "${work.title}" and filed under ${body.authorName}.`)
+        // Reload rather than drop the row: a series catalogue keeps the row
+        // (now author-tagged) so its series can still be built.
+        load()
+    }
+
     // Overwrite the guessed author name on a scan row without acting on the file.
     const setAuthor = async (id, newName) => {
         try {
@@ -311,7 +347,7 @@ export default function IdentifiedBooks() {
             ) : (() => {
                 const untracked = filtered.filter(r => r.source === 'untracked')
                 const tracked   = filtered.filter(r => r.source !== 'untracked')
-                const tableProps = { busy, expanded, toggleCatalog, setPreview, apply, acceptAuthor, assignAuthor, applyCatalog, dismiss, setAuthorEdit }
+                const tableProps = { busy, expanded, toggleCatalog, setPreview, apply, acceptAuthor, assignAuthor, applyCatalog, dismiss, setAuthorEdit, setWorkSearch }
                 return (
                     <>
                         <h2 style={{ marginTop: '1.5rem' }}>
@@ -347,6 +383,28 @@ export default function IdentifiedBooks() {
                     onClose={() => setAuthorEdit(null)} />
             )}
 
+            {workSearch && (
+                <div className="modal-backdrop" style={{ zIndex: 1200 }} onClick={() => setWorkSearch(null)}>
+                    <div className="modal" style={{ width: 'min(680px, 94vw)', maxHeight: '85vh', overflow: 'auto', display: 'flex', flexDirection: 'column' }}
+                         onClick={e => e.stopPropagation()}>
+                        <div className="modal-header">
+                            <h3 style={{ margin: 0 }}>Find this book on OpenLibrary</h3>
+                            <button className="btn-ghost" onClick={() => setWorkSearch(null)}>&times;</button>
+                        </div>
+                        <OpenLibraryWorkSearch
+                            initialQuery={workSearch.initialQuery}
+                            introText="Search OpenLibrary by book title, then match this file to the selected work — applied immediately (author created if needed, file moved and linked)."
+                            searchPlaceholder="Book title to search on OpenLibrary…"
+                            readyText="Edit the title if needed, then click Search OpenLibrary."
+                            emptyText="No OpenLibrary works found for this guess."
+                            resultText="Choose one OpenLibrary result below. Nothing is auto-used."
+                            actionLabel="Match file to this work"
+                            actionBusyLabel="Matching…"
+                            onUse={(work) => useWork(workSearch.id, work)} />
+                    </div>
+                </div>
+            )}
+
             {preview && (
                 <BookPreview fileId={preview.fileId} format={preview.format}
                     srcUrl={preview.srcUrl}
@@ -356,7 +414,7 @@ export default function IdentifiedBooks() {
     )
 }
 
-function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, acceptAuthor, assignAuthor, applyCatalog, dismiss, setAuthorEdit }) {
+function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, acceptAuthor, assignAuthor, applyCatalog, dismiss, setAuthorEdit, setWorkSearch }) {
     return (
         <table className="grid">
             <thead>
@@ -461,6 +519,11 @@ function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, acce
                                         {busy.has(r.id) ? '…' : `Assign to ${r.author}`}
                                     </button>
                                 )}
+                                <button className="btn-ghost" disabled={busy.has(r.id)}
+                                        title="Search OpenLibrary by book title and match this file to the selected work — applied immediately"
+                                        onClick={() => setWorkSearch({ id: r.id, initialQuery: r.title || fileStem(r.path) })}>
+                                    Find on OL
+                                </button>
                                 <button className="btn-ghost" disabled={busy.has(r.id)}
                                         title="Mark reviewed and remove from this list"
                                         onClick={() => dismiss(r.id)}>

@@ -29,6 +29,7 @@ public sealed class ScheduledJobs
     private readonly OpenLibraryMetadataCacheService _metadataCache;
     private readonly UnknownFolderFlattenerService _flattenUnknown;
     private readonly UnknownDuplicateRemovalService _dedupeUnknown;
+    private readonly ManualBookPromotionService _promoteManualBooks;
     private readonly UnknownAuthorAdoptionService _adoptUnknownAuthors;
     private readonly ForeignArchiveService _archiveForeign;
     private readonly LinkedAuthorMergeService _mergeLinkedAuthors;
@@ -51,6 +52,7 @@ public sealed class ScheduledJobs
         OpenLibraryMetadataCacheService metadataCache,
         UnknownFolderFlattenerService flattenUnknown,
         UnknownDuplicateRemovalService dedupeUnknown,
+        ManualBookPromotionService promoteManualBooks,
         UnknownAuthorAdoptionService adoptUnknownAuthors,
         ForeignArchiveService archiveForeign,
         LinkedAuthorMergeService mergeLinkedAuthors,
@@ -64,7 +66,7 @@ public sealed class ScheduledJobs
     {
         _sync = sync; _incoming = incoming; _organizer = organizer; _unzip = unzip;
         _disambiguator = disambiguator; _sameNames = sameNames; _physicalStars = physicalStars; _metadataCache = metadataCache;
-        _flattenUnknown = flattenUnknown; _dedupeUnknown = dedupeUnknown; _adoptUnknownAuthors = adoptUnknownAuthors; _archiveForeign = archiveForeign;
+        _flattenUnknown = flattenUnknown; _dedupeUnknown = dedupeUnknown; _promoteManualBooks = promoteManualBooks; _adoptUnknownAuthors = adoptUnknownAuthors; _archiveForeign = archiveForeign;
         _mergeLinkedAuthors = mergeLinkedAuthors; _integrity = integrity; _pruneStaleFiles = pruneStaleFiles;
         _contentScan = contentScan; _assignAuthors = assignAuthors;
         _schedules = schedules; _lifetime = lifetime; _log = log;
@@ -164,6 +166,12 @@ public sealed class ScheduledJobs
         ScheduleJobIds.DedupeUnknown, manualTrigger,
         ct => _dedupeUnknown.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _dedupeUnknown.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunPromoteManualBooks(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.PromoteManualBooks, manualTrigger,
+        ct => _promoteManualBooks.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _promoteManualBooks.IsRunning);
 
     [AutomaticRetry(Attempts = 0)]
     public Task RunAdoptUnknownAuthors(bool manualTrigger = false) => RunWithPolling(

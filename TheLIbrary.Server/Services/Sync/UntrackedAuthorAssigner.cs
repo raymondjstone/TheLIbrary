@@ -49,30 +49,9 @@ public sealed class UntrackedAuthorAssigner
         if (existingFile?.AuthorId is not null)
             return new UntrackedAssignOutcome(false, null, null, null, null, "This file is already linked to an author.");
 
-        // Which enabled library root does the file live under? (Needed to build
-        // the destination author folder.)
-        var locations = await _db.LibraryLocations.AsNoTracking().Where(l => l.Enabled).ToListAsync(ct);
-        var roots = locations.Select(l => l.Path).ToList();
-        var root = roots.FirstOrDefault(r => sourcePath.StartsWith(
-            r.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase));
-
-        // Files from the custom quarantine folder (e.g. /Books/TheLibrary_Unknown)
-        // are intentionally outside every library location — use the primary (or
-        // first enabled) location as the destination root instead.
+        var (root, rootError) = await ResolveDestinationRootAsync(sourcePath, ct);
         if (root is null)
-        {
-            var customUnknown = await UnknownFolderResolver.GetCustomPathAsync(_db, ct);
-            var isUnderCustom = customUnknown is not null && sourcePath.StartsWith(
-                customUnknown.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-                StringComparison.OrdinalIgnoreCase);
-            if (!isUnderCustom)
-                return new UntrackedAssignOutcome(false, null, null, null, null, "File is outside all enabled library locations.");
-
-            root = locations.FirstOrDefault(l => l.IsPrimary)?.Path
-                   ?? roots.FirstOrDefault();
-            if (root is null)
-                return new UntrackedAssignOutcome(false, null, null, null, null, "No enabled library location is configured.");
-        }
+            return new UntrackedAssignOutcome(false, null, null, null, null, rootError);
 
         // The scan row's guesses come from prose parsing or an (often truncated)
         // filename. The file's own embedded metadata is usually the cleaner
@@ -165,6 +144,93 @@ public sealed class UntrackedAuthorAssigner
 
         await _db.SaveChangesAsync(ct);
         return new UntrackedAssignOutcome(true, author.Id, author.Name, book?.Id, finalPath, null);
+    }
+
+    // Files a scan row's file under a USER-CHOSEN OpenLibrary work — the
+    // Identified page's "Find on OL" match. Unlike AssignAsync there is no
+    // searching or guessing: the user picked the exact work, so the author is
+    // resolved/created from the work doc, the Book is ensured, and the file
+    // moves into the author's folder linked to that book. The scan row follows
+    // the file and leaves the review list (unless it carries a series
+    // catalogue, which stays for apply-catalog — same rule as AssignAsync).
+    public async Task<UntrackedAssignOutcome> AssignToWorkAsync(
+        BookContentScan scan,
+        string? workKey,
+        string? title,
+        int? firstPublishYear,
+        int? coverId,
+        string? authors,
+        string? primaryAuthorKey,
+        string? primaryAuthorName,
+        CancellationToken ct)
+    {
+        var sourcePath = scan.FullPath;
+        if (!_fs.FileExists(sourcePath) && !_fs.DirectoryExists(sourcePath))
+            return new UntrackedAssignOutcome(false, null, null, null, null, "File no longer exists on disk.");
+
+        var author = await ResolveTargetAuthorAsync(null, primaryAuthorKey, primaryAuthorName, authors, ct);
+        if (author is null)
+            return new UntrackedAssignOutcome(false, null, null, null, null,
+                "Could not determine the OpenLibrary author for this work.");
+
+        var add = await EnsureOpenLibraryBookAsync(author.Id, workKey, title, firstPublishYear, coverId, owned: false, ct);
+        if (add.Error is not null)
+            return new UntrackedAssignOutcome(false, null, null, null, null, add.Error);
+
+        var (root, rootError) = await ResolveDestinationRootAsync(sourcePath, ct);
+        if (root is null)
+            return new UntrackedAssignOutcome(false, null, null, null, null, rootError);
+
+        var existingFile = await _db.LocalBookFiles.FirstOrDefaultAsync(f => f.FullPath == sourcePath, ct);
+        var file = existingFile ?? new LocalBookFile();
+        if (existingFile is null) _db.LocalBookFiles.Add(file);
+
+        var finalPath = await MoveUntrackedPathToAuthorFolderAsync(sourcePath, root, null, author, ct);
+        file.AuthorId = author.Id;
+        file.BookId = add.Book!.Id;
+        file.ManuallyUnmatched = false;
+        file.AuthorFolder = author.CalibreFolderName ?? author.Name;
+        file.TitleFolder = Directory.Exists(finalPath)
+            ? Path.GetFileName(finalPath)
+            : Path.GetFileNameWithoutExtension(finalPath);
+        file.FullPath = finalPath;
+        file.NormalizedTitle = TitleNormalizer.Normalize(file.TitleFolder);
+        file.ResetIntegrity();
+
+        scan.FullPath = finalPath;
+        scan.AuthorId = author.Id;
+        scan.Author = author.Name;
+        if (!string.IsNullOrWhiteSpace(title)) scan.Title = title.Length <= 500 ? title : title[..500];
+        scan.Source = "unmatched";
+        scan.Reviewed = scan.SeriesCatalogJson is null;
+
+        await _db.SaveChangesAsync(ct);
+        return new UntrackedAssignOutcome(true, author.Id, author.Name, add.Book.Id, finalPath, null);
+    }
+
+    // Which enabled library root should a file's author folder live under?
+    // Files in the custom quarantine folder are intentionally outside every
+    // library location — the primary (or first enabled) location stands in.
+    private async Task<(string? Root, string? Error)> ResolveDestinationRootAsync(
+        string sourcePath, CancellationToken ct)
+    {
+        var locations = await _db.LibraryLocations.AsNoTracking().Where(l => l.Enabled).ToListAsync(ct);
+        var roots = locations.Select(l => l.Path).ToList();
+        var root = roots.FirstOrDefault(r => sourcePath.StartsWith(
+            r.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase));
+        if (root is not null) return (root, null);
+
+        var customUnknown = await UnknownFolderResolver.GetCustomPathAsync(_db, ct);
+        var isUnderCustom = customUnknown is not null && sourcePath.StartsWith(
+            customUnknown.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase);
+        if (!isUnderCustom)
+            return (null, "File is outside all enabled library locations.");
+
+        root = locations.FirstOrDefault(l => l.IsPrimary)?.Path ?? roots.FirstOrDefault();
+        return root is null
+            ? (null, "No enabled library location is configured.")
+            : (root, null);
     }
 
     // Resolves a guessed author name to an Author for the untracked-assign

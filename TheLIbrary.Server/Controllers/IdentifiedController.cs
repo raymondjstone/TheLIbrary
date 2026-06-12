@@ -497,6 +497,49 @@ public class IdentifiedController : ControllerBase
 
     public sealed record SetAuthorRequest(string? Author);
 
+    // All-optional so [ApiController] can't 400 a partial payload.
+    public sealed record UseWorkRequest(
+        string? WorkKey, string? Title, int? FirstPublishYear, int? CoverId,
+        string? Authors, string? PrimaryAuthorKey, string? PrimaryAuthorName);
+
+    /// <summary>
+    /// Matches a scan row's file to an OpenLibrary work the user picked in the
+    /// work-search pane — fully applied in one step: the author is resolved (or
+    /// created Pending) from the work doc, the Book is ensured, the file moves
+    /// into the author's folder linked to that book, and the row leaves the
+    /// review list (a series catalogue keeps it for apply-catalog).
+    /// POST /api/identified/{id}/use-work
+    /// </summary>
+    [HttpPost("{id:int}/use-work")]
+    public async Task<IActionResult> UseWork(
+        int id,
+        [FromBody] UseWorkRequest body,
+        [FromServices] UntrackedAuthorAssigner assigner,
+        CancellationToken ct)
+    {
+        var row = await _db.BookContentScans.FirstOrDefaultAsync(c => c.Id == id, ct);
+        if (row is null) return NotFound(new { error = "Scan row not found." });
+        if (string.IsNullOrWhiteSpace(body.WorkKey))
+            return BadRequest(new { error = "The selected work carries no OpenLibrary key." });
+
+        var outcome = await assigner.AssignToWorkAsync(
+            row,
+            body.WorkKey, body.Title, body.FirstPublishYear, body.CoverId,
+            body.Authors, body.PrimaryAuthorKey, body.PrimaryAuthorName,
+            ct);
+
+        if (!outcome.Assigned)
+            return Ok(new { assigned = false, reason = outcome.Reason });
+        return Ok(new
+        {
+            assigned = true,
+            authorId = outcome.AuthorId,
+            authorName = outcome.AuthorName,
+            bookId = outcome.BookId,
+            path = outcome.Path,
+        });
+    }
+
     /// <summary>Marks a guess reviewed so it leaves the list. POST /api/identified/{id}/dismiss</summary>
     [HttpPost("{id:int}/dismiss")]
     public async Task<IActionResult> Dismiss(int id, CancellationToken ct)
@@ -596,8 +639,10 @@ public class IdentifiedController : ControllerBase
         if (!alreadyThere)
             file.ResetIntegrity(); // moved into the author folder — re-check it there
 
-        // Mark the scan row reviewed so it leaves the list.
+        // Mark the scan row reviewed so it leaves the list, and keep its path
+        // current — a stale path would make the row look like the file vanished.
         scan.Reviewed = true;
+        scan.FullPath = finalPath;
 
         await _db.SaveChangesAsync(ct);
 

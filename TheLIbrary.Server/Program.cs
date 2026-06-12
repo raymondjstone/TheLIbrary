@@ -76,6 +76,7 @@ builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.PhysicalAuthorStar
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnzipService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnknownFolderFlattenerService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnknownDuplicateRemovalService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.ManualBookPromotionService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnknownAuthorAdoptionService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.StarredAuthorRefreshService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.ForeignArchiveService>();

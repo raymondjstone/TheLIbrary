@@ -170,6 +170,35 @@ public class ContentScanServiceTests
         Assert.Equal("Parker Jaywick", row.Author); // author untouched
     }
 
+    [Fact]
+    public async Task Prune_Removes_Unreviewed_Rows_Whose_Path_No_Index_Claims()
+    {
+        var dbName = NewDb();
+        await using var db = CreateDb(dbName);
+        // Stale: nothing claims this path any more (file was moved/deleted).
+        db.BookContentScans.Add(new BookContentScan
+        { Id = 1, FullPath = "/lib/__unknown/gone.epub", Source = "untracked", Author = "X", ScannedAt = DateTime.UtcNow });
+        // Live untracked: still in the UnknownFiles index.
+        db.BookContentScans.Add(new BookContentScan
+        { Id = 2, FullPath = "/lib/__unknown/here.epub", Source = "untracked", Author = "X", ScannedAt = DateTime.UtcNow });
+        db.UnknownFiles.Add(new UnknownFile { Id = 1, FullPath = "/lib/__unknown/here.epub", FileName = "here.epub" });
+        // Live unmatched: still a tracked LocalBookFile.
+        db.BookContentScans.Add(new BookContentScan
+        { Id = 3, FullPath = "/lib/A/file.epub", Source = "unmatched", Author = "X", ScannedAt = DateTime.UtcNow });
+        db.LocalBookFiles.Add(new LocalBookFile { Id = 1, FullPath = "/lib/A/file.epub" });
+        // Stale but REVIEWED with a catalogue — must survive (feeds apply-catalog).
+        db.BookContentScans.Add(new BookContentScan
+        { Id = 4, FullPath = "/lib/B/moved-away.epub", Source = "unmatched", Reviewed = true, SeriesCatalogJson = "[]", ScannedAt = DateTime.UtcNow });
+        await db.SaveChangesAsync();
+
+        var pruned = await CreateService(new FakeFileSystem(), dbName)
+            .PruneStaleRowsAsync(db, CancellationToken.None);
+
+        Assert.Equal(1, pruned);
+        var remaining = await db.BookContentScans.Select(c => c.Id).OrderBy(x => x).ToListAsync();
+        Assert.Equal(new[] { 2, 3, 4 }, remaining);
+    }
+
     private static string NewDb() => $"contentscan-tests-{System.Guid.NewGuid():N}";
     private static LibraryDbContext CreateDb(string name)
         => new(new DbContextOptionsBuilder<LibraryDbContext>().UseInMemoryDatabase(name).Options);

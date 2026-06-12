@@ -106,6 +106,16 @@ public sealed class ContentScanService
         var notArchived = ArchivedFilesController.NotUnderArchive(archiveLeaf);
         var untrackedFirst = await LoadUntrackedFirstAsync(db, ct);
 
+        // Drop guesses whose files are gone. BookContentScan rows are keyed by
+        // FullPath, but several flows move or delete files without touching
+        // them (flatten, return-to-incoming, manual deletes, accept-author
+        // before it updated the row) — leaving the Identified page showing
+        // entries for locations the files are no longer at.
+        _currentMessage = "Pruning stale identified rows";
+        var pruned = await PruneStaleRowsAsync(db, ct);
+        if (pruned > 0)
+            _log.LogInformation("Content-scan: removed {Count} stale identified row(s) whose files moved or were deleted", pruned);
+
         // Cheap DB-only pass first: untracked rows whose CONTENT yielded no author
         // (DRM'd AZW3s, prose-from-line-one .txt) often carry it in the FILENAME
         // ("The Star by Arthur C. Clarke.txt"). Catalogue-validated, so it also
@@ -341,6 +351,25 @@ public sealed class ContentScanService
             await EnsurePendingAuthorsForGuessAsync(db, row.Author, ct);
 
         return det.HasAnything || row.Author is not null;
+    }
+
+    // Removes UNREVIEWED scan rows whose path no longer belongs to any tracked
+    // index: LocalBookFiles (matched/unmatched files) or UnknownFiles (the
+    // untracked quarantine index, rebuilt from disk on every sync). A pure DB
+    // pass — no disk I/O. Reviewed rows are kept even when stale: ones carrying
+    // a series catalogue still feed apply-catalog after their file has moved.
+    // The file's new location gets scanned fresh as its own row.
+    internal async Task<int> PruneStaleRowsAsync(LibraryDbContext db, CancellationToken ct)
+    {
+        var stale = await db.BookContentScans
+            .Where(c => !c.Reviewed
+                && !db.LocalBookFiles.Any(f => f.FullPath == c.FullPath)
+                && !db.UnknownFiles.Any(u => u.FullPath == c.FullPath))
+            .ToListAsync(ct);
+        if (stale.Count == 0) return 0;
+        db.BookContentScans.RemoveRange(stale);
+        await db.SaveChangesAsync(ct);
+        return stale.Count;
     }
 
     // Fills missing author/title on EXISTING unreviewed untracked rows from their

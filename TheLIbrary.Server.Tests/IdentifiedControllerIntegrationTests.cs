@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using TheLibrary.Server.Controllers;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.Sync;
 using TheLibrary.Server.Tests.Infrastructure;
 using Xunit;
@@ -55,6 +56,62 @@ public class IdentifiedControllerIntegrationTests
 
         var bothy = await db.Books.FirstAsync(b => b.Id == 11);
         Assert.Equal("2", bothy.SeriesPosition);
+    }
+
+    [Fact]
+    public async Task UseWork_Fully_Matches_The_File_To_The_Chosen_Work()
+    {
+        using var factory = new LibraryApiFactory();
+        var root = Path.Combine(Path.GetTempPath(), $"thelibrary-usework-{Guid.NewGuid():N}");
+        var unknownDir = Path.Combine(root, CalibreScanner.UnknownAuthorFolder);
+        Directory.CreateDirectory(unknownDir);
+        var sourceFile = Path.Combine(unknownDir, "garbled name.epub");
+        await File.WriteAllTextAsync(sourceFile, "test");
+
+        try
+        {
+            await SeedAsync(factory, db =>
+            {
+                db.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "Default", Path = root, Enabled = true, IsPrimary = true, CreatedAt = DateTime.UtcNow });
+                db.Authors.Add(new Author { Id = 1, Name = "Quigley Fenwick", OpenLibraryKey = "OL1A" });
+                db.BookContentScans.Add(new BookContentScan
+                {
+                    Id = 5, FullPath = sourceFile, Source = "untracked",
+                    Author = "wrong guess", Title = "garbled name", ScannedAt = DateTime.UtcNow,
+                });
+            });
+
+            using var client = factory.CreateClient();
+            var response = await client.PostAsJsonAsync("/api/identified/5/use-work",
+                new IdentifiedController.UseWorkRequest(
+                    "/works/OL9W", "The Glimmer Quest", 1999, 42,
+                    "Quigley Fenwick", "/authors/OL1A", "Quigley Fenwick"));
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var scope = factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+
+            var book = await db.Books.SingleAsync();          // book created for the work
+            Assert.Equal("OL9W", book.OpenLibraryWorkKey);
+            Assert.Equal(1, book.AuthorId);
+
+            var file = await db.LocalBookFiles.SingleAsync(); // file linked + moved
+            Assert.Equal(book.Id, file.BookId);
+            Assert.Equal(1, file.AuthorId);
+            Assert.False(File.Exists(sourceFile));
+            Assert.True(File.Exists(file.FullPath));
+            Assert.DoesNotContain("__unknown", file.FullPath, StringComparison.OrdinalIgnoreCase);
+
+            var row = await db.BookContentScans.SingleAsync(); // row retired, follows the file
+            Assert.True(row.Reviewed);
+            Assert.Equal(file.FullPath, row.FullPath);
+            Assert.Equal("The Glimmer Quest", row.Title);
+            Assert.Equal(1, row.AuthorId);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]
