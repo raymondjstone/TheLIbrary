@@ -201,8 +201,14 @@ public sealed class AuthorMatcher
     }
 
     // Metadata author wins; falls back to the LEFT half of "{Author} - {Title}.ext".
+    // When the left half contains an unclosed "(" — a sign the filename was
+    // truncated at the OS path-length limit mid-series-annotation — the RIGHT
+    // half (after the last " - ") is the author instead.
     // Sort form is kept independent so "Smith, John" can probe even when the
     // primary author is already in "John Smith" form.
+    private static readonly System.Text.RegularExpressions.Regex TruncatedLeftParen = new(
+        @"\([^)]{3,}$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
     private static (string? Primary, string? Sort) ExtractKeys(string? metadataAuthor, string? metadataAuthorSort, string filePath)
     {
         string? rawAuthor = metadataAuthor;
@@ -210,7 +216,22 @@ public sealed class AuthorMatcher
         {
             var stem = Path.GetFileNameWithoutExtension(filePath);
             var dash = stem.IndexOf(" - ", StringComparison.Ordinal);
-            if (dash > 0) rawAuthor = stem[..dash].Trim();
+            if (dash > 0)
+            {
+                var leftCandidate = stem[..dash].Trim();
+                // Truncated title? E.g. "Betrayal of Innocence (A New Ad - Rebecca King"
+                // — the unclosed "(" means the series annotation was cut off. Treat
+                // the rightmost " - " segment as the author, not the left side.
+                if (TruncatedLeftParen.IsMatch(leftCandidate))
+                {
+                    var lastDash = stem.LastIndexOf(" - ", StringComparison.Ordinal);
+                    rawAuthor = lastDash > 0 ? stem[(lastDash + 3)..].Trim() : leftCandidate;
+                }
+                else
+                {
+                    rawAuthor = leftCandidate;
+                }
+            }
         }
         var a = string.IsNullOrWhiteSpace(rawAuthor) ? null : TitleNormalizer.NormalizeAuthor(rawAuthor);
         var s = string.IsNullOrWhiteSpace(metadataAuthorSort) ? null : TitleNormalizer.NormalizeAuthor(metadataAuthorSort);

@@ -1069,7 +1069,11 @@ validation and falls through to the prose/filename guesses. The same
 metadata-first rule applies again at **assignment time**: the assign-authors
 job re-reads the embedded metadata of each file it's about to file and, when
 the author validates, searches OpenLibrary with that author + full title
-instead of the (possibly older, filename-derived) scan guesses.
+instead of the (possibly older, filename-derived) scan guesses. Metadata
+fields containing **control characters** (binary garbage from a corrupt
+MOBI/PDB header) are dropped at the reader, and every OL search input is
+guarded the same way — a `%00` query gets 403'd by OpenLibrary's WAF and used
+to fail the whole assign request.
 
 **Filename parsing** backs the content read up. Untracked files are often DRM'd
 or prose-from-line-one, yielding no content guess at all — but their names
@@ -1082,13 +1086,21 @@ records, so an unfiltered placeholder would wrongly validate). Beyond the " - "
 splits, the parser also reads an author from **trailing parentheses**
 ("Inferno (Troy Denning)"), probes **smashed-together names** with no separator
 at all ("Almuric Robert E. Howard" → trailing/leading word groups as the
-author), and splits on a **hyphen without spaces** ("Charles L. Harness-Lethary
-Fair"). Since a filename can't say which side is the author, every plausible
-interpretation is generated and the first whose author matches the
+author), splits on a **hyphen without spaces** ("Charles L. Harness-Lethary
+Fair"), applies the **"by Author" split inside any segment** ("02 - The
+Cloud-Sculptors of Coral D by J. G. Ballard"), strips **"(ebook)" /
+"(ebook by Group)" release tags** (even truncated mid-word by the 30-char
+rename) and **"(ed)" editor credits**, and offers **every co-author of a joint
+credit** ("Adriana Campoy & James P. Blaylock" — the second name may be the
+catalogued one). Since a filename can't say which side is the author, every
+plausible interpretation is generated and the first whose author matches the
 **OpenLibrary authors catalogue** (or an existing watchlist author, never a
 blacklisted name) wins — so "Author - Title" vs "Title - Author" disambiguates
 itself and garbage can't get in. Catalogue validation also bridges
-**initials-run spellings** ("CS Lewis" matches the catalogue's "C. S. Lewis"). This runs for new scans
+**initials-run spellings** ("CS Lewis" matches the catalogue's "C. S. Lewis"),
+**spelled-out forenames** ("Lyman Frank Baum" matches "L. Frank Baum"), and —
+after the next OL reseed re-normalizes the catalogue — **stroke/ligature
+letters** ("Stanislaw" matches "Stanisław"). This runs for new scans
 AND as a cheap DB-only pass at the start of every content-scan run that
 back-fills author/title onto existing guess-less untracked rows (filename
 guesses never overwrite content-derived ones).

@@ -44,6 +44,13 @@ public static class TitleNormalizer
 
     // Calibre appends "(123)" — strip the trailing id in parens.
     private static readonly Regex TrailingIdParens = new(@"\s*\(\d+\)\s*$", RegexOptions.Compiled);
+
+    // Format/version tags embedded in titles — e.g. "(v1.0)", "[rtf]", "[epub]",
+    // "(retail)" — left behind when a filename carries multiple metadata tokens.
+    // Supports both () and [] delimiters; stripped wherever they appear.
+    private static readonly Regex TitleFormatTag = new(
+        @"\s*[\(\[](?:mobi|epub|pdf|azw3?|lit|prelit|rtf|txt|html?|fb2|docx|retail|scan|ocr|v\d+(?:\.\d+)*)[\)\]]",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex NonAlnum = new(@"[^a-z0-9]+", RegexOptions.Compiled);
     private static readonly string[] LeadingArticles = { "the ", "a ", "an " };
 
@@ -249,6 +256,7 @@ public static class TitleNormalizer
         }
 
         var title = string.Join(" - ", titlePieces);
+        title = TitleFormatTag.Replace(title, "").Trim();
         title = TrailingIdParens.Replace(title, "").Trim();
         title = TrailingDupSuffixRx.Replace(title, "").Trim();
 
@@ -308,10 +316,19 @@ public static class TitleNormalizer
         return s;
     }
 
+    // Strips editor credits without parens from author names, e.g.
+    // "Bradley, Marion Zimmer Ed." → "Bradley, Marion Zimmer".
+    // Applied before normalization so the suffix doesn't contaminate the key.
+    private static readonly Regex EditorSuffixRx = new(
+        @"\s+Ed\.?\s*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     public static string NormalizeAuthor(string? input)
     {
         if (string.IsNullOrWhiteSpace(input)) return "";
         var s = StripDiacritics(input).ToLowerInvariant();
+        // Strip bare " Ed." / " Ed " editor suffix before comma-flip so
+        // "Bradley, Marion Zimmer Ed." → "marion zimmer bradley", not "marion zimmer ed bradley".
+        s = Regex.Replace(s, @"\s+ed\.?\s*$", "", RegexOptions.IgnoreCase);
         // Calibre sometimes writes "Last, First" — flip it.
         var comma = s.IndexOf(',');
         if (comma > 0)
@@ -325,8 +342,23 @@ public static class TitleNormalizer
         var norm = input.Normalize(NormalizationForm.FormD);
         var sb = new StringBuilder(norm.Length);
         foreach (var ch in norm)
-            if (CharUnicodeInfo.GetUnicodeCategory(ch) != UnicodeCategory.NonSpacingMark)
-                sb.Append(ch);
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(ch) == UnicodeCategory.NonSpacingMark) continue;
+            // Letters whose "accent" is part of the glyph (stroke, slash,
+            // ligature) don't decompose in FormD — fold them by hand so
+            // "Stanisław" matches a plain-ASCII "Stanislaw". NOTE: stored
+            // NormalizedName values (OL catalogue, blacklist) only pick this
+            // up when they are next rebuilt (the OL seed job re-normalizes).
+            sb.Append(ch switch
+            {
+                'ł' => "l", 'Ł' => "L", 'ø' => "o", 'Ø' => "O",
+                'đ' => "d", 'Đ' => "D", 'ð' => "d", 'Ð' => "D",
+                'þ' => "th", 'Þ' => "Th", 'ß' => "ss",
+                'æ' => "ae", 'Æ' => "Ae", 'œ' => "oe", 'Œ' => "Oe",
+                'ı' => "i", 'ŀ' => "l", 'Ŀ' => "L",
+                _ => ch.ToString(),
+            });
+        }
         return sb.ToString().Normalize(NormalizationForm.FormC);
     }
 }

@@ -85,7 +85,7 @@ public class IncomingProcessorTests
 
         Assert.Equal(1, result.Processed);
         Assert.Equal(1, result.UnknownAuthor);
-        Assert.True(fs.FileExists("C:\\library\\__unknown\\drop\\mystery.bin"));
+        Assert.True(fs.FileExists("C:\\library\\__unknown\\mystery.bin"));
         Assert.False(fs.FileExists("C:\\incoming\\drop\\mystery.bin"));
         Assert.False(fs.DirectoryExists("C:\\incoming\\drop"));
     }
@@ -111,7 +111,8 @@ public class IncomingProcessorTests
 
         Assert.Equal(1, result.Processed);
         Assert.Equal(1, result.UnknownAuthor);
-        Assert.True(fs.FileExists("C:\\library\\__unknown\\drop\\mystery.bin"));
+        Assert.True(fs.FileExists("C:\\library\\__unknown\\mystery.bin"));
+        Assert.False(fs.FileExists("C:\\library\\__unknown\\drop\\mystery.bin"));
         Assert.False(fs.FileExists("C:\\library\\__unknown\\drop\\some title\\mystery.bin"));
     }
 
@@ -138,8 +139,8 @@ public class IncomingProcessorTests
 
         Assert.Equal(2, result.Processed);
         Assert.Equal(2, result.UnknownAuthor);
-        Assert.True(fs.FileExists("C:\\library\\__unknown\\drop\\mystery.bin"));
-        Assert.True(fs.FileExists("C:\\library\\__unknown\\drop\\mystery_1.bin"));
+        Assert.True(fs.FileExists("C:\\library\\__unknown\\mystery.bin"));
+        Assert.True(fs.FileExists("C:\\library\\__unknown\\mystery_1.bin"));
     }
 
     [Fact]
@@ -164,6 +165,46 @@ public class IncomingProcessorTests
         Assert.False(fs.FileExists("C:\\incoming\\covers\\cover.jpg"));
         Assert.False(fs.DirectoryExists("C:\\incoming\\covers"));
         Assert.Contains(result.Log, line => line.Contains("deleted junk", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task ProcessAsync_Tracked_Author_Without_OL_Key_Still_Gets_File()
+    {
+        // Regression: a tracked (watchlist) author whose OL key hasn't been
+        // resolved yet must still receive their files. Previously the code
+        // returned null and routed to __unknown, making the watchlist useless
+        // for authors that aren't in the OL catalogue or haven't been seeded.
+        await using var db = CreateDb();
+        db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.IncomingFolder, Value = "C:\\incoming" });
+        db.LibraryLocations.Add(new LibraryLocation
+        {
+            Id = 1, Path = "C:\\library", IsPrimary = true,
+            Enabled = true, Label = "Default", CreatedAt = DateTime.UtcNow
+        });
+        db.Authors.Add(new Author
+        {
+            Id = 1, Name = "Michael Todd", CalibreFolderName = "Michael Todd",
+            OpenLibraryKey = null, Status = AuthorStatus.Active
+        });
+        await db.SaveChangesAsync();
+
+        var fs = new FakeFileSystem();
+        fs.CreateDirectory("C:\\incoming");
+        fs.CreateDirectory("C:\\library");
+        fs.AddDirectoryChild("C:\\incoming", "C:\\incoming\\drop");
+        fs.AddFile("C:\\incoming\\drop\\Backstabbing Little Assets - Michael Todd.epub");
+
+        var sut = new IncomingProcessor(db, fs, NullLogger<IncomingProcessor>.Instance);
+        var result = await sut.ProcessAsync(CancellationToken.None);
+
+        Assert.Equal(1, result.Processed);
+        Assert.Equal(1, result.Matched);
+        Assert.Equal(0, result.UnknownAuthor);
+        // File must be under the author's folder, not __unknown.
+        Assert.False(fs.ExistingFiles.Any(f =>
+            f.Contains("__unknown", StringComparison.OrdinalIgnoreCase)));
+        Assert.True(fs.ExistingFiles.Any(f =>
+            f.Contains("Michael Todd", StringComparison.OrdinalIgnoreCase)));
     }
 
     private static LibraryDbContext CreateDb()

@@ -59,11 +59,14 @@ public sealed class UntrackedAuthorAssigner
         // and full title drive the OpenLibrary search instead.
         var embedded = FileMetadataReader.TryRead(sourcePath);
         var embeddedAuthor = await AuthorNameValidator.ValidateAsync(_db, embedded?.Author, ct);
-        var searchTitle = embeddedAuthor is not null && !string.IsNullOrWhiteSpace(embedded!.Title)
-            ? embedded.Title : scan.Title;
-        var searchAuthor = embeddedAuthor ?? scan.Author;
-        var searchIsbn = !string.IsNullOrWhiteSpace(scan.Isbn) ? scan.Isbn
-            : embeddedAuthor is not null ? embedded!.Isbn : null;
+        // CleanForSearch: a query string carrying control characters (binary
+        // junk from a corrupt header, or an old scan row that stored one) gets
+        // 403'd by OpenLibrary's WAF and used to fail the whole request.
+        var searchTitle = CleanForSearch(embeddedAuthor is not null && !string.IsNullOrWhiteSpace(embedded!.Title)
+            ? embedded.Title : scan.Title);
+        var searchAuthor = CleanForSearch(embeddedAuthor ?? scan.Author);
+        var searchIsbn = CleanForSearch(!string.IsNullOrWhiteSpace(scan.Isbn) ? scan.Isbn
+            : embeddedAuthor is not null ? embedded!.Isbn : null);
 
         // An author guess with NO title is a dead end: the OL work search never
         // runs, and an author missing from the local OL dump can then never be
@@ -74,8 +77,8 @@ public sealed class UntrackedAuthorAssigner
         if (string.IsNullOrWhiteSpace(searchTitle))
         {
             if (!string.IsNullOrWhiteSpace(embedded?.Title))
-                searchTitle = embedded!.Title;
-            else if (!string.IsNullOrWhiteSpace(searchAuthor))
+                searchTitle = CleanForSearch(embedded!.Title);
+            if (searchTitle is null && !string.IsNullOrWhiteSpace(searchAuthor))
             {
                 var wanted = TitleNormalizer.NormalizeAuthor(searchAuthor);
                 searchTitle = FilenameGuesser.Interpret(sourcePath)
@@ -410,6 +413,13 @@ public sealed class UntrackedAuthorAssigner
         }
 
         return destPath;
+    }
+
+    private static string? CleanForSearch(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        var t = s.Trim();
+        return t.Any(char.IsControl) ? null : t;
     }
 
     // ---- Path helpers shared with AuthorsController (single source of truth) ----

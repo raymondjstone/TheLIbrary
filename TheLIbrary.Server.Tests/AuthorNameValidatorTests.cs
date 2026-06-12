@@ -69,6 +69,31 @@ public class AuthorNameValidatorTests
     }
 
     [Fact]
+    public async Task Spelled_Out_Forename_Matches_The_Catalogues_Initialed_Form()
+    {
+        // OL catalogues "L. Frank Baum"; the file says "Lyman Frank Baum".
+        await using var db = CreateDb();
+        AddOlAuthor(db, "L. Frank Quibble");
+        await db.SaveChangesAsync();
+
+        Assert.Equal("L Frank Quibble",
+            await AuthorNameValidator.ValidateAsync(db, "Lyman Frank Quibble", CancellationToken.None));
+    }
+
+    [Fact]
+    public void Stroke_Letters_Fold_To_Ascii_In_Normalization()
+    {
+        // 'ł' is a stroke, not a combining mark — FormD doesn't decompose it,
+        // so "Stanisław" used to normalize differently from "Stanislaw".
+        Assert.Equal(
+            TitleNormalizer.NormalizeAuthor("Stanisław Lem"),
+            TitleNormalizer.NormalizeAuthor("Stanislaw Lem"));
+        Assert.Equal(
+            TitleNormalizer.NormalizeAuthor("Søren Kierkegaard"),
+            TitleNormalizer.NormalizeAuthor("Soren Kierkegaard"));
+    }
+
+    [Fact]
     public async Task Validates_Against_Existing_Watchlist_Author_By_Exact_Name()
     {
         await using var db = CreateDb();

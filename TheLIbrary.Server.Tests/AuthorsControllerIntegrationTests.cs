@@ -385,6 +385,49 @@ public class AuthorsControllerIntegrationTests
     }
 
     [Fact]
+    public async Task AssignUntrackedAuthor_Never_Sends_Binary_Titles_To_OpenLibrary()
+    {
+        // The live failure: a corrupt MOBI header produced "NUL/STX..." as the
+        // title, OpenLibrary's WAF 403'd the %00 query, and the endpoint 500'd.
+        string? badUrl = null;
+        using var factory = new LibraryApiFactory((request, _) =>
+        {
+            var url = request.RequestUri!.ToString();
+            if (url.Contains("%00") || url.Contains('\0')) badUrl = url;
+            return Task.FromResult(TestHttpMessageHandler.Json("""{"numFound":0,"docs":[]}"""));
+        });
+        var root = Path.Combine(Path.GetTempPath(), $"thelibrary-untracked-{Guid.NewGuid():N}");
+        var sourceDir = Path.Combine(root, CalibreScanner.UnknownAuthorFolder);
+        Directory.CreateDirectory(sourceDir);
+        var sourceFile = Path.Combine(sourceDir, "x.mobi");
+        await File.WriteAllTextAsync(sourceFile, "not a real mobi");
+        try
+        {
+            await SeedAsync(factory, db =>
+            {
+                db.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "Default", Path = root, Enabled = true, CreatedAt = DateTime.UtcNow });
+                db.BookContentScans.Add(new BookContentScan
+                {
+                    Id = 9, FullPath = sourceFile, Source = "untracked",
+                    Title = new string(new[] { (char)0, (char)2, (char)0, (char)23 }), // binary garbage a corrupt header yields Author = "Sally Moosa", ScannedAt = DateTime.UtcNow,
+                });
+            });
+            using var client = factory.CreateClient();
+
+            var resp = await client.PostAsync("/api/identified/9/assign-author", null);
+
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode); // not a 500
+            var body = await resp.Content.ReadFromJsonAsync<AuthorsController.AssignAuthorResult>();
+            Assert.False(body!.Assigned);                     // nothing resolvable
+            Assert.Null(badUrl);                              // no binary query ever sent
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task AssignUntrackedAuthor_Falls_Back_To_Existing_Author_By_Name()
     {
         using var factory = new LibraryApiFactory();

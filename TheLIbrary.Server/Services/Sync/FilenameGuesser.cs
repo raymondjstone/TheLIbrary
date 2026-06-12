@@ -17,10 +17,29 @@ public sealed record FilenameGuess(string? Author, string? Title, string? Series
 // matches the OpenLibrary author catalogue. Network-free and deterministic.
 public static class FilenameGuesser
 {
-    // "(mobi)" / "(epub)" / "(retail)" tags some sources append to the name —
-    // possibly several stacked ("… (retail) (azw3)"), so stripped anywhere.
+    // "(mobi)" / "(epub)" / "(retail)" / "[rtf]" / "[v1.0]" tags some sources
+    // append to the name — possibly several stacked ("… (retail) (azw3)"),
+    // so stripped anywhere. Square-bracket variants are equally common in
+    // filenames like "Bradley, Marion Zimmer - [Darkover 06] - Title [rtf]_1".
     private static readonly Regex FormatTag = new(
-        @"\s*\((?:mobi|epub|pdf|azw3?|lit|rtf|txt|html?|fb2|docx|retail|v\d+(?:\.\d+)*)\)",
+        @"\s*[\(\[](?:mobi|epub|pdf|azw3?|lit|prelit|rtf|txt|html?|fb2|docx|retail|scan|ocr|v\d+(?:\.\d+)*)[\)\]]",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // "(ebook)" / "(ebook by SomeGroup)" release tags — at the start of the name
+    // ("(ebook) Gene Wolfe - …") or as their own trailing segment, frequently
+    // TRUNCATED by the 30-char rename ("… - (ebook by Un"), so the closing
+    // paren is optional.
+    private static readonly Regex LeadingEbookTag = new(
+        @"^\s*\(e-?book[^)]*\)\s*", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex EbookTagSegment = new(
+        @"^\(e-?book[^)]*\)?$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // "Adam Millard (ed)" / "Bradley, Marion Zimmer Ed." — an editor credit is
+    // still the right person to file an anthology under; the tag itself must
+    // not poison the name. Matches both the parenthesised form and the bare
+    // " Ed." / " Ed " suffix without parens (common in older rip filenames).
+    private static readonly Regex EditorTag = new(
+        @"(?:\s*\((?:ed|eds|edited|editor|editors)\.?\)|\s+Ed\.?)$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     // A "[Series NN]" tag — at the start ("[Three Investigators 13] - The
@@ -49,6 +68,29 @@ public static class FilenameGuesser
     private static readonly Regex TitleByAuthor = new(
         @"^(?<t>.+)\s+(?:by|By|BY)\s+(?<a>[^-]+)$", RegexOptions.Compiled);
 
+    // "Betrayal of Innocence (A New Ad" — the left segment of a two-part split
+    // when the original filename was truncated at the OS path-length limit. The
+    // opening parenthesis was never closed, which means the file system cut the
+    // title mid-series-annotation. The right segment after " - " is the author.
+    private static readonly Regex TruncatedLeftParen = new(
+        @"\([^)]{3,}$", RegexOptions.Compiled);
+
+    // "wilde-oscar-1854-1900_an-ideal-husband" — Gutenberg/BNF/archive.org
+    // lowercase slug format. Author slug precedes the underscore and may
+    // contain year ranges (four-digit tokens); title slug follows.
+    private static readonly Regex GutenbergSlug = new(
+        @"^(?<a>[a-z](?:[a-z0-9]|-(?!\d{5}))+)_(?<t>[a-z][a-z0-9-]{2,})$",
+        RegexOptions.Compiled);
+
+    // "AlanDeanFoster" — a run-together CamelCase author name with no spaces.
+    // Matches a token of 6–30 chars that has no spaces and contains at least
+    // two uppercase letters (so ordinary capitalised words are ignored).
+    // The split regex inserts a space before each interior upper-case letter.
+    private static readonly Regex CamelCaseToken = new(
+        @"^[A-Z][a-z]+(?:[A-Z][a-z]+){1,4}$", RegexOptions.Compiled);
+    private static readonly Regex CamelCaseSplit = new(
+        @"(?<=[a-z])(?=[A-Z])", RegexOptions.Compiled);
+
     // "Inferno (Troy Denning)" — the author tucked into trailing parentheses.
     private static readonly Regex TrailingParenAuthor = new(
         @"^(?<t>.+?)\s*\((?<a>[^()]{3,60})\)$", RegexOptions.Compiled);
@@ -65,7 +107,9 @@ public static class FilenameGuesser
         var name = Path.GetFileNameWithoutExtension(path)?.Trim() ?? "";
         if (name.Length < 3) return Array.Empty<FilenameGuess>();
 
-        name = FormatTag.Replace(name, "").TrimEnd('_', ' ', '-');
+        name = FormatTag.Replace(name, "");
+        name = LeadingEbookTag.Replace(name, "");
+        name = name.TrimEnd('_', ' ', '-');
 
         string? tagSeries = null, tagPos = null;
         var tag = LeadingSeriesTag.Match(name);
@@ -78,10 +122,11 @@ public static class FilenameGuesser
 
         var parts = Regex.Split(name, @"\s+-\s+").Select(p => p.Trim()).Where(p => p.Length > 0).ToList();
 
-        // Placeholder segments ("<X> - Unknown") carry no information — drop
-        // them so the remaining segments are interpreted on their own merits
+        // Placeholder segments ("<X> - Unknown") and release-tag segments
+        // ("… - (ebook by Un") carry no information — drop them so the
+        // remaining segments are interpreted on their own merits
         // ("fiction by A. Author - Unknown" → the by-split sees a single part).
-        parts.RemoveAll(p => PlaceholderSegments.Contains(p));
+        parts.RemoveAll(p => PlaceholderSegments.Contains(p) || EbookTagSegment.IsMatch(p));
         if (parts.Count == 0) return Array.Empty<FilenameGuess>();
 
         // A "[Series NN]" segment anywhere claims the series and drops out; a
@@ -102,13 +147,29 @@ public static class FilenameGuesser
 
         var guesses = new List<FilenameGuess>();
 
-        void Add(string? author, string? title, string? series = null, string? pos = null)
+        void AddOne(string? author, string? title, string? series, string? pos)
         {
-            author = CleanAuthorCandidate(author);
-            title = CleanTitleCandidate(title);
             if (author is null && title is null) return;
             var g = new FilenameGuess(author, title, series ?? tagSeries, pos ?? tagPos);
             if (!guesses.Contains(g)) guesses.Add(g);
+        }
+
+        void Add(string? rawAuthor, string? title, string? series = null, string? pos = null)
+        {
+            var cleanTitle = CleanTitleCandidate(title);
+            var primary = CleanAuthorCandidate(rawAuthor);
+            AddOne(primary, cleanTitle, series, pos);
+
+            // A joint credit files under its first author, but when the FIRST
+            // name isn't catalogue-known the SECOND often is ("Adriana Campoy
+            // & James P. Blaylock") — offer each co-author as a fallback.
+            if (rawAuthor is null) return;
+            foreach (var co in MultiAuthorSeparator.Split(rawAuthor)
+                         .Select(x => x.Trim()).Where(x => x.Length > 0).Skip(1))
+            {
+                var cleaned = CleanAuthorCandidate(co);
+                if (cleaned is not null && cleaned != primary) AddOne(cleaned, cleanTitle, series, pos);
+            }
         }
 
         // "Inferno (Troy Denning)" — an author tucked into trailing parentheses
@@ -121,11 +182,48 @@ public static class FilenameGuesser
             parts[^1] = paren.Groups["t"].Value.Trim();
         }
 
+        // "… by Author" inside ANY segment — anthology rips love a position
+        // prefix in front ("02 - The Cloud-Sculptors of Coral D by J. G.
+        // Ballard"), which used to hide the by-split behind the segment count.
+        if (parts.Count > 1)
+        {
+            foreach (var part in parts)
+            {
+                var bm = TitleByAuthor.Match(part);
+                if (bm.Success) Add(bm.Groups["a"].Value, bm.Groups["t"].Value);
+            }
+        }
+
         if (parts.Count == 1)
         {
             // "The Star by Arthur C. Clarke" — the rightmost " by " splits it.
             var m = TitleByAuthor.Match(parts[0]);
             if (m.Success) Add(m.Groups["a"].Value, m.Groups["t"].Value);
+
+            // "wilde-oscar-1854-1900_an-ideal-husband" — Gutenberg/archive.org
+            // lowercase hyphen-slug: "lastname-firstname-yyyy-yyyy_title-slug".
+            // The underscore splits author slug from title slug; each slug is
+            // then title-cased after the hyphens are replaced by spaces.
+            var gm = GutenbergSlug.Match(parts[0]);
+            if (gm.Success)
+            {
+                var authorSlug = gm.Groups["a"].Value.Replace('-', ' ');
+                var titleSlug = gm.Groups["t"].Value.Replace('-', ' ');
+                // Slug is already in "last first" order — build a name from
+                // the first two meaningful tokens (skip year tokens).
+                var tokens = authorSlug.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                    .Where(t => !Regex.IsMatch(t, @"^\d{4}$"))
+                    .Select(t => char.ToUpperInvariant(t[0]) + t[1..])
+                    .ToArray();
+                if (tokens.Length >= 2)
+                {
+                    // "Wilde Oscar" → "Oscar Wilde"
+                    var authorNormal = string.Join(" ", tokens[1..]) + " " + tokens[0];
+                    var titleClean = string.Join(" ", titleSlug.Split(' ')
+                        .Select(t => t.Length > 0 ? char.ToUpperInvariant(t[0]) + t[1..] : t));
+                    Add(authorNormal, titleClean);
+                }
+            }
 
             // "Almuric Robert E. Howard" — title and author smashed together
             // with no separator at all. Probe trailing word groups as the
@@ -158,10 +256,30 @@ public static class FilenameGuesser
         else if (parts.Count == 2)
         {
             var (p, q) = (parts[0], parts[1]);
+            // Strip a trailing bare "Ed." / "Ed" editor credit before attempting
+            // name inversion so "Bradley, Marion Zimmer Ed." → "Bradley, Marion Zimmer".
+            var pClean = EditorTag.Replace(p, "").Trim();
             // "Last, First - Title" is unambiguous — the comma marks the author.
-            if (TryInvertName(p, out var inverted))
+            if (TryInvertName(pClean, out var inverted))
                 Add(inverted, q);
+            // "Last, First & Last, First - Title" — two inverted co-authors joined
+            // by "&". TryInvertName fails on the combined string; split and invert
+            // each half, adding both as author guesses so either match works.
+            else if (pClean.Contains('&'))
+            {
+                foreach (var coRaw in pClean.Split('&'))
+                {
+                    var co = coRaw.Trim();
+                    if (TryInvertName(co, out var inv)) Add(inv, q);
+                    else Add(co, q);
+                }
+            }
             // Dominant download-name pattern: "Title - Author"…
+            // When the left segment has an unclosed "(" (filename truncated at
+            // OS path-length limit), the right segment is the author; emit
+            // author=right, title=left first so it gets the highest priority.
+            if (TruncatedLeftParen.IsMatch(p))
+                Add(q, p);
             Add(q, p);
             // …but "Author - Title" exists too; the catalogue check disambiguates.
             Add(p, q);
@@ -187,8 +305,21 @@ public static class FilenameGuesser
                 if (sm.Success) { series = sm.Groups["s"].Value.Trim(); pos = NormalisePosition(sm.Groups["p"].Value); break; }
             }
 
-            if (TryInvertName(first, out var inverted))
+            // Strip bare editor credit before inversion (e.g. "Bradley, Marion Zimmer Ed.").
+            var firstClean = EditorTag.Replace(first, "").Trim();
+            if (TryInvertName(firstClean, out var inverted))
                 Add(inverted, last, series, pos);
+            // "Last, First & Last, First - Series - Title" co-author in the
+            // first segment — same split-and-invert logic as the two-part branch.
+            else if (firstClean.Contains('&'))
+            {
+                foreach (var coRaw in firstClean.Split('&'))
+                {
+                    var co = coRaw.Trim();
+                    if (TryInvertName(co, out var inv)) Add(inv, last, series, pos);
+                    else Add(co, last, series, pos);
+                }
+            }
             Add(first, last, series, pos);
             Add(last, first, series, pos);
         }
@@ -215,6 +346,7 @@ public static class FilenameGuesser
     {
         if (string.IsNullOrWhiteSpace(raw)) return null;
         var s = YearTag.Replace(raw, " ").Replace('_', ' ');
+        s = EditorTag.Replace(s, "");
         s = EtAl.Replace(s, "");
         // Multi-author credit → the first author (only one can be assigned). A
         // bare first name ("David; Stella Gemmell") borrows the last co-author's
@@ -236,6 +368,11 @@ public static class FilenameGuesser
         if (!s.Any(char.IsLetter) || s.Any(char.IsDigit)) return null;
         var low = s.ToLowerInvariant();
         if (low.Contains("http") || low.Contains("www.") || low.Contains(".com")) return null;
+        // "AlanDeanFoster" — CamelCase run-together: expand to "Alan Dean Foster".
+        // Only applied to single-word tokens that match the CamelCase pattern
+        // (avoids mangling normal names or single-word book titles).
+        if (!s.Contains(' ') && CamelCaseToken.IsMatch(s))
+            s = CamelCaseSplit.Replace(s, " ");
         if (s.Split(' ').Length > 5) return null;
         return s;
     }
@@ -243,9 +380,13 @@ public static class FilenameGuesser
     private static string? CleanTitleCandidate(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw)) return null;
+        // Strip format/version tags first so "[rtf]_1" doesn't leave "1" behind.
+        var s = FormatTag.Replace(raw, "");
+        // "_1", "_2" — Calibre duplicate suffixes; strip before the _ → space pass.
+        s = Regex.Replace(s, @"_\d+$", "");
         // "_" is how a sanitiser wrote ":" ("Honest Man_ A BWWM Romance");
         // a lone "_" elsewhere was some other illegal character — a space will do.
-        var s = YearTag.Replace(raw, " ").Replace("_ ", ": ").Replace('_', ' ');
+        s = YearTag.Replace(s, " ").Replace("_ ", ": ").Replace('_', ' ');
         s = Regex.Replace(s, @"\s+", " ").Trim();
         // "Barbarian, The" → "The Barbarian".
         var inv = Regex.Match(s, @"^(?<rest>.+),\s*(?<art>The|A|An)$", RegexOptions.IgnoreCase);

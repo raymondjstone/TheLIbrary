@@ -40,13 +40,16 @@ public sealed class IncomingProcessor
             throw new InvalidOperationException($"Incoming folder does not exist: {incomingPath}");
 
         var primary = await ResolvePrimaryAsync(ct);
-        return await RunAsync(incomingPath, primary.Path, leaveUnmatchedInPlace: false, onProgress, ct);
+        return await RunAsync(incomingPath, primary.Path, leaveUnmatchedInPlace: false, autoAddOlAuthors: false, onProgress, ct);
     }
 
     // Reprocess the Unknown bucket inside the primary library. Same matching
     // logic as the incoming run; the difference is that files that still don't
     // resolve to an author stay where they are instead of being "moved" back
     // into Unknown (which would be a no-op and would thrash the filesystem).
+    // autoAddOlAuthors=true so any OL-matched author that isn't on the
+    // watchlist yet is auto-created as a Pending row and their files moved
+    // immediately instead of staying quarantined forever.
     public async Task<IncomingResult> ProcessUnknownAsync(Action<IncomingProgress>? onProgress, CancellationToken ct)
     {
         var primary = await ResolvePrimaryAsync(ct);
@@ -54,7 +57,7 @@ public sealed class IncomingProcessor
         if (!_fs.DirectoryExists(unknownPath))
             return new IncomingResult(0, 0, 0, 0, 0,
                 new[] { $"No quarantine folder found at {unknownPath}" });
-        return await RunAsync(unknownPath, primary.Path, leaveUnmatchedInPlace: true, onProgress, ct);
+        return await RunAsync(unknownPath, primary.Path, leaveUnmatchedInPlace: true, autoAddOlAuthors: true, onProgress, ct);
     }
 
     private async Task<Data.Models.LibraryLocation> ResolvePrimaryAsync(CancellationToken ct)
@@ -72,6 +75,7 @@ public sealed class IncomingProcessor
         string sourcePath,
         string destRoot,
         bool leaveUnmatchedInPlace,
+        bool autoAddOlAuthors,
         Action<IncomingProgress>? onProgress,
         CancellationToken ct)
     {
@@ -117,9 +121,26 @@ public sealed class IncomingProcessor
         // Build an in-memory matcher over the watchlist. The full OpenLibrary
         // catalog (millions of rows post-seed) is too big to preload — instead
         // we query it per unmatched file via LookupOpenLibraryAsync below.
+        // Only Active / Pending / Starred authors are indexed — Excluded authors
+        // must not grab their normalized-name key and prevent OL or duplicate
+        // Active rows from matching.
         var tracked = await _db.Authors
+            .Where(a => a.Status != AuthorStatus.Excluded)
             .Select(a => new { a.Id, a.Name, a.CalibreFolderName, a.OpenLibraryKey })
             .ToListAsync(ct);
+
+        // Also add the normalized names of Excluded authors to the blacklist so
+        // the OL fallback probe loop skips them even when they have a catalog hit.
+        var excludedNormalized = await _db.Authors
+            .Where(a => a.Status == AuthorStatus.Excluded)
+            .Select(a => a.Name)
+            .ToListAsync(ct);
+        foreach (var name in excludedNormalized)
+        {
+            var norm = TitleNormalizer.NormalizeAuthor(name);
+            if (!string.IsNullOrEmpty(norm)) blacklistSet.Add(norm);
+        }
+
         var matcher = new AuthorMatcher(
             tracked.Select(a => new AuthorIndexEntry(
                 DisplayName: a.Name,
@@ -127,7 +148,7 @@ public sealed class IncomingProcessor
                 IsTracked: true,
                 TrackedAuthorId: a.Id,
                 OpenLibraryKey: a.OpenLibraryKey)),
-            blacklistedNormalized);
+            blacklistSet);
         Report($"Indexed {tracked.Count} watchlist authors, {blacklistSet.Count} blacklisted; scanning {sourcePath}");
 
         // Stream the tree folder-by-folder instead of enumerating the whole
@@ -279,16 +300,17 @@ public sealed class IncomingProcessor
                         }
                     }
 
-                    // Collection folders only exist when an OL-verified Author
-                    // row exists in the DB. If the match is tracked-without-OL
-                    // or OL-only, upsert the row here so we never create a
-                    // ghost folder the user would see as "not an author name".
-                    // A null return downgrades the match to __unknown.
+                    // Resolve the match through ResolveOrCreateAuthorAsync:
+                    //   - Tracked author: always routes to their folder (OL key
+                    //     backfilled opportunistically but not required).
+                    //   - OL-only match: upsert a Pending Author row first.
+                    //   - Returns null only for Excluded / blacklisted authors or
+                    //     OL-matched-but-not-on-watchlist (user must add them).
                     var identifiedButUntracked = (string?)null;
                     if (matchedEntry is not null)
                     {
                         var before = matchedEntry;
-                        matchedEntry = await ResolveOrCreateAuthorAsync(matchedEntry, blacklistSet, ct);
+                        matchedEntry = await ResolveOrCreateAuthorAsync(matchedEntry, blacklistSet, autoAddOlAuthors, ct);
                         if (matchedEntry is null) identifiedButUntracked = before.DisplayName;
                     }
 
@@ -323,22 +345,12 @@ public sealed class IncomingProcessor
                         }
                         unknown++;
 
-                        // Don't invent a title folder from metadata when we
-                        // couldn't match the author — bad metadata produced
-                        // garbage names like "DH___" under __unknown. Keep only
-                        // the TOP-LEVEL folder from the source layout: that
-                        // preserves the author-name signal a later
-                        // reprocess-unknown can use, while keeping files
-                        // directly under __unknown/<folder>/ — never in deeper
-                        // Title/... nesting the flatten job would have to undo.
-                        var rel = Path.GetRelativePath(sourcePath, dir);
-                        var topFolder = string.IsNullOrEmpty(rel) || rel == "."
-                            ? null
-                            : rel.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)[0];
+                        // All unmatched files go flat to the unknown root —
+                        // no author-hint subfolders. The reprocess-unknown job
+                        // re-scans the root directly, so nested folders add no
+                        // value and make the quarantine folder harder to browse.
                         var unknownDestRoot = await UnknownFolderResolver.GetDestinationRootAsync(_db, destRoot, ct);
-                        destDir = topFolder is null
-                            ? unknownDestRoot
-                            : Path.Combine(unknownDestRoot, topFolder);
+                        destDir = unknownDestRoot;
                     }
                     else
                     {
@@ -564,7 +576,7 @@ public sealed class IncomingProcessor
     // returned FolderName is what the caller uses as the on-disk author
     // folder segment — so it's always a real, OL-backed author name.
     private async Task<AuthorIndexEntry?> ResolveOrCreateAuthorAsync(
-        AuthorIndexEntry entry, HashSet<string> blacklistSet, CancellationToken ct)
+        AuthorIndexEntry entry, HashSet<string> blacklistSet, bool autoAddOlAuthors, CancellationToken ct)
     {
         if (entry.IsTracked && entry.TrackedAuthorId is int trackedId)
         {
@@ -635,9 +647,15 @@ public sealed class IncomingProcessor
                 }
             }
 
-            // Tracked but un-verifiable — don't pretend. Route to __unknown so
-            // nothing lands under a folder whose author has no OL pedigree.
-            return null;
+            // Tracked author with no OL key yet — still route to their folder.
+            // The user explicitly added this author to the watchlist; refusing to
+            // deliver files because OL hasn't been seeded / matched yet makes the
+            // whole watchlist feature unreliable. OL key will be filled in by
+            // AuthorRefresher on the next sync pass.
+            _log.LogDebug(
+                "Author '{Name}' is tracked but has no OL key yet — routing to folder anyway",
+                author.Name);
+            return entry with { OpenLibraryKey = null };
         }
 
         // OL-only match: we only arrive here with an OpenLibraryKey populated
@@ -667,6 +685,29 @@ public sealed class IncomingProcessor
         var normFolder = TitleNormalizer.NormalizeAuthor(entry.FolderName);
         if (blacklistSet.Contains(normDisplay) || blacklistSet.Contains(normFolder))
             return null;
+
+        // Author matched OL but is not on the watchlist yet.
+        // During a reprocess-unknown run we auto-create a Pending Author row so
+        // the file can be delivered immediately instead of staying in quarantine
+        // indefinitely waiting for the user to manually add the author.
+        // During a regular incoming run (autoAddOlAuthors=false) we keep the
+        // original "user must add them first" policy unchanged.
+        if (autoAddOlAuthors)
+        {
+            var newAuthor = new Data.Models.Author
+            {
+                Name              = entry.DisplayName,
+                CalibreFolderName = entry.FolderName,
+                OpenLibraryKey    = entry.OpenLibraryKey,
+                Status            = Data.Models.AuthorStatus.Pending,
+            };
+            _db.Authors.Add(newAuthor);
+            await _db.SaveChangesAsync(ct);
+            _log.LogInformation(
+                "Auto-created Pending author '{Name}' ({OlKey}) during unknown reprocess",
+                newAuthor.Name, newAuthor.OpenLibraryKey);
+            return entry with { IsTracked = true, TrackedAuthorId = newAuthor.Id };
+        }
 
         // Author matched OL but is not on the watchlist — route to __unknown.
         // User must explicitly add the author before files land in the main collection.

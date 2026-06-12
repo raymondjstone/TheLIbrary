@@ -177,6 +177,49 @@ public class FilenameGuesserTests
     }
 
     [Fact]
+    public void Leading_Ebook_Tag_Is_Stripped()
+    {
+        // "(ebook) Gene Wolfe - Death of Dr Island.txt" shape.
+        var guesses = FilenameGuesser.Interpret(@"/x/(ebook) Arnold C. Quibble - Death of Dr Mango.txt");
+        Assert.Contains(guesses, g => g.Author == "Arnold C. Quibble" && g.Title == "Death of Dr Mango");
+    }
+
+    [Fact]
+    public void Truncated_Ebook_By_Group_Segment_Is_Dropped()
+    {
+        // "01 - Empire in Chaos - Anthony Reynolds - (ebook by Un.mobi" shape —
+        // the release-group tag is cut off mid-word by the 30-char rename.
+        var guesses = FilenameGuesser.Interpret(@"/x/01 - Empire in Chaos - Arnold C. Quibble - (ebook by Un.mobi");
+        Assert.Contains(guesses, g => g.Author == "Arnold C. Quibble" && g.Title == "Empire in Chaos");
+    }
+
+    [Fact]
+    public void By_Author_Split_Works_Inside_A_Multi_Segment_Name()
+    {
+        // "02 - The Cloud-Sculptors of Coral D by J. G. Ballard.txt" shape.
+        var guesses = FilenameGuesser.Interpret(@"/x/02 - The Cloud-Carvers of Coral Z by J. G. Quibble.txt");
+        Assert.Contains(guesses, g => g.Author == "J. G. Quibble" && g.Title == "The Cloud-Carvers of Coral Z");
+    }
+
+    [Fact]
+    public void Editor_Tag_Is_Stripped_From_The_Author()
+    {
+        // "Adam Millard (ed) - Wake Up Dead.mobi" shape.
+        var guesses = FilenameGuesser.Interpret(@"/x/Adam Quibble (ed) - Wake Up Dazed.mobi");
+        Assert.Contains(guesses, g => g.Author == "Adam Quibble" && g.Title == "Wake Up Dazed");
+    }
+
+    [Fact]
+    public void Each_CoAuthor_Of_A_Joint_Credit_Is_Offered()
+    {
+        // "Adriana Campoy & James P. Blaylock - Stone Eggs.mobi" shape — the
+        // second author may be the catalogue-known one.
+        var guesses = FilenameGuesser.Interpret(@"/x/Adriana Plimsoll & James P. Quibble - Stone Eggs.mobi");
+        Assert.Contains(guesses, g => g.Author == "Adriana Plimsoll" && g.Title == "Stone Eggs");
+        Assert.Contains(guesses, g => g.Author == "James P. Quibble" && g.Title == "Stone Eggs");
+    }
+
+    [Fact]
     public void Junk_Filenames_Yield_Nothing_Usable()
     {
         Assert.Empty(FilenameGuesser.Interpret(@"/Books/TheLibrary_Unknown/CMakeLists_10.txt"));
@@ -184,5 +227,114 @@ public class FilenameGuesserTests
         // URL-bearing names produce no author.
         var url = FilenameGuesser.Interpret(@"/Books/TheLibrary_Unknown/Eva by Aldous Blackbird http___w - http___www.spookmasters.com.mobi");
         Assert.DoesNotContain(url, g => g.Author != null && g.Author.Contains("http"));
+    }
+
+    [Fact]
+    public void Inverted_Name_Series_Tag_Version_And_Square_Bracket_Format_Tag_Are_All_Handled()
+    {
+        // Real-world shape: "Bradley, Marion Zimmer - [Darkover 06] - A Flame In Hali (v1.0) [rtf]_1.lit"
+        // Author is inverted (Last, First Middle), series tag is in the middle,
+        // version tag "(v1.0)" is in round brackets, format tag "[rtf]" is in
+        // square brackets, and "_1" is a Calibre duplicate suffix.
+        var guesses = FilenameGuesser.Interpret(
+            @"/incoming/Quibble, Marion Anne - [Frost Series 06] - A Flame In Vance (v1.0) [rtf]_1.lit");
+        Assert.Contains(guesses, g =>
+            g.Author == "Marion Anne Quibble"
+            && g.Title == "A Flame In Vance"
+            && g.Series == "Frost Series"
+            && g.SeriesPosition == "6");
+    }
+
+    [Fact]
+    public void Square_Bracket_Format_Tag_Is_Stripped_From_Title()
+    {
+        // "[epub]" in square brackets must be treated the same as "(epub)" in round brackets.
+        var guesses = FilenameGuesser.Interpret(
+            @"/x/Quibble, Arnold C - The Desert Storm [epub].epub");
+        Assert.Contains(guesses, g =>
+            g.Author == "Arnold C Quibble" && g.Title == "The Desert Storm");
+    }
+
+    // ── New pattern tests ──────────────────────────────────────────────────
+
+    [Fact]
+    public void Bare_Editor_Suffix_Is_Stripped_From_Author()
+    {
+        // "Bradley, Marion Zimmer Ed. - Sword and Sorceress 11.lit"
+        // The bare " Ed." suffix must not contaminate the author key so the
+        // inverted name resolves to "Marion Zimmer Bradley", not something with "ed" in it.
+        var guesses = FilenameGuesser.Interpret(
+            @"/x/Bradley, Marion Zimmer Ed. - Sword and Sorceress 11.lit");
+        Assert.Contains(guesses, g => g.Author == "Marion Zimmer Bradley");
+    }
+
+    [Fact]
+    public void Inverted_CoAuthor_Pair_Both_Authors_Probed()
+    {
+        // "Bradley, Marion Zimmer & Lackey, Mercedes - Darkover 12 - First Age 1 - Rediscovery.pdf"
+        // Both co-authors in "Last, First" form must be offered independently.
+        var guesses = FilenameGuesser.Interpret(
+            @"/x/Bradley, Marion Zimmer & Lackey, Mercedes - Darkover 12 - First Age 1 - Rediscovery.pdf");
+        Assert.Contains(guesses, g => g.Author == "Marion Zimmer Bradley");
+        Assert.Contains(guesses, g => g.Author == "Mercedes Lackey");
+    }
+
+    [Fact]
+    public void Two_Part_Inverted_CoAuthor_Both_Authors_Probed()
+    {
+        // Two-part form: "Aldiss, Brian W & Penrose, Roger - White Mars"
+        var guesses = FilenameGuesser.Interpret(
+            @"/x/Aldiss, Brian W & Penrose, Roger - White Mars.doc");
+        Assert.Contains(guesses, g => g.Author == "Brian W Aldiss");
+        Assert.Contains(guesses, g => g.Author == "Roger Penrose");
+    }
+
+    [Fact]
+    public void CamelCase_Author_Token_Is_Split_Into_Words()
+    {
+        // "AlanDeanFoster-Flinx 01-ForLoveOfMotherNot_v1.2.lit"
+        // The CamelCase token "AlanDeanFoster" must expand to "Alan Dean Foster".
+        var guesses = FilenameGuesser.Interpret(
+            @"/x/AlanDeanFoster-Flinx 01-ForLoveOfMotherNot_v1.2.lit");
+        Assert.Contains(guesses, g => g.Author == "Alan Dean Foster");
+    }
+
+    [Fact]
+    public void Gutenberg_Slug_Author_And_Title_Are_Extracted()
+    {
+        // "wilde-oscar-1854-1900_an-ideal-husband.pdf" — BNF/Gutenberg slug.
+        // Author slug "wilde-oscar-1854-1900" → "Oscar Wilde"; title slug → "An Ideal Husband".
+        var guesses = FilenameGuesser.Interpret(
+            @"/x/wilde-oscar-1854-1900_an-ideal-husband.pdf");
+        Assert.Contains(guesses, g => g.Author == "Oscar Wilde" && g.Title == "An Ideal Husband");
+    }
+
+    [Fact]
+    public void Truncated_Paren_Title_Right_Segment_Is_Emitted_As_Author()
+    {
+        // "Betrayal of Innocence (A New Ad - Rebecca King.mobi"
+        // The "(" was never closed — the title was truncated at the OS path limit.
+        // The right segment after " - " is the author; it must appear as an author
+        // guess, and it must be offered BEFORE the reversed orientation so the
+        // catalogue probe hits it first.
+        var guesses = FilenameGuesser.Interpret(
+            @"/x/Betrayal of Innocence (A New Ad - Rebecca King.mobi");
+        // Author=Rebecca King must appear as an early guess.
+        var authorGuess = guesses.FirstOrDefault(g => g.Author == "Rebecca King");
+        Assert.NotNull(authorGuess);
+        // It must appear before the guess where "Rebecca King" is a title.
+        var reversedIdx = guesses.ToList().FindIndex(g => g.Title == "Rebecca King");
+        var authorIdx = guesses.ToList().FindIndex(g => g.Author == "Rebecca King");
+        Assert.True(authorIdx < reversedIdx || reversedIdx < 0,
+            "Author=Rebecca King guess should appear before Title=Rebecca King");
+    }
+
+    [Fact]
+    public void Truncated_Paren_Title_Multi_Word_Author_Is_Found()
+    {
+        // "She Is His Witness (Birth Of He - Michael Todd.epub"
+        var guesses = FilenameGuesser.Interpret(
+            @"/x/She Is His Witness (Birth Of He - Michael Todd.epub");
+        Assert.Contains(guesses, g => g.Author == "Michael Todd");
     }
 }

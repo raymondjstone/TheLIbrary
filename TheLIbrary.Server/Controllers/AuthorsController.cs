@@ -1431,8 +1431,18 @@ public class AuthorsController : ControllerBase
     {
         var scan = await _db.BookContentScans.FirstOrDefaultAsync(c => c.Id == scanId, ct);
         if (scan is null) return NotFound(new { error = "Scan not found." });
-        var r = await _assigner.AssignAsync(scan, ct);
-        return Ok(new AssignAuthorResult(r.Assigned, r.AuthorId, r.AuthorName, r.BookId, r.Path, r.Reason));
+        try
+        {
+            var r = await _assigner.AssignAsync(scan, ct);
+            return Ok(new AssignAuthorResult(r.Assigned, r.AuthorId, r.AuthorName, r.BookId, r.Path, r.Reason));
+        }
+        catch (Services.OpenLibrary.OpenLibraryRequestFailedException ex)
+        {
+            // OL refusing/failing the lookup is an upstream problem, not a
+            // server fault — report it as the assign outcome, not a 500.
+            return Ok(new AssignAuthorResult(false, null, null, null, null,
+                $"OpenLibrary lookup failed: {ex.Message}"));
+        }
     }
 
     public sealed record AssignAuthorsAllResult(int Assigned, int Skipped, int Failed, int Remaining, int? LastId);

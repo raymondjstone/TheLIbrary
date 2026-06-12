@@ -9,7 +9,7 @@ public static class FileMetadataReader
     public static EpubMetadata? TryRead(string file, ILogger? log = null)
     {
         var ext = Path.GetExtension(file).ToLowerInvariant();
-        return ext switch
+        var m = ext switch
         {
             ".epub" => EpubMetadataReader.TryReadFile(file),
             ".fb2" or ".fbz" => Fb2MetadataReader.TryReadFile(file),
@@ -24,5 +24,27 @@ public static class FileMetadataReader
             ".opf" => OpfMetadataReader.TryReadFile(file),
             _ => null
         };
+        return m is null ? null : Sanitize(m);
+    }
+
+    // A corrupt MOBI/PDB header can yield raw binary as the "title" — strings
+    // with control characters are not metadata and must never reach consumers
+    // (an OpenLibrary query with %00 bytes gets 403'd by their WAF). Any field
+    // containing control characters is dropped.
+    private static EpubMetadata Sanitize(EpubMetadata m) => m with
+    {
+        Title = Clean(m.Title),
+        Author = Clean(m.Author),
+        AuthorSort = Clean(m.AuthorSort),
+        Series = Clean(m.Series),
+        Subject = Clean(m.Subject),
+        Isbn = Clean(m.Isbn),
+    };
+
+    private static string? Clean(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return s;
+        var t = s.Trim();
+        return t.Any(char.IsControl) ? null : t;
     }
 }

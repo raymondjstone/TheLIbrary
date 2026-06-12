@@ -46,5 +46,15 @@ public static class AuthorNameValidator
         var words = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (words.Length >= 2 && words[0].Length is 2 or 3 && words[0].All(char.IsUpper))
             yield return $"{string.Join(' ', words[0].ToCharArray())} {string.Join(' ', words[1..])}";
+
+        // OL often catalogues an author under an initial ("L. Frank Baum")
+        // while the file spells the forename out ("Lyman Frank Baum") — try
+        // initializing the first one, then two, given names.
+        if (words.Length >= 3 && words[0].Length > 2)
+        {
+            yield return $"{words[0][0]} {string.Join(' ', words[1..])}";
+            if (words[1].Length > 2)
+                yield return $"{words[0][0]} {words[1][0]} {string.Join(' ', words[2..])}";
+        }
     }
 }
