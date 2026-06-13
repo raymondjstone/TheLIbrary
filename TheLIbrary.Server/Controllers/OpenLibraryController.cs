@@ -1,4 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using TheLibrary.Server.Data;
+using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.OpenLibrary;
 
 namespace TheLibrary.Server.Controllers;
@@ -8,7 +11,8 @@ namespace TheLibrary.Server.Controllers;
 public class OpenLibraryController : ControllerBase
 {
     private readonly OpenLibraryClient _ol;
-    public OpenLibraryController(OpenLibraryClient ol) { _ol = ol; }
+    private readonly LibraryDbContext _db;
+    public OpenLibraryController(OpenLibraryClient ol, LibraryDbContext db) { _ol = ol; _db = db; }
 
     public sealed record AuthorSearchRow(
         string Key,
@@ -34,10 +38,12 @@ public class OpenLibraryController : ControllerBase
         if (string.IsNullOrWhiteSpace(q))
             return new List<AuthorSearchRow>();
 
+        var limit = await GetSearchLimitAsync(ct);
+
         AuthorSearchResponse? resp;
         try
         {
-            resp = await _ol.SearchAuthorsAsync(q.Trim(), ct);
+            resp = await _ol.SearchAuthorsAsync(q.Trim(), ct, limit);
         }
         catch (OpenLibraryRequestFailedException ex)
         {
@@ -65,10 +71,12 @@ public class OpenLibraryController : ControllerBase
         if (string.IsNullOrWhiteSpace(title))
             return new List<WorkSearchRow>();
 
+        var limit = await GetSearchLimitAsync(ct);
+
         WorkSearchResponse? resp;
         try
         {
-            resp = await _ol.SearchWorksAsync(title.Trim(), author?.Trim(), ct);
+            resp = await _ol.SearchWorksAsync(title.Trim(), author?.Trim(), ct, limit);
         }
         catch (OpenLibraryRequestFailedException ex)
         {
@@ -91,5 +99,14 @@ public class OpenLibraryController : ControllerBase
                 d.AuthorKeys?.FirstOrDefault(k => !string.IsNullOrWhiteSpace(k)),
                 d.AuthorNames?.FirstOrDefault(n => !string.IsNullOrWhiteSpace(n))))
             .ToList();
+    }
+
+    private async Task<int> GetSearchLimitAsync(CancellationToken ct)
+    {
+        var raw = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.OlSearchResultsLimit)
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync(ct);
+        return int.TryParse(raw, out var n) && n > 0 ? n : OpenLibraryClient.DefaultSearchLimit;
     }
 }

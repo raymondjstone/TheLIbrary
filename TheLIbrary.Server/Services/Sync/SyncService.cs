@@ -221,6 +221,48 @@ public sealed class SyncService
         }
 
         await db.SaveChangesAsync(ct);
+
+        await FlattenQuarantineRootsAsync(db, ct);
+    }
+
+    // Self-heal invariant: the __unknown quarantine is a FLAT bucket of loose
+    // files — never author/title subfolders. Whatever creates a folder under a
+    // quarantine root (an older build, a misrouted assign/move, a manual drop),
+    // this pass — run at the end of every sync — flattens its files up to the
+    // root and removes the folder. Combined with every writer routing through
+    // UnknownQuarantine, it makes "no folders in __unknown" a continuously
+    // enforced invariant rather than something a single code path can break.
+    private async Task FlattenQuarantineRootsAsync(LibraryDbContext db, CancellationToken ct)
+    {
+        var locPaths = await db.LibraryLocations.AsNoTracking()
+            .Where(l => l.Enabled).Select(l => l.Path).ToListAsync(ct);
+        var quarantineRoots = await Services.Calibre.UnknownFolderResolver.GetSourceRootsAsync(db, locPaths, ct);
+
+        var flattenedFiles = 0;
+        var flattenedFolders = 0;
+        foreach (var qroot in quarantineRoots.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!Directory.Exists(qroot)) continue;
+            foreach (var sub in Directory.GetDirectories(qroot))
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    var moved = UnknownQuarantine.FlattenFolderIntoRoot(qroot, sub);
+                    flattenedFiles += moved;
+                    flattenedFolders++;
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning(ex, "Sync: could not flatten quarantine subfolder {Dir}", sub);
+                }
+            }
+        }
+        if (flattenedFolders > 0)
+            _log.LogInformation(
+                "Sync: flattened {Files} file(s) out of {Folders} quarantine subfolder(s) into the __unknown root",
+                flattenedFiles, flattenedFolders);
     }
 
     private bool MoveToUnknown(string locationPath, string folderName, string unknownRoot)

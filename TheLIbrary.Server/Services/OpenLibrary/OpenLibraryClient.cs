@@ -41,16 +41,18 @@ public sealed class OpenLibraryClient
             _http.BaseAddress = new Uri("https://openlibrary.org/");
     }
 
-    public Task<AuthorSearchResponse?> SearchAuthorsAsync(string name, CancellationToken ct)
+    public const int DefaultSearchLimit = 20;
+
+    public Task<AuthorSearchResponse?> SearchAuthorsAsync(string name, CancellationToken ct, int limit = DefaultSearchLimit)
     {
-        var url = $"search/authors.json?q={HttpUtility.UrlEncode(name)}&limit=10";
+        var url = $"search/authors.json?q={HttpUtility.UrlEncode(name)}&limit={Math.Clamp(limit, 1, 100)}";
         return GetJsonAsync<AuthorSearchResponse>(url, ct);
     }
 
-    public Task<WorkSearchResponse?> SearchWorksAsync(string title, string? author, CancellationToken ct)
+    public Task<WorkSearchResponse?> SearchWorksAsync(string title, string? author, CancellationToken ct, int limit = DefaultSearchLimit)
     {
         var fields = "key,title,first_publish_year,cover_i,author_name,author_key";
-        var url = $"search.json?title={HttpUtility.UrlEncode(title)}&limit=10&fields={fields}";
+        var url = $"search.json?title={HttpUtility.UrlEncode(title)}&limit={Math.Clamp(limit, 1, 100)}&fields={fields}";
         if (!string.IsNullOrWhiteSpace(author))
             url += $"&author={HttpUtility.UrlEncode(author.Trim())}";
         return GetJsonAsync<WorkSearchResponse>(url, ct);

@@ -127,26 +127,32 @@ public class SettingsController : ControllerBase
 
             Directory.CreateDirectory(newRoot);
 
+            // FLATTEN into the new quarantine root — the quarantine is loose
+            // files only, never author/title subfolders. Moving each author
+            // folder wholesale (the old behaviour) would just recreate the
+            // folder tree under the new root.
             foreach (var authorDir in Directory.GetDirectories(oldRoot))
             {
                 var folderName = Path.GetFileName(authorDir);
-                var dest = UniqueDirectory(newRoot, folderName);
                 try
                 {
-                    foreach (var file in Directory.EnumerateFiles(authorDir, "*", SearchOption.AllDirectories))
-                    {
-                        pathRewrites[file] = Path.Combine(dest, Path.GetRelativePath(authorDir, file));
-                    }
-                    Directory.Move(authorDir, dest);
                     foldersMoved++;
-                    filesMoved += Directory.EnumerateFiles(dest, "*", SearchOption.AllDirectories).Count();
+                    filesMoved += Services.Sync.UnknownQuarantine.FlattenFolderIntoRoot(newRoot, authorDir, pathRewrites);
                 }
                 catch (Exception ex)
                 {
-                    foreach (var k in pathRewrites.Keys.Where(k => k.StartsWith(authorDir, StringComparison.OrdinalIgnoreCase)).ToList())
-                        pathRewrites.Remove(k);
                     warnings.Add($"{folderName}: {ex.Message}");
                 }
+            }
+            // Any loose files sitting directly in the old root move across too.
+            foreach (var file in Directory.EnumerateFiles(oldRoot))
+            {
+                try
+                {
+                    pathRewrites[file] = Services.Sync.UnknownQuarantine.MoveFileFlat(newRoot, file);
+                    filesMoved++;
+                }
+                catch (Exception ex) { warnings.Add($"{Path.GetFileName(file)}: {ex.Message}"); }
             }
 
             try
@@ -691,6 +697,33 @@ public class SettingsController : ControllerBase
             untrackedFirst ? "true" : "false", ct);
         await _db.SaveChangesAsync(ct);
         return new ContentScanSettingsDto(max, untrackedFirst);
+    }
+
+    public sealed record OlSearchSettingsDto(int ResultsLimit);
+    public sealed record OlSearchSettingsUpdate(int? ResultsLimit);
+
+    [HttpGet("ol-search")]
+    public async Task<OlSearchSettingsDto> GetOlSearchSettings(CancellationToken ct)
+    {
+        var raw = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.OlSearchResultsLimit)
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync(ct);
+        var limit = int.TryParse(raw, out var n) && n > 0 ? n : OpenLibraryClient.DefaultSearchLimit;
+        return new OlSearchSettingsDto(limit);
+    }
+
+    [HttpPut("ol-search")]
+    public async Task<ActionResult<OlSearchSettingsDto>> SetOlSearchSettings(
+        [FromBody] OlSearchSettingsUpdate body, CancellationToken ct)
+    {
+        var requested = body.ResultsLimit ?? 0;
+        var limit = Math.Clamp(
+            requested <= 0 ? OpenLibraryClient.DefaultSearchLimit : requested, 1, 100);
+        await UpsertSettingAsync(AppSettingKeys.OlSearchResultsLimit,
+            limit.ToString(System.Globalization.CultureInfo.InvariantCulture), ct);
+        await _db.SaveChangesAsync(ct);
+        return new OlSearchSettingsDto(limit);
     }
 
     // Best-effort write check: can we create the directory and a temp file there?

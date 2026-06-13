@@ -9,8 +9,11 @@ public static class UnknownQuarantine
 {
     // Moves every file beneath sourceDir (recursively) flat into unknownRoot,
     // resolving name collisions with _N suffixing, then deletes the drained
-    // source tree. Returns the number of files moved.
-    public static int FlattenFolderIntoRoot(string unknownRoot, string sourceDir)
+    // source tree. Returns the number of files moved. When `rewrites` is given,
+    // each (oldFullPath → newFlatPath) move is recorded so the caller can update
+    // matching DB rows.
+    public static int FlattenFolderIntoRoot(
+        string unknownRoot, string sourceDir, IDictionary<string, string>? rewrites = null)
     {
         if (!Directory.Exists(sourceDir)) return 0;
         Directory.CreateDirectory(unknownRoot);
@@ -21,6 +24,7 @@ public static class UnknownQuarantine
             var dest = UntrackedAuthorAssigner.UniqueFilePath(
                 Path.Combine(unknownRoot, Path.GetFileName(file)));
             File.Move(file, dest);
+            if (rewrites is not null) rewrites[file] = dest;
             moved++;
         }
 

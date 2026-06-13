@@ -67,6 +67,9 @@ export default function Settings() {
     const [contentScanUntrackedFirst, setContentScanUntrackedFirst] = useState(false)
     const [contentScanSaved, setContentScanSaved] = useState(null)
     const [contentScanSaving, setContentScanSaving] = useState(false)
+    const [olSearchLimit, setOlSearchLimit] = useState(20)
+    const [olSearchLimitSaved, setOlSearchLimitSaved] = useState(null)
+    const [olSearchLimitSaving, setOlSearchLimitSaving] = useState(false)
 
     const load = async () => {
         // Independent loads — a failing endpoint (e.g. pending migration) must
@@ -215,6 +218,14 @@ export default function Settings() {
             setContentScanUntrackedFirst(!!body.untrackedFirst)
             setContentScanSaved(body.maxPerRun)
         } catch (e) { setError(prev => prev ?? String(e)) }
+
+        try {
+            const r = await fetch('/api/settings/ol-search')
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setOlSearchLimit(body.resultsLimit > 0 ? body.resultsLimit : 20)
+            setOlSearchLimitSaved(body.resultsLimit)
+        } catch (e) { setError(prev => prev ?? String(e)) }
     }
 
     const saveContentScan = async () => {
@@ -238,6 +249,26 @@ export default function Settings() {
             setError(String(e.message ?? e))
         } finally {
             setContentScanSaving(false)
+        }
+    }
+
+    const saveOlSearchLimit = async () => {
+        setOlSearchLimitSaving(true)
+        setError(null)
+        try {
+            const r = await fetch('/api/settings/ol-search', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ resultsLimit: Math.max(1, Number(olSearchLimit) || 20) }),
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setOlSearchLimit(body.resultsLimit)
+            setOlSearchLimitSaved(body.resultsLimit)
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setOlSearchLimitSaving(false)
         }
     }
 
@@ -982,6 +1013,31 @@ export default function Settings() {
                 </button>
                 <span className="subtle">
                     Default 50.{contentScanSaved != null && <> Saved: <code>{contentScanSaved}</code>.</>}
+                </span>
+            </div>
+
+            <h2 style={{ marginTop: '1.5rem' }}>OpenLibrary search results</h2>
+            <p className="subtle">
+                Maximum number of results returned when searching OpenLibrary for titles
+                or authors — used on the author detail, unmatched, untracked, and physical
+                pages. Higher values give more candidates but increase response time.
+                Capped at 100.
+            </p>
+            <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <span>Max results per search</span>
+                    <input
+                        type="number"
+                        min="1" max="100" step="5"
+                        value={olSearchLimit}
+                        onChange={e => setOlSearchLimit(Number(e.target.value))}
+                        style={{ width: '5rem' }} />
+                </label>
+                <button onClick={saveOlSearchLimit} disabled={olSearchLimitSaving}>
+                    {olSearchLimitSaving ? 'Saving…' : 'Save'}
+                </button>
+                <span className="subtle">
+                    Default 20.{olSearchLimitSaved != null && <> Saved: <code>{olSearchLimitSaved}</code>.</>}
                 </span>
             </div>
 

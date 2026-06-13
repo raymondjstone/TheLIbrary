@@ -881,6 +881,18 @@ folder tree can never be (re)created under `__unknown`:
 - **"Wrong author → unknown"** on the author page flattens a folder-shaped row's
   files into the root too.
 - **Incoming processing** already drops unmatched files flat into the root.
+- **Changing the quarantine path** (Settings) flattens existing content into the
+  new root rather than moving author folders across.
+
+**Self-healing invariant.** Because a folder in the quarantine must *never*
+persist — whatever creates it (an older build, a misrouted move, a manual drop)
+— **every sync run ends by flattening any folder found under a quarantine
+root**: its files are lifted to the root and the folder removed. So even if some
+path slips a folder in, the next sync (hourly) erases it. "No folders in
+`__unknown`" is thus a continuously-enforced invariant, not something a single
+code path can break. (The assign-untracked-books job files into the main
+library folder — a *library location*, never the quarantine — so it isn't a
+source of quarantine folders; the self-heal covers it regardless.)
 
 ### Flatten-unknown job
 

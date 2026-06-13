@@ -102,6 +102,12 @@ public static class AppSettingKeys
     // Unset = ContentScanService.DefaultMaxPerRun.
     public const string ContentScanMaxPerRun = "ContentScanMaxPerRun";
 
+    // Maximum number of results returned by user-facing OpenLibrary title and
+    // author searches (search-works / search-authors endpoints). Does not affect
+    // internal callers such as ISBN lookup or folder-suggestion queries.
+    // Unset = 20.
+    public const string OlSearchResultsLimit = "OlSearchResultsLimit";
+
     // When "true", the "Identify books from content" job processes untracked
     // __unknown files before author-linked unmatched files (reverses the default
     // tier order). Unset / "false" = matched/unmatched author files first.
