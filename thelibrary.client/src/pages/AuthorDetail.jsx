@@ -593,6 +593,9 @@ export default function AuthorDetail() {
     const [showAddBook, setShowAddBook] = useState(false)
     const [editBook, setEditBook] = useState(null)
     const [unlinking, setUnlinking] = useState(false)
+    const [similarSel, setSimilarSel] = useState(() => new Set())
+    const [linkingSimilar, setLinkingSimilar] = useState(false)
+    const [similarError, setSimilarError] = useState(null)
     const [suggestionsByFile, setSuggestionsByFile] = useState({})  // { fileId: { inferredTitle, candidates } }
     const [markingAllWanted, setMarkingAllWanted] = useState(false)
     const [bulkBusy, setBulkBusy] = useState(false)
@@ -640,6 +643,41 @@ export default function AuthorDetail() {
             alert(`Unlink failed: ${e.message}`)
         } finally {
             setUnlinking(false)
+        }
+    }
+
+    const toggleSimilar = (cid) => setSimilarSel(prev => {
+        const n = new Set(prev); n.has(cid) ? n.delete(cid) : n.add(cid); return n
+    })
+
+    // Link the selected similar-named authors UNDER this author (this author is
+    // the canonical/primary). Each link moves the child's files into this
+    // author's folder, so confirm once for the batch.
+    const linkSelectedSimilar = async () => {
+        const ids = [...similarSel]
+        if (ids.length === 0) return
+        if (!confirm(`Link ${ids.length} author${ids.length === 1 ? '' : 's'} under "${data.name}" as the primary? Their files are moved into this author's folder.`)) return
+        setLinkingSimilar(true); setSimilarError(null)
+        try {
+            for (const childId of ids) {
+                const r = await fetch(`/api/authors/${childId}/link`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ canonicalAuthorId: Number(id), isPenName: false }),
+                })
+                if (!r.ok) {
+                    const b = await r.json().catch(() => ({}))
+                    throw new Error(`${b.error || r.statusText}`)
+                }
+            }
+            setSimilarSel(new Set())
+            // The link response is the CHILD's detail — reload THIS author.
+            const r = await fetch(`/api/authors/${id}`)
+            if (r.ok) setData(await r.json())
+        } catch (e) {
+            setSimilarError(String(e.message ?? e))
+        } finally {
+            setLinkingSimilar(false)
         }
     }
 
@@ -1374,6 +1412,36 @@ export default function AuthorDetail() {
                             </span>
                         ))}</>
                     )}
+                </div>
+            )}
+
+            {!data.linkedTo && data.similarAuthors?.length > 0 && (
+                <div className="callout" style={{ marginBottom: '0.75rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.75rem', flexWrap: 'wrap' }}>
+                        <strong>Similar author names</strong>
+                        <span className="subtle" style={{ fontSize: '0.85em' }}>
+                            Other, not-yet-linked authors whose name resembles this one. Tick any that are
+                            really <em>{data.name}</em> and link them under this author (their files move into this folder).
+                        </span>
+                    </div>
+                    {similarError && <p className="error" style={{ margin: '0.4rem 0 0' }}>Link failed: {similarError}</p>}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', margin: '0.5rem 0' }}>
+                        {data.similarAuthors.map(s => (
+                            <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <input type="checkbox"
+                                       checked={similarSel.has(s.id)}
+                                       disabled={linkingSimilar}
+                                       onChange={() => toggleSimilar(s.id)} />
+                                <Link to={`/authors/${s.id}`} onClick={e => e.stopPropagation()}>{s.name}</Link>
+                                <span className="subtle" style={{ fontSize: '0.8em' }}>
+                                    {s.openLibraryKey ? `${s.openLibraryKey} · ` : ''}{s.status} · match {s.score.toFixed(2)}
+                                </span>
+                            </label>
+                        ))}
+                    </div>
+                    <button onClick={linkSelectedSimilar} disabled={linkingSimilar || similarSel.size === 0}>
+                        {linkingSimilar ? 'Linking…' : `Link ${similarSel.size || ''} selected under this author`}
+                    </button>
                 </div>
             )}
 

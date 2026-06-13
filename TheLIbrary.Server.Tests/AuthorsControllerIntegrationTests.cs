@@ -146,6 +146,61 @@ public class AuthorsControllerIntegrationTests
     }
 
     [Fact]
+    public async Task Similar_Authors_Are_Suggested_And_Excludes_Self_And_Linked()
+    {
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Iain Banks", OpenLibraryKey = "OL1A" });        // current
+            db.Authors.Add(new Author { Id = 2, Name = "Iain M. Banks", OpenLibraryKey = "OL2A" });      // similar → suggested
+            db.Authors.Add(new Author { Id = 3, Name = "Iain Banks", OpenLibraryKey = "OL3A" });         // exact homonym → suggested
+            db.Authors.Add(new Author { Id = 4, Name = "Banks Iain (already linked)", LinkedToAuthorId = 99 }); // linked elsewhere → excluded
+            db.Authors.Add(new Author { Id = 99, Name = "Unrelated Person" });
+            db.Authors.Add(new Author { Id = 5, Name = "Charlotte Brontë" });                            // unrelated → excluded
+        });
+        using var client = factory.CreateClient();
+
+        var detail = await client.GetFromJsonAsync<AuthorsController.AuthorDetail>("/api/authors/1");
+        Assert.NotNull(detail!.SimilarAuthors);
+        var ids = detail.SimilarAuthors!.Select(s => s.Id).ToHashSet();
+        Assert.Contains(2, ids);
+        Assert.Contains(3, ids);
+        Assert.DoesNotContain(1, ids);   // not self
+        Assert.DoesNotContain(4, ids);   // already linked to another
+        Assert.DoesNotContain(5, ids);   // not similar
+        // Highest similarity first; exact homonym scores 1.0.
+        Assert.Equal(1.0, detail.SimilarAuthors!.First(s => s.Id == 3).Score, 3);
+    }
+
+    [Fact]
+    public async Task Linking_A_Similar_Author_Makes_This_Author_The_Canonical()
+    {
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Iain Banks", OpenLibraryKey = "OL1A" });
+            db.Authors.Add(new Author { Id = 2, Name = "Iain M. Banks", OpenLibraryKey = "OL2A" });
+        });
+        using var client = factory.CreateClient();
+
+        // The page links the child (2) under this author (1) as canonical.
+        var resp = await client.PutAsJsonAsync("/api/authors/2/link",
+            new AuthorsController.LinkAuthorRequest(1, false));
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        var child = await db.Authors.FindAsync(2);
+        Assert.Equal(1, child!.LinkedToAuthorId);
+        Assert.False(child.IsPenName);
+
+        // And 2 no longer shows up as a suggestion on 1's page (it's now linked).
+        var detail = await client.GetFromJsonAsync<AuthorsController.AuthorDetail>("/api/authors/1");
+        Assert.DoesNotContain(detail!.SimilarAuthors ?? new List<AuthorsController.SimilarAuthor>(), s => s.Id == 2);
+        Assert.Contains(detail.Alternates, a => a.Id == 2); // shown as a folded-in alternate instead
+    }
+
+    [Fact]
     public async Task SameName_Unmatched_Is_Grouped_And_Adopt_Match_Moves_The_File()
     {
         using var factory = new LibraryApiFactory();

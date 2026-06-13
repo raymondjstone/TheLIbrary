@@ -108,6 +108,17 @@ folder before saving the new link. The force-match dropdown still accepts books
 owned by any non-pen-name linked child author too, so a canonical's view can
 claim its duplicates' works without re-parenting them in the DB first.
 
+Near the top of the page, a **"Similar author names"** panel lists other,
+not-yet-linked authors whose name resembles this one — spelling/initials
+variants like "Iain Banks" / "Iain M. Banks" and exact homonyms — ranked by a
+Jaro-Winkler score (a SQL prefilter on a shared first/last name token keeps this
+off the full author table). Tick any that are really this author and **link them
+under this author as the canonical/primary** in one action; each link relocates
+the child's files into this author's folder (the standard duplicate-link merge).
+Authors already linked to someone, authors that are themselves a canonical with
+children, and this author itself are never suggested. The panel only appears on a
+top-level author page (a child/pen-name page isn't a primary).
+
 Below that, a **"Same-name authors' unmatched files"** section lists the
 unmatched files of every *other, distinct* author who shares this author's name
 (homonyms OpenLibrary has split across separate records / keys — these are NOT

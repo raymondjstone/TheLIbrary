@@ -389,7 +389,14 @@ public class AuthorsController : ControllerBase
         // author's name (homonyms split across separate Author rows / OL keys).
         // Shown below this author's own unmatched list so the user can adopt a
         // mis-filed copy onto one of THIS author's works. Null/empty when none.
-        IReadOnlyList<SameNameUnmatchedGroup>? SameNameUnmatched = null);
+        IReadOnlyList<SameNameUnmatchedGroup>? SameNameUnmatched = null,
+        // Other, not-yet-linked authors whose name is SIMILAR to this one
+        // (spelling/initials variants and exact homonyms) — candidates to link
+        // under this author as canonical. Highest similarity first.
+        IReadOnlyList<SimilarAuthor>? SimilarAuthors = null);
+
+    // A link suggestion: another author whose name resembles this one.
+    public sealed record SimilarAuthor(int Id, string Name, string? OpenLibraryKey, string Status, double Score);
 
     // One same-name author's unmatched files, for the "other authors with this
     // name" section. Grouped so the UI can collapse/expand per author.
@@ -703,13 +710,73 @@ public class AuthorsController : ControllerBase
             .ToList();
 
         var sameNameGroups = await BuildSameNameUnmatchedAsync(a, foldedIds, archiveLeaf, ct);
+        var similarAuthors = await BuildSimilarAuthorsAsync(a, ct);
 
         return new AuthorDetail(
             a.Id, a.Name, a.OpenLibraryKey, a.CalibreFolderName,
             a.Status.ToString(), a.ExclusionReason, a.Priority, a.LastSyncedAt, a.NextFetchAt, a.RefreshIntervalDays,
             a.Bio, a.Notes, a.NotifyOnNewBooks,
             books, unmatched, associatedSeries,
-            linkedTo, alternates, penNames, a.CalibreScannedAt, sameNameGroups);
+            linkedTo, alternates, penNames, a.CalibreScannedAt, sameNameGroups, similarAuthors);
+    }
+
+    // Confidence floor for offering an author as a "similar name" link suggestion.
+    private const double SimilarAuthorFloor = 0.84;
+
+    // Suggests other, not-yet-linked authors whose name resembles this one so
+    // the user can link them under this author (spelling/initials variants like
+    // "Iain Banks" / "Iain M. Banks", and exact homonyms). A SQL prefilter on a
+    // shared first/last name token keeps this off the full ~120k-row table; the
+    // survivors are Jaro-Winkler scored in memory. Only LINKABLE candidates are
+    // returned: not this author, not already linked to anyone, and not itself a
+    // canonical with children (the link endpoint refuses those).
+    private async Task<IReadOnlyList<SimilarAuthor>> BuildSimilarAuthorsAsync(Author current, CancellationToken ct)
+    {
+        // Only a top-level author can be a canonical target. A child / pen-name
+        // page doesn't offer link suggestions (it isn't the primary).
+        if (current.LinkedToAuthorId is not null) return Array.Empty<SimilarAuthor>();
+
+        var targetNorm = TitleNormalizer.NormalizeAuthor(current.Name);
+        if (string.IsNullOrWhiteSpace(targetNorm)) return Array.Empty<SimilarAuthor>();
+        var tokens = (current.Name ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length == 0) return Array.Empty<SimilarAuthor>();
+        var firstTok = tokens[0];
+        var lastTok = tokens[^1];
+
+        // Prefilter: same exact name, OR shares the surname (ends with " last"),
+        // OR shares the first name (starts with "first "). Capped so a very
+        // common surname can't pull the whole table into memory.
+        var candidates = await _db.Authors.AsNoTracking()
+            .Where(a => a.Id != current.Id
+                     && a.LinkedToAuthorId == null
+                     && a.Status != AuthorStatus.Excluded
+                     && (a.Name == current.Name
+                         || a.Name.EndsWith(" " + lastTok)
+                         || a.Name.StartsWith(firstTok + " ")))
+            .Select(a => new { a.Id, a.Name, a.OpenLibraryKey, a.Status })
+            .Take(2000)
+            .ToListAsync(ct);
+        if (candidates.Count == 0) return Array.Empty<SimilarAuthor>();
+
+        // Drop candidates that are themselves a canonical for other rows — the
+        // link endpoint rejects linking those without unlinking first.
+        var candidateIds = candidates.Select(c => c.Id).ToList();
+        var haveChildren = (await _db.Authors.AsNoTracking()
+                .Where(a => a.LinkedToAuthorId != null && candidateIds.Contains(a.LinkedToAuthorId!.Value))
+                .Select(a => a.LinkedToAuthorId!.Value)
+                .Distinct()
+                .ToListAsync(ct))
+            .ToHashSet();
+
+        return candidates
+            .Where(c => !haveChildren.Contains(c.Id))
+            .Select(c => new { c, Score = FuzzyScore.JaroWinkler(targetNorm, TitleNormalizer.NormalizeAuthor(c.Name)) })
+            .Where(x => x.Score >= SimilarAuthorFloor)
+            .OrderByDescending(x => x.Score)
+            .ThenBy(x => x.c.Name, StringComparer.OrdinalIgnoreCase)
+            .Take(15)
+            .Select(x => new SimilarAuthor(x.c.Id, x.c.Name, x.c.OpenLibraryKey, x.c.Status.ToString(), Math.Round(x.Score, 3)))
+            .ToList();
     }
 
     // Finds OTHER, distinct authors sharing this author's (normalized) name and
