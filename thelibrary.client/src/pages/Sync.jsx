@@ -210,6 +210,7 @@ export default function Sync() {
                                                 { key: 'metadataCache',      label: 'Cache OL metadata',     endpoint: '/api/jobs/metadata-cache/start' },
                                                 { key: 'flattenUnknown',     label: 'Flatten __unknown',     endpoint: '/api/jobs/flatten-unknown/start' },
                                                 { key: 'dedupeUnknown',      label: 'Dedupe __unknown',      endpoint: '/api/jobs/dedupe-unknown/start' },
+                                                { key: 'dedupeAuthorFiles',  label: 'Dedupe author files',   endpoint: '/api/jobs/dedupe-author-files/start' },
                                                 { key: 'promoteManualBooks', label: 'Promote manual books',  endpoint: '/api/jobs/promote-manual-books/start' },
                                                 { key: 'adoptUnknownAuthors',label: 'Adopt unknown authors', endpoint: '/api/jobs/adopt-unknown-authors/start' },
                                                 { key: 'refreshStarred',     label: 'Refresh starred authors', endpoint: '/api/jobs/refresh-starred/start' },

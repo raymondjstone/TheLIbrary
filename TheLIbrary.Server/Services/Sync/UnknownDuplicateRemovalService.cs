@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Services.Calibre;
@@ -96,137 +95,23 @@ public sealed class UnknownDuplicateRemovalService
 
         var unknownRoots = await UnknownFolderResolver.GetSourceRootsAsync(db, locations, ct);
 
-        // Pass 1: directory walk only — collect every file's size. Files with a
-        // unique size can't have a byte-identical twin, so they're never read.
-        // Zero-byte files are unambiguous junk (failed downloads with no content
-        // at all) and are deleted outright.
-        var bySize = new Dictionary<long, List<string>>();
-        var deletedPaths = new List<string>();
-        int filesScanned = 0, emptyDeleted = 0;
-        foreach (var unknownRoot in unknownRoots)
+        // Candidate set: every file under every quarantine root. The shared
+        // scanner does the size-group → SHA-256 → keeper work (the single
+        // definition of "byte-identical duplicate"). IgnoreInaccessible so one
+        // unreadable subfolder can't abort a 50k-file walk on the NAS mount.
+        var walkOpts = new EnumerationOptions
         {
-            ct.ThrowIfCancellationRequested();
-            if (!Directory.Exists(unknownRoot)) continue;
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+            AttributesToSkip = FileAttributes.ReparsePoint
+        };
+        var candidates = unknownRoots
+            .Where(Directory.Exists)
+            .SelectMany(r => Directory.EnumerateFiles(r, "*", walkOpts));
 
-            // IgnoreInaccessible: one unreadable subfolder must not abort the
-            // walk of a 50k+ file quarantine on the NAS mount.
-            var walkOpts = new EnumerationOptions
-            {
-                RecurseSubdirectories = true,
-                IgnoreInaccessible = true,
-                AttributesToSkip = FileAttributes.ReparsePoint
-            };
-            foreach (var path in Directory.EnumerateFiles(unknownRoot, "*", walkOpts))
-            {
-                ct.ThrowIfCancellationRequested();
-                filesScanned++;
-                if (filesScanned % 1000 == 0)
-                    _currentMessage = $"Scanned {filesScanned} file(s)";
-                long size;
-                try { size = new FileInfo(path).Length; }
-                catch (Exception ex)
-                {
-                    _log.LogWarning(ex, "Dedupe: could not stat {Path}", path);
-                    continue;
-                }
-                if (size == 0)
-                {
-                    try
-                    {
-                        File.Delete(path);
-                        deletedPaths.Add(path);
-                        emptyDeleted++;
-                        _log.LogInformation("Dedupe: deleted zero-byte file {Path}", path);
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.LogWarning(ex, "Dedupe: could not delete zero-byte file {Path}", path);
-                    }
-                    continue;
-                }
-                if (!bySize.TryGetValue(size, out var list)) bySize[size] = list = new List<string>();
-                list.Add(path);
-            }
-        }
-
-        // Pass 2: hash only the same-size groups and split them by content.
-        int filesHashed = 0, hashFailures = 0, duplicateGroups = 0, filesDeleted = 0;
-        int lookalikes = 0, lookalikesLogged = 0;
-        long bytesFreed = 0;
-        foreach (var (size, paths) in bySize.Where(kv => kv.Value.Count > 1))
-        {
-            ct.ThrowIfCancellationRequested();
-
-            var byHash = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-            foreach (var path in paths)
-            {
-                ct.ThrowIfCancellationRequested();
-                filesHashed++;
-                _currentMessage = $"Hashing candidate {filesHashed}: {Path.GetFileName(path)}";
-                string hash;
-                try
-                {
-                    await using var stream = File.OpenRead(path);
-                    hash = Convert.ToHexString(await SHA256.HashDataAsync(stream, ct));
-                }
-                catch (Exception ex)
-                {
-                    hashFailures++;
-                    _log.LogWarning(ex, "Dedupe: could not hash {Path}", path);
-                    continue;
-                }
-                if (!byHash.TryGetValue(hash, out var list)) byHash[hash] = list = new List<string>();
-                list.Add(path);
-            }
-
-            // Diagnostic: same filename + same size but different bytes is the
-            // classic "looks like a duplicate but isn't one" case (re-downloads
-            // of the same book repackage the zip, so the bytes differ). Surface
-            // a sample in the log so a zero-deletion run over a quarantine full
-            // of NEAR-duplicates is explainable without guesswork.
-            if (byHash.Count > 1)
-            {
-                var sameNameDifferentBytes = byHash
-                    .SelectMany(kv => kv.Value, (kv, path) => (Hash: kv.Key, Path: path))
-                    .GroupBy(x => Path.GetFileName(x.Path), StringComparer.OrdinalIgnoreCase)
-                    .Where(g => g.Select(x => x.Hash).Distinct(StringComparer.Ordinal).Count() > 1);
-                foreach (var g in sameNameDifferentBytes)
-                {
-                    lookalikes++;
-                    if (lookalikesLogged < 20)
-                    {
-                        lookalikesLogged++;
-                        _log.LogInformation(
-                            "Dedupe: same name and size but different contents — NOT byte-identical, kept: {Paths}",
-                            string.Join(" | ", g.Select(x => x.Path)));
-                    }
-                }
-            }
-
-            foreach (var group in byHash.Values.Where(g => g.Count > 1))
-            {
-                duplicateGroups++;
-                var keep = ChooseKeeper(group);
-                foreach (var dup in group.Where(p => !string.Equals(p, keep, StringComparison.OrdinalIgnoreCase)))
-                {
-                    ct.ThrowIfCancellationRequested();
-                    try
-                    {
-                        File.Delete(dup);
-                        deletedPaths.Add(dup);
-                        filesDeleted++;
-                        bytesFreed += size;
-                        // Information, not Debug — deletions must be auditable
-                        // in the default container log.
-                        _log.LogInformation("Dedupe: deleted {Dup} (identical to {Keep})", dup, keep);
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.LogWarning(ex, "Dedupe: could not delete {Path}", dup);
-                    }
-                }
-            }
-        }
+        var scan = await ContentDuplicateScanner.ScanAndDeleteAsync(
+            candidates, _log, msg => _currentMessage = msg, ct);
+        var deletedPaths = scan.DeletedPaths;
 
         // Drop DB rows that pointed at deleted files. Chunked so the IN clause
         // stays a sane size when a run removes thousands of copies.
@@ -249,23 +134,16 @@ public sealed class UnknownDuplicateRemovalService
             await db.SaveChangesAsync(ct);
 
         var summary = new UnknownDuplicateRemovalSummary(
-            filesScanned, filesHashed, hashFailures, duplicateGroups, filesDeleted, emptyDeleted, bytesFreed, dbRowsRemoved);
+            scan.FilesScanned, scan.FilesHashed, scan.HashFailures, scan.DuplicateGroups,
+            scan.FilesDeleted, scan.EmptyFilesDeleted, scan.BytesFreed, dbRowsRemoved);
 
         _log.LogInformation(
             "Dedupe __unknown job done. Scanned={Scanned} Hashed={Hashed} HashFailures={Failures} Groups={Groups} Deleted={Deleted} EmptyDeleted={Empty} BytesFreed={Bytes} DbRows={Rows} NearDuplicates={Lookalikes}",
-            filesScanned, filesHashed, hashFailures, duplicateGroups, filesDeleted, emptyDeleted, bytesFreed, dbRowsRemoved, lookalikes);
-        _currentMessage = $"Done — {filesDeleted} duplicate(s) removed in {duplicateGroups} group(s), {emptyDeleted} empty file(s) deleted"
-            + (hashFailures > 0 ? $", {hashFailures} file(s) unreadable" : "");
+            scan.FilesScanned, scan.FilesHashed, scan.HashFailures, scan.DuplicateGroups,
+            scan.FilesDeleted, scan.EmptyFilesDeleted, scan.BytesFreed, dbRowsRemoved, scan.NearDuplicates);
+        _currentMessage = $"Done — {scan.FilesDeleted} duplicate(s) removed in {scan.DuplicateGroups} group(s), {scan.EmptyFilesDeleted} empty file(s) deleted"
+            + (scan.HashFailures > 0 ? $", {scan.HashFailures} file(s) unreadable" : "");
 
         return summary;
     }
-
-    // The copy that survives: shortest full path first (un-suffixed originals
-    // and shallower locations win), alphabetical as the tiebreak so the
-    // outcome is deterministic.
-    internal static string ChooseKeeper(IReadOnlyList<string> group)
-        => group
-            .OrderBy(p => p.Length)
-            .ThenBy(p => p, StringComparer.OrdinalIgnoreCase)
-            .First();
 }

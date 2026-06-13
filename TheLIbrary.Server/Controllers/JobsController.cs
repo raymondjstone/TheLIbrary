@@ -17,6 +17,7 @@ public class JobsController : ControllerBase
     private readonly OpenLibraryMetadataCacheService _metadataCache;
     private readonly UnknownFolderFlattenerService _flattenUnknown;
     private readonly UnknownDuplicateRemovalService _dedupeUnknown;
+    private readonly AuthorDuplicateRemovalService _dedupeAuthorFiles;
     private readonly ManualBookPromotionService _promoteManualBooks;
     private readonly UnknownAuthorAdoptionService _adoptUnknownAuthors;
     private readonly StarredAuthorRefreshService _refreshStarred;
@@ -40,6 +41,7 @@ public class JobsController : ControllerBase
         OpenLibraryMetadataCacheService metadataCache,
         UnknownFolderFlattenerService flattenUnknown,
         UnknownDuplicateRemovalService dedupeUnknown,
+        AuthorDuplicateRemovalService dedupeAuthorFiles,
         ManualBookPromotionService promoteManualBooks,
         UnknownAuthorAdoptionService adoptUnknownAuthors,
         StarredAuthorRefreshService refreshStarred,
@@ -62,6 +64,7 @@ public class JobsController : ControllerBase
         _metadataCache = metadataCache;
         _flattenUnknown = flattenUnknown;
         _dedupeUnknown = dedupeUnknown;
+        _dedupeAuthorFiles = dedupeAuthorFiles;
         _promoteManualBooks = promoteManualBooks;
         _adoptUnknownAuthors = adoptUnknownAuthors;
         _refreshStarred = refreshStarred;
@@ -99,6 +102,7 @@ public class JobsController : ControllerBase
             metadataCache = new { isRunning = _metadataCache.IsRunning, message = _metadataCache.CurrentMessage },
             flattenUnknown = new { isRunning = _flattenUnknown.IsRunning, message = _flattenUnknown.CurrentMessage },
             dedupeUnknown = new { isRunning = _dedupeUnknown.IsRunning, message = _dedupeUnknown.CurrentMessage },
+            dedupeAuthorFiles = new { isRunning = _dedupeAuthorFiles.IsRunning, message = _dedupeAuthorFiles.CurrentMessage },
             promoteManualBooks = new { isRunning = _promoteManualBooks.IsRunning, message = _promoteManualBooks.CurrentMessage },
             adoptUnknownAuthors = new { isRunning = _adoptUnknownAuthors.IsRunning, message = _adoptUnknownAuthors.CurrentMessage },
             refreshStarred = new { isRunning = _refreshStarred.IsRunning, message = _refreshStarred.CurrentMessage },
@@ -171,6 +175,14 @@ public class JobsController : ControllerBase
     public IActionResult StartDedupeUnknown()
     {
         if (!_dedupeUnknown.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("dedupe-author-files/start")]
+    public IActionResult StartDedupeAuthorFiles()
+    {
+        if (!_dedupeAuthorFiles.TryStart(_lifetime.ApplicationStopping, out var err))
             return Conflict(new { error = err });
         return Accepted();
     }

@@ -31,6 +31,7 @@ public static class ScheduleJobIds
     public const string CacheOpenLibraryMetadata = "cache-openlibrary-metadata";
     public const string FlattenUnknown = "flatten-unknown";
     public const string DedupeUnknown = "dedupe-unknown";
+    public const string DedupeAuthorFiles = "dedupe-author-files";
     public const string PromoteManualBooks = "promote-manual-books";
     public const string AdoptUnknownAuthors = "adopt-unknown-authors";
     public const string ArchiveForeign = "archive-foreign";
@@ -45,9 +46,9 @@ public static class ScheduleJobIds
         Sync, Seed, AuthorUpdates, Incoming, ReprocessUnknown, RefreshWorks,
         OrganizeSeries, Unzip, DisambiguateFolders, SameNameAuthors,
         StarPhysicalAuthors, CacheOpenLibraryMetadata, FlattenUnknown,
-        DedupeUnknown, PromoteManualBooks, AdoptUnknownAuthors, ArchiveForeign,
-        MergeLinkedAuthors, CheckIntegrity, PruneStaleFiles, ContentScan,
-        AssignAuthors
+        DedupeUnknown, DedupeAuthorFiles, PromoteManualBooks, AdoptUnknownAuthors,
+        ArchiveForeign, MergeLinkedAuthors, CheckIntegrity, PruneStaleFiles,
+        ContentScan, AssignAuthors
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -74,6 +75,10 @@ public static class ScheduleJobIds
             // keeping one copy per content hash. Destructive, so it ships
             // disabled — the user opts in on the Schedules page.
             [DedupeUnknown] = new() { Cron = "30 9 * * *", Enabled = false },
+            // Delete byte-identical duplicate files WITHIN each author folder
+            // (one keeper), for authors with unmatched files. Daily at a quiet
+            // hour; same duplicate determination as the __unknown dedupe.
+            [DedupeAuthorFiles] = new() { Cron = "0 4 * * *", Enabled = true },
             // Search OL for each manually-catalogued book and promote/merge it
             // onto the real work once OL lists it. Capped per run (OL searches),
             // daily at a quiet half-hour. On by default — it only ever upgrades

@@ -904,6 +904,25 @@ Enable it on the **Schedules** page (`dedupe-unknown` job, default cron
 `30 9 * * *`) — or run it once manually via **Run now** or the Sync page's
 **Dedupe __unknown** button (`POST /api/jobs/dedupe-unknown/start`).
 
+## Dedupe-author-files job
+
+On by default, daily at 04:00. For every author that has unmatched files, it
+deletes byte-identical duplicate copies **within that author's own folder**,
+keeping one. Scope is strictly per author folder — each folder is scanned in
+isolation, so two different authors who happen to hold the same file are
+**never** compared and nothing crosses an author boundary.
+
+The duplicate determination is the *same shared scanner* as the `dedupe-unknown`
+job (size-group → SHA-256 → one keeper; zero-byte files deleted as junk), so
+"duplicate" means byte-identical and nothing less. The one difference is keeper
+preference: a copy that's linked to a Book wins over an unlinked one (then
+shortest path), so a matched book never loses its only file to a duplicate
+deletion. DB rows (`LocalBookFiles`, `BookContentScans`) for deleted paths are
+pruned. NAS-safe: aborts if no library root is mounted.
+
+Run it manually via the Sync page's **Dedupe author files** button
+(`POST /api/jobs/dedupe-author-files/start`) or the Schedules page's **Run now**.
+
 ## Promote-manual-books job
 
 On by default, daily at 07:30. Searches OpenLibrary for every manually-
@@ -1514,6 +1533,7 @@ on every startup.
 | `cache-openlibrary-metadata` | `30 10 * * *` | Backfill missing subjects and cache large OpenLibrary covers for existing books |
 | `flatten-unknown` | `0 9 * * *` (disabled by default) | Flatten the quarantine fully: move every file under each quarantine folder up to the `__unknown` root and remove the emptied folder tree, so the quarantine is loose files only. See [the quarantine is flat](#the-__unknown-quarantine-is-flat) |
 | `dedupe-unknown` | `30 9 * * *` (disabled by default) | Delete byte-identical duplicate files inside the quarantine (size-grouped, then SHA-256-verified), keeping the shortest-path copy of each. See [Dedupe-unknown job](#dedupe-unknown-job) |
+| `dedupe-author-files` | `0 4 * * *` | For every author with unmatched files, delete byte-identical duplicate copies **within that author's own folder** (one keeper), never comparing across different author folders. Same duplicate determination as `dedupe-unknown`; prefers keeping a matched book's copy. See [Dedupe-author-files job](#dedupe-author-files-job) |
 | `promote-manual-books` | `30 7 * * *` | Search OpenLibrary for each manually-catalogued book and link it to the real work once OL lists it — in place, or merged into the author's existing row for that work. See [Promote-manual-books job](#promote-manual-books-job) |
 | `check-integrity` | `0 12 * * *` (disabled by default) | Open/convert every matched ebook file and flag any that won't open or have fewer than 20 pages onto the Damaged page. See [Book integrity check](#book-integrity-check) |
 | `prune-stale-files` | `0 20 * * *` | Remove leftover folder-pointer `LocalBookFile` rows (empty/missing title folders) so they stop showing as bogus duplicates, AND delete every recursively-empty directory left behind under each mounted root. NAS-guarded: only folder-shaped rows, only directories with no files beneath them, only when the library root is mounted; library/quarantine/archive/incoming roots are never removed |

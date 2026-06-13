@@ -131,6 +131,7 @@ public class SchedulesController : ControllerBase
             ScheduleJobIds.CacheOpenLibraryMetadata => methodName == "RunCacheOpenLibraryMetadata",
             ScheduleJobIds.FlattenUnknown => methodName == "RunFlattenUnknown",
             ScheduleJobIds.DedupeUnknown => methodName == "RunDedupeUnknown",
+            ScheduleJobIds.DedupeAuthorFiles => methodName == "RunDedupeAuthorFiles",
             ScheduleJobIds.PromoteManualBooks => methodName == "RunPromoteManualBooks",
             ScheduleJobIds.AdoptUnknownAuthors => methodName == "RunAdoptUnknownAuthors",
             ScheduleJobIds.ArchiveForeign => methodName == "RunArchiveForeign",

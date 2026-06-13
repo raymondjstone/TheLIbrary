@@ -147,18 +147,23 @@ public class UnknownDuplicateRemovalServiceTests
     [Fact]
     public void ChooseKeeper_Prefers_Shortest_Path_Then_Alphabetical()
     {
-        Assert.Equal(@"C:\u\a.epub", UnknownDuplicateRemovalService.ChooseKeeper(new[]
+        Assert.Equal(@"C:\u\a.epub", ContentDuplicateScanner.ChooseKeeper(new[]
         {
             @"C:\u\sub\a.epub",
             @"C:\u\a.epub",
             @"C:\u\a_1.epub",
         }));
 
-        Assert.Equal(@"C:\u\a.epub", UnknownDuplicateRemovalService.ChooseKeeper(new[]
+        Assert.Equal(@"C:\u\a.epub", ContentDuplicateScanner.ChooseKeeper(new[]
         {
             @"C:\u\b.epub",
             @"C:\u\a.epub",
         }));
+
+        // A preferred path wins over a shorter one (keeps a matched book's file).
+        Assert.Equal(@"C:\u\sub\a.epub", ContentDuplicateScanner.ChooseKeeper(
+            new[] { @"C:\u\a.epub", @"C:\u\sub\a.epub" },
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { @"C:\u\sub\a.epub" }));
     }
 
     private static ServiceProvider BuildProvider(string dbName)
