@@ -12,22 +12,23 @@ namespace TheLibrary.Server.Tests;
 public class UnknownFolderFlattenerServiceTests
 {
     [Fact]
-    public async Task Flatten_Moves_Nested_Files_Up_And_Removes_Empty_Subdirs_And_Rewrites_Db_Rows()
+    public async Task Flatten_Moves_All_Files_To_The_Quarantine_Root_And_Removes_Author_Folders()
     {
         var root = Path.Combine(Path.GetTempPath(), $"flatten-tests-{Guid.NewGuid():N}");
         var dbName = $"flatten-tests-{Guid.NewGuid():N}";
         try
         {
-            var authorDir = Path.Combine(root, "__unknown", "Quigley Fenwick");
+            var unknownRoot = Path.Combine(root, "__unknown");
+            var authorDir = Path.Combine(unknownRoot, "Quigley Fenwick");
             var nestedDir = Path.Combine(authorDir, "Some Title");
             var deeperDir = Path.Combine(nestedDir, "extras");
             Directory.CreateDirectory(deeperDir);
             var nestedFile = Path.Combine(nestedDir, "story.epub");
             var deeperFile = Path.Combine(deeperDir, "bonus.epub");
-            var flatFile = Path.Combine(authorDir, "already-flat.epub");
+            var folderFlatFile = Path.Combine(authorDir, "already-flat.epub");
             File.WriteAllText(nestedFile, "x");
             File.WriteAllText(deeperFile, "x");
-            File.WriteAllText(flatFile, "x");
+            File.WriteAllText(folderFlatFile, "x");
 
             var services = new ServiceCollection();
             services.AddDbContext<LibraryDbContext>(opt => opt.UseInMemoryDatabase(dbName));
@@ -42,10 +43,7 @@ public class UnknownFolderFlattenerServiceTests
                 });
                 db.LocalBookFiles.Add(new LocalBookFile
                 {
-                    Id = 1,
-                    AuthorFolder = "Quigley Fenwick",
-                    TitleFolder = "Some Title",
-                    FullPath = nestedFile
+                    Id = 1, AuthorFolder = "Quigley Fenwick", TitleFolder = "Some Title", FullPath = nestedFile
                 });
                 await db.SaveChangesAsync();
             }
@@ -62,18 +60,19 @@ public class UnknownFolderFlattenerServiceTests
             var result = sut.LastResult;
             Assert.NotNull(result);
             Assert.Equal(1, result!.AuthorFoldersScanned);
-            Assert.Equal(2, result.FilesMoved);
-            Assert.Equal(2, result.DirectoriesRemoved);
+            Assert.Equal(3, result.FilesMoved);             // all three lifted to the root
+            Assert.Equal(3, result.DirectoriesRemoved);     // extras, Some Title, Quigley Fenwick
             Assert.Equal(1, result.DbRowsUpdated);
 
-            Assert.True(File.Exists(Path.Combine(authorDir, "story.epub")));
-            Assert.True(File.Exists(Path.Combine(authorDir, "bonus.epub")));
-            Assert.True(File.Exists(flatFile));
-            Assert.False(Directory.Exists(nestedDir));
+            // Everything now sits flat in the quarantine root.
+            Assert.True(File.Exists(Path.Combine(unknownRoot, "story.epub")));
+            Assert.True(File.Exists(Path.Combine(unknownRoot, "bonus.epub")));
+            Assert.True(File.Exists(Path.Combine(unknownRoot, "already-flat.epub")));
+            Assert.False(Directory.Exists(authorDir));      // the author folder is gone
 
             await using var verify = CreateDb(dbName);
             var row = await verify.LocalBookFiles.SingleAsync(f => f.Id == 1);
-            Assert.Equal(Path.Combine(authorDir, "story.epub"), row.FullPath);
+            Assert.Equal(Path.Combine(unknownRoot, "story.epub"), row.FullPath);
             Assert.Equal("story", row.TitleFolder);
         }
         finally
@@ -89,7 +88,8 @@ public class UnknownFolderFlattenerServiceTests
         var dbName = $"flatten-tests-{Guid.NewGuid():N}";
         try
         {
-            var authorDir = Path.Combine(root, "__unknown", "Quigley Fenwick");
+            var unknownRoot = Path.Combine(root, "__unknown");
+            var authorDir = Path.Combine(unknownRoot, "Quigley Fenwick");
             var nestedDir = Path.Combine(authorDir, "Some Title");
             Directory.CreateDirectory(nestedDir);
             File.WriteAllText(Path.Combine(authorDir, "story.epub"), "flat");
@@ -118,9 +118,17 @@ public class UnknownFolderFlattenerServiceTests
             for (var i = 0; i < 200 && sut.IsRunning; i++) await Task.Delay(50);
             Assert.False(sut.IsRunning);
 
-            Assert.Equal("flat", File.ReadAllText(Path.Combine(authorDir, "story.epub")));
-            Assert.Equal("nested", File.ReadAllText(Path.Combine(authorDir, "story_1.epub")));
-            Assert.False(Directory.Exists(nestedDir));
+            // Both copies land flat in the root under distinct names — neither lost.
+            Assert.True(File.Exists(Path.Combine(unknownRoot, "story.epub")));
+            Assert.True(File.Exists(Path.Combine(unknownRoot, "story_1.epub")));
+            var contents = new[]
+            {
+                File.ReadAllText(Path.Combine(unknownRoot, "story.epub")),
+                File.ReadAllText(Path.Combine(unknownRoot, "story_1.epub")),
+            };
+            Assert.Contains("flat", contents);
+            Assert.Contains("nested", contents);
+            Assert.False(Directory.Exists(authorDir));
         }
         finally
         {

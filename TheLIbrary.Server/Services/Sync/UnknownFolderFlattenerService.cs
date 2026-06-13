@@ -11,13 +11,16 @@ public sealed record UnknownFolderFlattenSummary(
     int DirectoriesRemoved,
     int DbRowsUpdated);
 
-// Scheduled job: walks every author-level folder inside __unknown across all
-// enabled library locations and moves any files nested in subdirectories up to
-// the author folder root, then removes the now-empty subdirectories. LBF rows
-// whose FullPath referenced a moved file are rewritten so the DB stays in sync.
+// Scheduled job: makes the __unknown quarantine FLAT. For every folder under a
+// quarantine root it moves all contained files (recursively) up to the
+// quarantine ROOT and then removes the now-empty folder tree — so the
+// quarantine ends up as loose files with no author/title subfolders at all.
+// LBF rows whose FullPath referenced a moved file are rewritten so the DB stays
+// in sync (quarantine files usually have none).
 //
-// Off by default — the user opts in per environment because some setups
-// intentionally use subfolders inside __unknown.
+// The quarantine is a flat bucket by policy: the reprocess-unknown job derives
+// each file's author from its name/metadata, so folder grouping is worthless
+// and only clutters the tree.
 public sealed class UnknownFolderFlattenerService
 {
     private readonly IServiceScopeFactory _scopeFactory;
@@ -88,7 +91,7 @@ public sealed class UnknownFolderFlattenerService
                 ct.ThrowIfCancellationRequested();
                 authorFoldersScanned++;
                 _currentMessage = $"Flattening folder {authorFoldersScanned}: {Path.GetFileName(authorDir)}";
-                var (moved, removed) = FlattenAuthorFolder(authorDir, pathRewrites);
+                var (moved, removed) = FlattenFolderToRoot(unknownRoot, authorDir, pathRewrites);
                 filesMoved += moved;
                 dirsRemoved += removed;
             }
@@ -123,22 +126,21 @@ public sealed class UnknownFolderFlattenerService
         return summary;
     }
 
-    // Walks the author folder, moving every file in a subdirectory up to the
-    // root, then deletes the now-empty subdirectories bottom-up. Records each
-    // (oldPath → newPath) rewrite so the DB pass can update matching LBF rows.
-    private (int filesMoved, int dirsRemoved) FlattenAuthorFolder(
-        string authorDir,
+    // Moves every file under `folder` (recursively) up to the quarantine ROOT,
+    // then removes the now-empty folder tree (the folder itself included).
+    // Records each (oldPath → newPath) rewrite so the DB pass can update matching
+    // LBF rows. A file that fails to move leaves its directory non-empty, so that
+    // directory is left in place (never recursively deleted) and retried next run.
+    private (int filesMoved, int dirsRemoved) FlattenFolderToRoot(
+        string unknownRoot,
+        string folder,
         IDictionary<string, string> pathRewrites)
     {
         int filesMoved = 0, dirsRemoved = 0;
 
-        var nestedFiles = Directory.EnumerateFiles(authorDir, "*", SearchOption.AllDirectories)
-            .Where(p => !string.Equals(Path.GetDirectoryName(p), authorDir, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        foreach (var src in nestedFiles)
+        foreach (var src in Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories).ToList())
         {
-            var dest = UniqueFilePath(Path.Combine(authorDir, Path.GetFileName(src)));
+            var dest = UniqueFilePath(Path.Combine(unknownRoot, Path.GetFileName(src)));
             try
             {
                 File.Move(src, dest);
@@ -151,11 +153,14 @@ public sealed class UnknownFolderFlattenerService
             }
         }
 
-        var subdirs = Directory.EnumerateDirectories(authorDir, "*", SearchOption.AllDirectories)
+        // Remove emptied directories bottom-up, the folder itself last. Only ever
+        // deletes a directory with no remaining entries — a file that didn't move
+        // keeps its folder alive rather than being deleted with it.
+        var dirs = Directory.EnumerateDirectories(folder, "*", SearchOption.AllDirectories)
+            .Append(folder)
             .OrderByDescending(p => p.Length)
             .ToList();
-
-        foreach (var dir in subdirs)
+        foreach (var dir in dirs)
         {
             try
             {
@@ -167,7 +172,7 @@ public sealed class UnknownFolderFlattenerService
             }
             catch (Exception ex)
             {
-                _log.LogWarning(ex, "Flatten: could not remove empty subdir {Dir}", dir);
+                _log.LogWarning(ex, "Flatten: could not remove empty dir {Dir}", dir);
             }
         }
 

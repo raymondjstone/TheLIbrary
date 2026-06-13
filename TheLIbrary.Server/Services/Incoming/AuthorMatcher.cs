@@ -268,24 +268,42 @@ public sealed class AuthorMatcher
     }
 
     // Yields the normalized name plus last-token-to-front and first-token-to-
-    // back rotations. For two-token names both rotations collapse to the same
-    // reversed string; three-plus token names cover both "First [Middle] Last"
-    // and "Last First [Middle]" layouts.
+    // back rotations, an initials-run split, and a first-name-to-initial form.
+    // For two-token names both rotations collapse to the same reversed string;
+    // three-plus token names cover both "First [Middle] Last" and
+    // "Last First [Middle]" layouts.
     public static IEnumerable<string> ExpandNameVariants(string normalized)
     {
         if (string.IsNullOrWhiteSpace(normalized)) yield break;
+        var seen = new HashSet<string>(StringComparer.Ordinal) { normalized };
         yield return normalized;
 
         var parts = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length < 2) yield break;
 
         var lastFirst = parts[^1] + " " + string.Join(' ', parts[..^1]);
-        if (lastFirst != normalized) yield return lastFirst;
+        if (seen.Add(lastFirst)) yield return lastFirst;
 
         if (parts.Length > 2)
         {
             var firstLast = string.Join(' ', parts[1..]) + " " + parts[0];
-            if (firstLast != normalized && firstLast != lastFirst) yield return firstLast;
+            if (seen.Add(firstLast)) yield return firstLast;
+        }
+
+        // "ae van vogt" — a leading initials RUN with the dots dropped can
+        // never equal the catalogue's "a e van vogt"; space it out.
+        if (parts[0].Length is 2 or 3 && parts[0].All(char.IsLetter))
+        {
+            var spacedRun = string.Join(' ', parts[0].ToCharArray()) + " " + string.Join(' ', parts[1..]);
+            if (seen.Add(spacedRun)) yield return spacedRun;
+        }
+
+        // "lyman frank baum" — the catalogue often holds the initialed form
+        // ("l frank baum"); try the first name as a bare initial.
+        if (parts.Length > 2 && parts[0].Length > 2)
+        {
+            var initialed = parts[0][0] + " " + string.Join(' ', parts[1..]);
+            if (seen.Add(initialed)) yield return initialed;
         }
     }
 }

@@ -48,6 +48,35 @@ public class StaleFileCleanupServiceTests
     }
 
     [Fact]
+    public async Task Removes_Empty_Directories_But_Keeps_Nonempty_And_Protected_Ones()
+    {
+        var fs = new FakeFileSystem();
+        fs.CreateDirectory("/lib");                               // mounted root (protected)
+        fs.AddDirectoryChild("/lib", "/lib/A");                   // author folder
+        fs.AddDirectoryChild("/lib/A", "/lib/A/EmptyTitle");      // empty → remove
+        fs.AddDirectoryChild("/lib/A", "/lib/A/RealTitle");       // holds a book → keep
+        fs.ExistingFiles.Add("/lib/A/RealTitle/book.epub");
+        fs.FilesByDirectory["/lib/A/RealTitle"] = new List<string> { "/lib/A/RealTitle/book.epub" };
+        fs.AddDirectoryChild("/lib", "/lib/__unknown");           // empty but PROTECTED quarantine
+
+        var dbName = NewDb();
+        await using (var db = CreateDb(dbName))
+        {
+            db.LibraryLocations.Add(new LibraryLocation { Path = "/lib", Enabled = true });
+            await db.SaveChangesAsync();
+        }
+
+        var summary = await CreateService(fs, dbName).RunForTestsAsync(CancellationToken.None);
+
+        Assert.Equal(1, summary.EmptyFoldersRemoved);
+        Assert.False(fs.DirectoryExists("/lib/A/EmptyTitle")); // empty leaf gone
+        Assert.True(fs.DirectoryExists("/lib/A/RealTitle"));   // holds a file
+        Assert.True(fs.DirectoryExists("/lib/A"));             // still has RealTitle
+        Assert.True(fs.DirectoryExists("/lib/__unknown"));     // protected
+        Assert.True(fs.DirectoryExists("/lib"));               // root never removed
+    }
+
+    [Fact]
     public async Task Aborts_When_No_Library_Root_Is_Mounted()
     {
         var fs = new FakeFileSystem(); // "/lib" is NOT created → not mounted

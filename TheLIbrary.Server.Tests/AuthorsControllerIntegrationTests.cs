@@ -146,6 +146,125 @@ public class AuthorsControllerIntegrationTests
     }
 
     [Fact]
+    public async Task SameName_Unmatched_Is_Grouped_And_Adopt_Match_Moves_The_File()
+    {
+        using var factory = new LibraryApiFactory();
+        var root = Path.Combine(Path.GetTempPath(), $"thelibrary-samename-{Guid.NewGuid():N}");
+        // Two DISTINCT authors both named "John Quill" (different OL keys, folders).
+        // The file sits under author 2's folder; author 1 owns the matching work.
+        var srcDir = Path.Combine(root, "John Quill (2)", "Some Title");
+        Directory.CreateDirectory(srcDir);
+        var srcFile = Path.Combine(srcDir, "book.epub");
+        await File.WriteAllTextAsync(srcFile, "x");
+
+        try
+        {
+            await SeedAsync(factory, db =>
+            {
+                db.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "Default", Path = root, Enabled = true, CreatedAt = DateTime.UtcNow });
+                db.Authors.Add(new Author { Id = 1, Name = "John Quill", OpenLibraryKey = "OL1A", CalibreFolderName = "John Quill" });
+                db.Authors.Add(new Author { Id = 2, Name = "John Quill", OpenLibraryKey = "OL2A", CalibreFolderName = "John Quill (2)" });
+                db.Books.Add(new Book { Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL10W", Title = "Some Title", NormalizedTitle = "some title" });
+                db.LocalBookFiles.Add(new LocalBookFile { Id = 100, AuthorId = 2, BookId = null, AuthorFolder = "John Quill (2)", TitleFolder = "Some Title", FullPath = srcFile });
+            });
+            using var client = factory.CreateClient();
+
+            // The same-name file is grouped under author 2 on author 1's page.
+            var detail = await client.GetFromJsonAsync<AuthorsController.AuthorDetail>("/api/authors/1");
+            Assert.NotNull(detail!.SameNameUnmatched);
+            var group = Assert.Single(detail.SameNameUnmatched!);
+            Assert.Equal(2, group.AuthorId);
+            Assert.Equal("OL2A", group.OpenLibraryKey);
+            Assert.Single(group.Files);
+            Assert.Empty(detail.UnmatchedLocal); // author 1's own list is unaffected
+
+            // Adopt the file onto author 1's work → moved into author 1's folder + linked.
+            var resp = await client.PostAsJsonAsync("/api/authors/1/same-name/100/match",
+                new AuthorsController.MatchLocalFileRequest(10));
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+            using var scope = factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+            var file = await db.LocalBookFiles.FindAsync(100);
+            Assert.Equal(1, file!.AuthorId);
+            Assert.Equal(10, file.BookId);
+            Assert.Contains(Path.Combine("John Quill", "Some Title"), file.FullPath);
+            Assert.True(File.Exists(file.FullPath));
+            Assert.False(File.Exists(srcFile)); // moved off the source author's folder
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SameName_AdoptMatch_Rejects_File_From_A_Different_Named_Author()
+    {
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "John Quill", OpenLibraryKey = "OL1A" });
+            db.Authors.Add(new Author { Id = 2, Name = "Someone Else", OpenLibraryKey = "OL2A" });
+            db.Books.Add(new Book { Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL10W", Title = "T", NormalizedTitle = "t" });
+            db.LocalBookFiles.Add(new LocalBookFile { Id = 100, AuthorId = 2, BookId = null, TitleFolder = "T", FullPath = "/lib/Someone Else/T/book.epub" });
+        });
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsJsonAsync("/api/authors/1/same-name/100/match",
+            new AuthorsController.MatchLocalFileRequest(10));
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode); // not a same-name author
+    }
+
+    [Fact]
+    public async Task Author_Detail_Does_Not_Treat_Empty_Folder_Rows_As_Owned_Books()
+    {
+        using var factory = new LibraryApiFactory();
+        var root = Path.Combine(Path.GetTempPath(), $"thelibrary-phantom-{Guid.NewGuid():N}");
+        // Book 10: a real ebook file on disk. Book 11: its only LocalBookFile
+        // points at an EMPTY title folder (the classic leftover after a move).
+        var realDir = Path.Combine(root, "Author", "Real Title");
+        var emptyDir = Path.Combine(root, "Author", "Empty Title");
+        Directory.CreateDirectory(realDir);
+        Directory.CreateDirectory(emptyDir);
+        var realFile = Path.Combine(realDir, "book.epub");
+        await File.WriteAllTextAsync(realFile, "x");
+
+        try
+        {
+            await SeedAsync(factory, db =>
+            {
+                db.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "Default", Path = root, Enabled = true, CreatedAt = DateTime.UtcNow });
+                db.Authors.Add(new Author { Id = 1, Name = "Author" });
+                db.Books.AddRange(
+                    new Book { Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL10W", Title = "Real Title", NormalizedTitle = "real title" },
+                    new Book { Id = 11, AuthorId = 1, OpenLibraryWorkKey = "OL11W", Title = "Empty Title", NormalizedTitle = "empty title" });
+                db.LocalBookFiles.AddRange(
+                    new LocalBookFile { Id = 100, BookId = 10, AuthorId = 1, AuthorFolder = "Author", TitleFolder = "Real Title", FullPath = realFile },
+                    new LocalBookFile { Id = 101, BookId = 11, AuthorId = 1, AuthorFolder = "Author", TitleFolder = "Empty Title", FullPath = emptyDir });
+            });
+            using var client = factory.CreateClient();
+
+            var detail = await client.GetFromJsonAsync<AuthorsController.AuthorDetail>("/api/authors/1");
+            Assert.NotNull(detail);
+
+            var real = Assert.Single(detail!.Books, b => b.Id == 10);
+            Assert.True(real.Owned);
+            Assert.True(real.HasLocalFiles);
+            Assert.Single(real.Files);
+
+            var phantom = Assert.Single(detail.Books, b => b.Id == 11);
+            Assert.False(phantom.Owned);          // empty folder ≠ owned
+            Assert.False(phantom.HasLocalFiles);
+            Assert.Empty(phantom.Files);          // the folder pointer is not a file
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task GetUntrackedContents_Lists_Nested_Files_For_Unclaimed_Folder()
     {
         using var factory = new LibraryApiFactory();

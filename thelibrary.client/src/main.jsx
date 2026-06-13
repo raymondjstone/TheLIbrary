@@ -24,6 +24,7 @@ import UnknownFiles from './pages/UnknownFiles.jsx'
 import ArchivedFiles from './pages/ArchivedFiles.jsx'
 import Damaged from './pages/Damaged.jsx'
 import IdentifiedBooks from './pages/IdentifiedBooks.jsx'
+import StalledAuthors from './pages/StalledAuthors.jsx'
 
 createRoot(document.getElementById('root')).render(
     <StrictMode>
@@ -52,6 +53,7 @@ createRoot(document.getElementById('root')).render(
                     <Route path="archived" element={<ArchivedFiles />} />
                     <Route path="damaged" element={<Damaged />} />
                     <Route path="identified" element={<IdentifiedBooks />} />
+                    <Route path="stalled-authors" element={<StalledAuthors />} />
                 </Route>
             </Routes>
         </BrowserRouter>

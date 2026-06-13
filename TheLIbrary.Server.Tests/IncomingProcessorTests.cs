@@ -2,7 +2,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
+using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.Incoming;
+using TheLibrary.Server.Services.Sync;
 using TheLibrary.Server.Tests.Infrastructure;
 using Xunit;
 
@@ -205,6 +207,202 @@ public class IncomingProcessorTests
             f.Contains("__unknown", StringComparison.OrdinalIgnoreCase)));
         Assert.True(fs.ExistingFiles.Any(f =>
             f.Contains("Michael Todd", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
+    public async Task ProcessAsync_Active_Author_Wins_When_Excluded_Duplicate_Exists()
+    {
+        // Regression: if an Excluded Author row shares the same normalized name
+        // as an Active row (common after OL seeding creates duplicates), the Active
+        // row must win and the file must be routed to the collection folder, not
+        // __unknown. Previously, adding excluded names to the blacklist caused the
+        // Active row to be rejected too.
+        await using var db = CreateDb();
+        db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.IncomingFolder, Value = "C:\\incoming" });
+        db.LibraryLocations.Add(new LibraryLocation
+        {
+            Id = 1, Path = "C:\\library", IsPrimary = true,
+            Enabled = true, Label = "Default", CreatedAt = DateTime.UtcNow
+        });
+        // Excluded duplicate (same name, different OL key — typical after seeding)
+        db.Authors.Add(new Author
+        {
+            Id = 1, Name = "Michael Todd", CalibreFolderName = "Michael Todd_OL10501567A",
+            OpenLibraryKey = "OL10501567A", Status = AuthorStatus.Excluded
+        });
+        // Active row — must win
+        db.Authors.Add(new Author
+        {
+            Id = 2, Name = "Michael Todd", CalibreFolderName = "Michael Todd_OL6994998A",
+            OpenLibraryKey = "OL6994998A", Status = AuthorStatus.Active
+        });
+        await db.SaveChangesAsync();
+
+        var fs = new FakeFileSystem();
+        fs.CreateDirectory("C:\\incoming");
+        fs.CreateDirectory("C:\\library");
+        fs.AddDirectoryChild("C:\\incoming", "C:\\incoming\\drop");
+        fs.AddFile("C:\\incoming\\drop\\Backstabbing Little Assets - Michael Todd.epub");
+
+        var sut = new IncomingProcessor(db, fs, NullLogger<IncomingProcessor>.Instance);
+        var result = await sut.ProcessAsync(CancellationToken.None);
+
+        Assert.Equal(1, result.Processed);
+        Assert.Equal(1, result.Matched);
+        Assert.Equal(0, result.UnknownAuthor);
+        Assert.False(fs.ExistingFiles.Any(f =>
+            f.Contains("__unknown", StringComparison.OrdinalIgnoreCase)));
+        Assert.True(fs.ExistingFiles.Any(f =>
+            f.Contains("Michael Todd", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
+    public async Task ProcessUnknownAsync_Files_Repeated_Filename_Author_Without_Metadata()
+    {
+        // DRM'd files with unreadable metadata: the author name appearing on
+        // TWO distinct files is corroboration by repetition.
+        await using var db = CreateDb();
+        db.LibraryLocations.Add(new LibraryLocation { Id = 1, Path = "C:\\library", IsPrimary = true, Enabled = true, Label = "Default", CreatedAt = DateTime.UtcNow });
+        await db.SaveChangesAsync();
+
+        var fs = new FakeFileSystem();
+        fs.CreateDirectory("C:\\library");
+        fs.CreateDirectory("C:\\library\\__unknown");
+        var f1 = "C:\\library\\__unknown\\A Most Unusual Mango - Felicia Plimsoll.azw3";
+        var f2 = "C:\\library\\__unknown\\A Most Unusual Kumquat - Felicia Plimsoll.azw3";
+        fs.AddFile(f1);
+        fs.AddFile(f2);
+        fs.FilesByDirectory["C:\\library\\__unknown"] = [f1, f2];
+
+        var sut = new IncomingProcessor(db, fs, NullLogger<IncomingProcessor>.Instance);
+        var result = await sut.ProcessUnknownAsync(null, CancellationToken.None);
+
+        Assert.Equal(2, result.Matched);
+        var author = Assert.Single(db.Authors.Where(a => a.Name == "Felicia Plimsoll"));
+        Assert.Equal(AuthorStatus.Pending, author.Status);
+        Assert.True(fs.FileExists("C:\\library\\Felicia Plimsoll\\A Most Unusual Mango\\A Most Unusual Mango - Felicia Plimsoll.azw3"));
+        Assert.True(fs.FileExists("C:\\library\\Felicia Plimsoll\\A Most Unusual Kumquat\\A Most Unusual Kumquat - Felicia Plimsoll.azw3"));
+    }
+
+    [Fact]
+    public async Task ProcessUnknownAsync_Leaves_Single_Occurrence_Filename_Author_In_Place()
+    {
+        // One file, no metadata, author name seen nowhere else — a single
+        // uncorroborated source is not enough to create an author.
+        await using var db = CreateDb();
+        db.LibraryLocations.Add(new LibraryLocation { Id = 1, Path = "C:\\library", IsPrimary = true, Enabled = true, Label = "Default", CreatedAt = DateTime.UtcNow });
+        await db.SaveChangesAsync();
+
+        var fs = new FakeFileSystem();
+        fs.CreateDirectory("C:\\library");
+        fs.CreateDirectory("C:\\library\\__unknown");
+        var f1 = "C:\\library\\__unknown\\Solo Story - Quincy Standalone.azw3";
+        fs.AddFile(f1);
+        fs.FilesByDirectory["C:\\library\\__unknown"] = [f1];
+
+        var sut = new IncomingProcessor(db, fs, NullLogger<IncomingProcessor>.Instance);
+        var result = await sut.ProcessUnknownAsync(null, CancellationToken.None);
+
+        Assert.Equal(1, result.UnknownAuthor);
+        Assert.Empty(db.Authors);
+        Assert.True(fs.FileExists(f1)); // stayed put
+    }
+
+    [Fact]
+    public void FindCorroboratedAuthor_Accepts_Agreeing_Metadata_And_Filename()
+    {
+        // The dominant leftover shape in the live quarantine: KU/indie books
+        // whose author isn't in the OL dump but is named identically by the
+        // embedded metadata AND the filename.
+        var embedded = new EpubMetadata("A Most Unusual Mango", "Felicia Plimsoll", null, null, null);
+        var hit = IncomingProcessor.FindCorroboratedAuthor(
+            embedded, "/Books/TheLibrary_Unknown/A Most Unusual Mango - Felicia Plimsoll.azw3",
+            new HashSet<string>());
+
+        Assert.NotNull(hit);
+        Assert.Equal("Felicia Plimsoll", hit!.Value.Author);
+        Assert.Equal("A Most Unusual Mango", hit.Value.Title);
+    }
+
+    [Fact]
+    public void FindCorroboratedAuthor_Handles_Inverted_Metadata_Form()
+    {
+        var embedded = new EpubMetadata("A Most Unusual Mango", "Plimsoll, Felicia", null, null, null);
+        var hit = IncomingProcessor.FindCorroboratedAuthor(
+            embedded, "/x/A Most Unusual Mango - Felicia Plimsoll.azw3", new HashSet<string>());
+        Assert.NotNull(hit);
+    }
+
+    [Fact]
+    public void FindCorroboratedAuthor_Refuses_Disagreement_Blank_And_Blacklist()
+    {
+        // Filename names someone else entirely — no corroboration.
+        Assert.Null(IncomingProcessor.FindCorroboratedAuthor(
+            new EpubMetadata("T", "Felicia Plimsoll", null, null, null),
+            "/x/Something Else Entirely.azw3", new HashSet<string>()));
+        // No embedded author at all.
+        Assert.Null(IncomingProcessor.FindCorroboratedAuthor(
+            new EpubMetadata("T", null, null, null, null),
+            "/x/A Most Unusual Mango - Felicia Plimsoll.azw3", new HashSet<string>()));
+        // Blacklisted name never passes.
+        Assert.Null(IncomingProcessor.FindCorroboratedAuthor(
+            new EpubMetadata("T", "Felicia Plimsoll", null, null, null),
+            "/x/A Most Unusual Mango - Felicia Plimsoll.azw3",
+            new HashSet<string> { TitleNormalizer.NormalizeAuthor("Felicia Plimsoll") }));
+    }
+
+    [Fact]
+    public void LooksLikePersonalName_Gates_Shapes()
+    {
+        Assert.True(IncomingProcessor.LooksLikePersonalName("Felicia Plimsoll"));
+        Assert.True(IncomingProcessor.LooksLikePersonalName("A. N. Pringle"));
+        Assert.True(IncomingProcessor.LooksLikePersonalName("Ludwig van Plimsoll"));
+        Assert.False(IncomingProcessor.LooksLikePersonalName("plimsoll"));            // one lowercase token
+        Assert.False(IncomingProcessor.LooksLikePersonalName("The Spectral 13"));     // digits
+        Assert.False(IncomingProcessor.LooksLikePersonalName("a very long phrase that is plainly a sentence"));
+        Assert.False(IncomingProcessor.LooksLikePersonalName(null));
+    }
+
+    [Fact]
+    public async Task ProcessUnknownAsync_Files_Corroborated_NonOL_Author()
+    {
+        // End to end: an epub at the quarantine root whose embedded metadata
+        // and filename agree on an author who is NOT in the OL catalogue and
+        // NOT on the watchlist → a Pending author is created and the file is
+        // delivered to their folder.
+        var root = Path.Combine(Path.GetTempPath(), $"incoming-corrob-{Guid.NewGuid():N}");
+        var unknownDir = Path.Combine(root, "__unknown");
+        Directory.CreateDirectory(unknownDir);
+        var realFile = Path.Combine(unknownDir, "A Most Unusual Mango - Felicia Plimsoll.epub");
+        await File.WriteAllBytesAsync(realFile, TestEpub.BuildWithMetadata(
+            "A Most Unusual Mango", "Felicia Plimsoll",
+            ("c.xhtml", "<html><body><p>prose</p></body></html>")));
+
+        try
+        {
+            await using var db = CreateDb();
+            db.LibraryLocations.Add(new LibraryLocation { Id = 1, Path = root, IsPrimary = true, Enabled = true, Label = "Default", CreatedAt = DateTime.UtcNow });
+            await db.SaveChangesAsync();
+
+            var fs = new FakeFileSystem();
+            fs.CreateDirectory(root);
+            fs.CreateDirectory(unknownDir);
+            fs.AddFile(realFile);
+            fs.FilesByDirectory[unknownDir] = [realFile];
+
+            var sut = new IncomingProcessor(db, fs, NullLogger<IncomingProcessor>.Instance);
+            var result = await sut.ProcessUnknownAsync(null, CancellationToken.None);
+
+            Assert.Equal(1, result.Matched);
+            var author = Assert.Single(db.Authors.Where(a => a.Name == "Felicia Plimsoll"));
+            Assert.Equal(AuthorStatus.Pending, author.Status);
+            Assert.True(fs.FileExists(Path.Combine(root, "Felicia Plimsoll", "A Most Unusual Mango",
+                "A Most Unusual Mango - Felicia Plimsoll.epub")));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
     }
 
     private static LibraryDbContext CreateDb()

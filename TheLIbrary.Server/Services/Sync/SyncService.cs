@@ -228,14 +228,15 @@ public sealed class SyncService
         var src = Path.Combine(locationPath, folderName);
         if (!Directory.Exists(src)) return true;
 
-        var dest = Path.Combine(unknownRoot, folderName);
-        if (Directory.Exists(dest)) return true;
-
         try
         {
-            Directory.CreateDirectory(unknownRoot);
-            Directory.Move(src, dest);
-            _log.LogDebug("Moved '{Folder}' → __unknown", folderName);
+            // FLATTEN into the quarantine root — never recreate the author/title
+            // folder tree under __unknown. Moving the whole folder (the old
+            // behaviour) is exactly what kept repopulating the quarantine with
+            // subfolders; the reprocess job reads each file's name/metadata, so
+            // the folder grouping is worthless there.
+            var moved = UnknownQuarantine.FlattenFolderIntoRoot(unknownRoot, src);
+            _log.LogDebug("Flattened '{Folder}' → __unknown root ({Count} file(s))", folderName, moved);
             return true;
         }
         catch (Exception ex)

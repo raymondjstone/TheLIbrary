@@ -27,6 +27,7 @@ export default function Layout() {
                     <NavLink to="/unknown-files">Unknown Folder</NavLink>
                     <NavLink to="/sync">Sync</NavLink>
                     <NavLink to="/schedules">Schedules</NavLink>
+                    <NavLink to="/stalled-authors">Stalled Authors</NavLink>
                     <NavLink to="/physical-unmatched">Unmatched Physical</NavLink>
                     <NavLink to="/settings">Settings</NavLink>
                 </nav>

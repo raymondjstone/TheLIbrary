@@ -1,12 +1,13 @@
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
+using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.IO;
 using TheLibrary.Server.Services.Scheduling;
 
 namespace TheLibrary.Server.Services.Sync;
 
-public sealed record StaleFileCleanupSummary(int Scanned, int Pruned);
+public sealed record StaleFileCleanupSummary(int Scanned, int Pruned, int EmptyFoldersRemoved = 0);
 
 // Removes leftover "folder pointer" LocalBookFile rows: rows whose FullPath is a
 // directory (classic Calibre layout) that no longer holds a readable ebook —
@@ -152,9 +153,96 @@ public sealed class StaleFileCleanupService
             }
         }
 
-        _log.LogInformation("Stale-file cleanup done — scanned {Scanned}, pruned {Pruned}", scanned, toRemove.Count);
-        _currentMessage = $"Done — pruned {toRemove.Count} of {scanned} folder record(s)";
-        return new StaleFileCleanupSummary(scanned, toRemove.Count);
+        // Second pass: empty folders should never linger on disk. After files are
+        // moved (organize, dedupe, archive, assign) or deleted, their title and
+        // author folders are routinely left behind empty — clutter that also
+        // produces the folder-shaped rows pruned above on the next sync. Remove
+        // every recursively-empty directory under each mounted root, bottom-up.
+        // Only ever deletes a directory that contains NO files anywhere beneath
+        // it, so no book or cover is ever at risk.
+        _currentMessage = "Removing empty folders";
+        var protect = await BuildProtectedSetAsync(db, mountedRoots, ct);
+        var emptyRemoved = 0;
+        foreach (var root in mountedRoots)
+        {
+            ct.ThrowIfCancellationRequested();
+            emptyRemoved += RemoveEmptyDirectories(root, protect, ct);
+        }
+
+        _log.LogInformation(
+            "Stale-file cleanup done — scanned {Scanned}, pruned {Pruned} row(s), removed {Empty} empty folder(s)",
+            scanned, toRemove.Count, emptyRemoved);
+        _currentMessage = $"Done — pruned {toRemove.Count} of {scanned} folder record(s), removed {emptyRemoved} empty folder(s)";
+        return new StaleFileCleanupSummary(scanned, toRemove.Count, emptyRemoved);
+    }
+
+    // Absolute directory paths that must never be deleted even when empty: the
+    // mounted library roots themselves plus the configured quarantine / archive /
+    // incoming folders (and the per-location <root>/__unknown default). Deleting
+    // and recreating these would be pointless churn and could surprise the user.
+    private async Task<HashSet<string>> BuildProtectedSetAsync(
+        LibraryDbContext db, IReadOnlyList<string> mountedRoots, CancellationToken ct)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void Add(string? p) { if (!string.IsNullOrWhiteSpace(p)) set.Add(p.Replace('\\', '/').TrimEnd('/')); }
+
+        foreach (var r in mountedRoots)
+        {
+            Add(r);
+            Add(r + "/" + CalibreScanner.UnknownAuthorFolder);
+        }
+
+        var settings = await db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.UnknownFolder
+                     || s.Key == AppSettingKeys.IncomingFolder
+                     || s.Key == AppSettingKeys.DedupeArchiveFolder)
+            .ToListAsync(ct);
+        foreach (var s in settings)
+        {
+            var v = s.Value?.Trim();
+            if (string.IsNullOrWhiteSpace(v)) continue;
+            // Archive may be stored as a leaf name rather than an absolute path —
+            // protect both the absolute form and the per-root leaf.
+            if (s.Key == AppSettingKeys.DedupeArchiveFolder && !v.Contains('/') && !v.Contains('\\'))
+            {
+                foreach (var r in mountedRoots) Add(r + "/" + v);
+            }
+            else Add(v);
+        }
+        return set;
+    }
+
+    // Recursively removes empty directories under `root`, bottom-up. Returns the
+    // count removed. `root` itself is never removed. A directory is removed only
+    // when it has no file-system entries left after its children are processed;
+    // unreadable directories are treated as non-empty (never deleted).
+    private int RemoveEmptyDirectories(string root, HashSet<string> protect, CancellationToken ct)
+    {
+        var removed = 0;
+
+        // Returns true when `dir` is now empty (and so a deletion candidate).
+        bool Walk(string dir)
+        {
+            ct.ThrowIfCancellationRequested();
+            List<string> subdirs;
+            try { subdirs = _fs.EnumerateDirectories(dir).ToList(); }
+            catch { return false; } // can't read → assume non-empty, never delete
+
+            foreach (var sub in subdirs)
+            {
+                if (!Walk(sub)) continue;            // child still has content
+                var norm = sub.Replace('\\', '/').TrimEnd('/');
+                if (protect.Contains(norm)) continue; // protected, leave it
+                try { _fs.DeleteDirectory(sub); removed++; }
+                catch { /* race / permission — skip, retried next run */ }
+            }
+
+            try { return !_fs.EnumerateFileSystemEntries(dir).Any(); }
+            catch { return false; }
+        }
+
+        Walk(root); // evaluate the root's children; never delete the root itself
+        return removed;
     }
 
     private bool FolderHoldsEbook(string folder)

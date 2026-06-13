@@ -121,25 +121,15 @@ public sealed class IncomingProcessor
         // Build an in-memory matcher over the watchlist. The full OpenLibrary
         // catalog (millions of rows post-seed) is too big to preload — instead
         // we query it per unmatched file via LookupOpenLibraryAsync below.
-        // Only Active / Pending / Starred authors are indexed — Excluded authors
-        // must not grab their normalized-name key and prevent OL or duplicate
-        // Active rows from matching.
+        // Only non-Excluded authors are indexed — Excluded authors must not grab
+        // their normalized-name key and block Active rows with the same name.
+        // NOTE: do NOT add Excluded author names to blacklistSet — many Excluded
+        // rows are OL duplicates of Active authors, and blacklisting those names
+        // would prevent the Active rows from ever matching.
         var tracked = await _db.Authors
             .Where(a => a.Status != AuthorStatus.Excluded)
             .Select(a => new { a.Id, a.Name, a.CalibreFolderName, a.OpenLibraryKey })
             .ToListAsync(ct);
-
-        // Also add the normalized names of Excluded authors to the blacklist so
-        // the OL fallback probe loop skips them even when they have a catalog hit.
-        var excludedNormalized = await _db.Authors
-            .Where(a => a.Status == AuthorStatus.Excluded)
-            .Select(a => a.Name)
-            .ToListAsync(ct);
-        foreach (var name in excludedNormalized)
-        {
-            var norm = TitleNormalizer.NormalizeAuthor(name);
-            if (!string.IsNullOrEmpty(norm)) blacklistSet.Add(norm);
-        }
 
         var matcher = new AuthorMatcher(
             tracked.Select(a => new AuthorIndexEntry(
@@ -148,8 +138,46 @@ public sealed class IncomingProcessor
                 IsTracked: true,
                 TrackedAuthorId: a.Id,
                 OpenLibraryKey: a.OpenLibraryKey)),
-            blacklistSet);
+            blacklistedNormalized);
         Report($"Indexed {tracked.Count} watchlist authors, {blacklistSet.Count} blacklisted; scanning {sourcePath}");
+
+        // Reprocess-unknown only: the same author name appearing on MULTIPLE
+        // distinct files is corroboration in itself ("A Most Unusual Duke -
+        // Felicia Greene.azw3" + "A Most Unusual Earl - Felicia Greene.azw3"),
+        // which rescues the DRM'd/metadata-less files whose only signal is the
+        // filename. Counted up-front over the whole tree (names only — no file
+        // reads); used as the very last resolution tier, vetoed by known
+        // SERIES names (a series suffix repeats across files exactly like an
+        // author would) and the blacklist.
+        var repeatedNameKeys = new Dictionary<string, int>(StringComparer.Ordinal);
+        if (autoAddOlAuthors)
+        {
+            Report("Counting repeated filename author candidates");
+            var seriesVeto = (await _db.Series.AsNoTracking().Select(s => s.Name).ToListAsync(ct))
+                .SelectMany(AuthorMatcher.AuthorKeyVariants)
+                .ToHashSet(StringComparer.Ordinal);
+            foreach (var (_, names) in EnumerateByFolder(sourcePath))
+            {
+                ct.ThrowIfCancellationRequested();
+                foreach (var f in names)
+                {
+                    var perFileKeys = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var g in FilenameGuesser.Interpret(f))
+                    {
+                        if (!LooksLikePersonalName(g.Author)) continue;
+                        var key = TitleNormalizer.NormalizeAuthor(g.Author!);
+                        if (key.Length == 0 || blacklistSet.Contains(key) || seriesVeto.Contains(key)) continue;
+                        perFileKeys.Add(key); // one vote per file, however many guesses agree
+                    }
+                    foreach (var key in perFileKeys)
+                        repeatedNameKeys[key] = repeatedNameKeys.GetValueOrDefault(key) + 1;
+                }
+            }
+            repeatedNameKeys = repeatedNameKeys
+                .Where(kv => kv.Value >= 2)
+                .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
+            Report($"Found {repeatedNameKeys.Count} author name(s) repeated across files");
+        }
 
         // Stream the tree folder-by-folder instead of enumerating the whole
         // thing up-front. RecurseSubdirectories over SMB is slow and any
@@ -297,6 +325,51 @@ public sealed class IncomingProcessor
                         {
                             matchedEntry = olMatch.Entry;
                             rewrittenTitle = olMatch.RewrittenTitle;
+                        }
+                        else if (autoAddOlAuthors)
+                        {
+                            // Last resort, reprocess-unknown only. Measured over
+                            // the live quarantine, the BULK of the leftover files
+                            // are KU/indie books whose author parses perfectly
+                            // from the name ("A Most Unusual Duke - Felicia
+                            // Greene.azw3") but who simply isn't in the OL dump,
+                            // so catalogue validation could never pass. When the
+                            // file's EMBEDDED metadata and its FILENAME
+                            // independently agree on the same plausible personal
+                            // name, that corroboration stands in for the
+                            // catalogue: the author is created as Pending.
+                            var corroborated = FindCorroboratedAuthor(
+                                FileMetadataReader.TryRead(file, _log), file, blacklistSet);
+                            if (corroborated is not null)
+                            {
+                                matchedEntry = new AuthorIndexEntry(
+                                    DisplayName: corroborated.Value.Author,
+                                    FolderName: corroborated.Value.Author,
+                                    IsTracked: false,
+                                    TrackedAuthorId: null,
+                                    OpenLibraryKey: null);
+                                rewrittenTitle = corroborated.Value.Title;
+                            }
+                            else
+                            {
+                                // Metadata unreadable (DRM'd azw3/mobi) — but a
+                                // name this file shares with at least one OTHER
+                                // file is corroborated by repetition instead.
+                                foreach (var g in FilenameGuesser.Interpret(file))
+                                {
+                                    if (!LooksLikePersonalName(g.Author)) continue;
+                                    var key = TitleNormalizer.NormalizeAuthor(g.Author!);
+                                    if (!repeatedNameKeys.ContainsKey(key)) continue;
+                                    matchedEntry = new AuthorIndexEntry(
+                                        DisplayName: g.Author!,
+                                        FolderName: g.Author!,
+                                        IsTracked: false,
+                                        TrackedAuthorId: null,
+                                        OpenLibraryKey: null);
+                                    rewrittenTitle = g.Title;
+                                    break;
+                                }
+                            }
                         }
                     }
 
@@ -658,9 +731,44 @@ public sealed class IncomingProcessor
             return entry with { OpenLibraryKey = null };
         }
 
-        // OL-only match: we only arrive here with an OpenLibraryKey populated
-        // from the catalog. Missing key is a safety net.
-        if (string.IsNullOrEmpty(entry.OpenLibraryKey)) return null;
+        // Keyless entry: only the corroborated-name fallback produces these
+        // (embedded metadata + filename agreeing on an author the OL dump
+        // doesn't know). During reprocess-unknown, reuse an existing author of
+        // that exact name or create a Pending one without an OL key — the
+        // refresher backfills the key if OL ever lists them. Outside reprocess
+        // a missing key is a safety net and the match is refused.
+        if (string.IsNullOrEmpty(entry.OpenLibraryKey))
+        {
+            if (!autoAddOlAuthors) return null;
+
+            var normName = TitleNormalizer.NormalizeAuthor(entry.DisplayName);
+            if (blacklistSet.Contains(normName)) return null;
+
+            var byName = await _db.Authors.FirstOrDefaultAsync(a => a.Name == entry.DisplayName, ct);
+            if (byName is not null)
+            {
+                if (byName.Status == AuthorStatus.Excluded) return null;
+                return new AuthorIndexEntry(
+                    DisplayName: byName.Name,
+                    FolderName: !string.IsNullOrWhiteSpace(byName.CalibreFolderName) ? byName.CalibreFolderName! : byName.Name,
+                    IsTracked: true,
+                    TrackedAuthorId: byName.Id,
+                    OpenLibraryKey: byName.OpenLibraryKey);
+            }
+
+            var corroboratedAuthor = new Data.Models.Author
+            {
+                Name = entry.DisplayName,
+                CalibreFolderName = entry.FolderName,
+                Status = Data.Models.AuthorStatus.Pending,
+            };
+            _db.Authors.Add(corroboratedAuthor);
+            await _db.SaveChangesAsync(ct);
+            _log.LogInformation(
+                "Auto-created Pending author '{Name}' (metadata+filename corroborated, not on OL) during unknown reprocess",
+                corroboratedAuthor.Name);
+            return entry with { IsTracked = true, TrackedAuthorId = corroboratedAuthor.Id };
+        }
 
         var existing = await _db.Authors
             .FirstOrDefaultAsync(a => a.OpenLibraryKey == entry.OpenLibraryKey, ct);
@@ -715,6 +823,62 @@ public sealed class IncomingProcessor
             "Author '{Name}' ({OlKey}) matched OL but is not tracked — routing to __unknown",
             entry.DisplayName, entry.OpenLibraryKey);
         return null;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex CorroborationAuthorSeparator = new(
+        @"\s*(?:;|&|/|\s+(?:and|AND|And|with)\s+)\s*",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // The corroborated-name fallback for reprocess-unknown: the file's own
+    // EMBEDDED metadata author (never the filename-derived fallback — that
+    // would be circular) must agree, via the matcher's variant expansion, with
+    // an author candidate parsed from the FILENAME. Two independent sources
+    // naming the same plausible person is the acceptance bar that replaces the
+    // OL catalogue for authors the dump doesn't know. Returns the display name
+    // and the agreeing interpretation's title.
+    internal static (string Author, string? Title)? FindCorroboratedAuthor(
+        EpubMetadata? embedded, string file, HashSet<string> blacklist)
+    {
+        var raw = embedded?.Author;
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+
+        // First author of a joint credit; trim credit junk.
+        var name = CorroborationAuthorSeparator.Split(raw)[0].Trim().Trim(',', '.', '-').Trim();
+        if (!LooksLikePersonalName(name)) return null;
+
+        var keys = AuthorMatcher.AuthorKeyVariants(name).ToHashSet(StringComparer.Ordinal);
+        if (keys.Count == 0 || keys.Any(blacklist.Contains)) return null;
+
+        foreach (var g in FilenameGuesser.Interpret(file))
+        {
+            if (string.IsNullOrWhiteSpace(g.Author)) continue;
+            if (AuthorMatcher.AuthorKeyVariants(g.Author).Any(keys.Contains))
+                return (name, g.Title ?? embedded!.Title);
+        }
+        return null;
+    }
+
+    // Stricter than IsPlausibleAuthorName — this gate admits a name WITHOUT
+    // catalogue backing, so it must look like a real person: 2–4 tokens, no
+    // digits, sane length, and each token either capitalised, an initial, or
+    // a lowercase name particle (van/von/de/…).
+    private static readonly HashSet<string> NameParticles = new(StringComparer.Ordinal)
+    { "van", "von", "de", "der", "den", "del", "della", "di", "da", "du", "la", "le", "el", "al", "bin", "ibn", "mac", "mc", "st" };
+
+    internal static bool LooksLikePersonalName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        var s = name.Trim();
+        if (s.Length is < 5 or > 40) return false;
+        if (s.Any(char.IsDigit)) return false;
+        var tokens = s.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length is < 2 or > 4) return false;
+        foreach (var t in tokens)
+        {
+            if (NameParticles.Contains(t)) continue;
+            if (!char.IsLetter(t[0]) || !char.IsUpper(t[0])) return false;
+        }
+        return true;
     }
 
     private EpubMetadata? ReadMetadata(string file)

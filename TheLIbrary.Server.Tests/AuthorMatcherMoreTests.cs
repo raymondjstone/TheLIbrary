@@ -64,6 +64,31 @@ public class AuthorMatcherMoreTests
     }
 
     [Fact]
+    public void Initials_Run_Matches_The_Spaced_Catalogue_Form()
+    {
+        // File says "AE Van Vogt", the index holds "A. E. van Vogt" — the
+        // normalized forms differ ("ae van vogt" vs "a e van vogt") unless the
+        // initials run is spaced out.
+        var matcher = new AuthorMatcher(new[] { Tracked("A. E. van Vogt", id: 3) });
+
+        var hit = matcher.Resolve(null, null, @"X:\drop\AE Van Vogt - Barbarian, The.txt");
+
+        Assert.NotNull(hit);
+        Assert.Equal(3, hit!.Entry.TrackedAuthorId);
+    }
+
+    [Fact]
+    public void Spelled_Out_Forename_Matches_The_Initialed_Index_Form()
+    {
+        var matcher = new AuthorMatcher(new[] { Tracked("L. Frank Quibble", id: 4) });
+
+        var hit = matcher.Resolve("Lyman Frank Quibble", null, @"X:\drop\whatever.epub");
+
+        Assert.NotNull(hit);
+        Assert.Equal(4, hit!.Entry.TrackedAuthorId);
+    }
+
+    [Fact]
     public void ResolveFolderLayout_Returns_Null_Title_When_Author_Folder_Is_Immediate_Child()
     {
         var matcher = new AuthorMatcher(new[] { Tracked("Isaac Asimov", id: 2) });

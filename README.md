@@ -108,6 +108,19 @@ folder before saving the new link. The force-match dropdown still accepts books
 owned by any non-pen-name linked child author too, so a canonical's view can
 claim its duplicates' works without re-parenting them in the DB first.
 
+Below that, a **"Same-name authors' unmatched files"** section lists the
+unmatched files of every *other, distinct* author who shares this author's name
+(homonyms OpenLibrary has split across separate records / keys — these are NOT
+the linked children folded into this view, whose files already appear above).
+Each same-name author is its own group, collapsed by default and expandable.
+Within a group you can match a file onto one of *this* author's works: the file
+is physically moved into this author's folder and linked to the chosen book
+(the author↔file link is folder-driven, so a DB-only reassignment would revert
+on the next sync). This is the quick way to correct copies filed under the wrong
+one of several same-named author records. Only real ebook rows appear (the same
+disk-reality filter as the main unmatched list), and the adopt action is guarded
+so it only ever accepts a file whose current author genuinely shares this name.
+
 See [OpenLibrary integration](#openlibrary-integration) for what the app
 calls OpenLibrary for, how it identifies itself, and how calls are rate-limited.
 
@@ -578,11 +591,24 @@ opens. Each copy's status (✓ ok / ✗ damaged / ? unchecked) is shown inline.
 Only **real copies** are counted: a row whose path is a folder counts as a copy
 only when that folder actually holds an ebook file, so empty/stale title-folder
 pointers (left behind after a file was moved or archived) don't show up as bogus
-duplicates. The **`prune-stale-files`** scheduled job (default `0 20 * * *`, also
-runnable on demand from the Sync page's *Background jobs* list) sweeps those
-leftover rows out of the database entirely — it only ever touches folder-shaped
-rows, and only when the library root is actually mounted, so a file row or a
-transient mount outage can never cause a deletion.
+duplicates. This "is it a real ebook?" check is the single source of truth
+(`AuthorsController.ResolveLocalCopy`) applied on every read path — the author
+page's book list, for instance, will **never** mark a book owned, or show a
+"file", for a row that actually points at an empty folder, regardless of when
+the cleanup job last ran.
+
+The **`prune-stale-files`** scheduled job (default `0 20 * * *`, also runnable on
+demand from the Sync page's *Background jobs* list) keeps the database and disk
+in step:
+- It sweeps the leftover folder-pointer rows out of the database entirely — only
+  ever touching folder-shaped rows, and only when the library root is actually
+  mounted, so a file row or a transient mount outage can never cause a deletion.
+- It then **removes every recursively-empty directory** under each mounted root
+  (bottom-up) — the title and author folders routinely left behind after a move,
+  dedupe, archive, or assign. It only ever deletes a directory that contains no
+  files anywhere beneath it, so no book or cover is ever at risk; the library
+  roots and the configured quarantine / archive / incoming folders are protected
+  even when momentarily empty.
 
 Finally, a scheduled **OpenLibrary metadata cache** job can backfill missing
 subjects and locally cache large cover images for existing works. Cached covers
@@ -617,13 +643,28 @@ before they're slotted into the library.
   collisions caused by collapsing subfolders are resolved with `_N`
   suffixing, never by overwriting.
 - **Reprocess __unknown** — re-runs the author-matching pass against everything
-  already sitting in `__unknown`. Files that still can't resolve stay put; the
-  rest move to their proper author folder. Useful after adding new authors to
-  the watchlist. **Only watchlist authors qualify** — a file whose author is
-  identified via the OL catalogue but isn't tracked stays put, and the run log
-  says so explicitly ("author identified (X) but not on watchlist") so a low
-  match count isn't mistaken for a parsing failure; use the Identified page's
-  assign flow (which creates Pending authors) for those.
+  already sitting in `__unknown`, then delivers each file to its author's folder
+  (creating the author as **Pending** when needed). Files that still can't be
+  resolved stay put. It works through a cascade of resolution tiers, each more
+  permissive than the last, so the bulk of the quarantine clears even though
+  most of it is indie/self-published books OpenLibrary has never heard of:
+  1. **Tracked watchlist author** (metadata or filename → an author you follow).
+  2. **OpenLibrary catalogue** — the author exists in the seeded OL dump; a
+     Pending author row is auto-created and the file delivered.
+  3. **Metadata + filename corroboration** — the file's *embedded* author and
+     its *filename* independently name the same plausible person. Two
+     independent sources agreeing stands in for catalogue backing, so a KU
+     author OL has never indexed still resolves. A Pending author is created.
+  4. **Repeated-filename corroboration** — for DRM'd files with no readable
+     metadata at all, a plausible author name that appears on **two or more
+     distinct files** in the quarantine is corroborated by repetition. Known
+     **series** names are vetoed (a series suffix repeats across files exactly
+     like an author would), as is the blacklist. A single uncorroborated
+     filename name is *not* enough — it stays in `__unknown`.
+
+  Across the live ~29k-file quarantine this lifts author determination from
+  ~22% to ~79%; the rest are genuinely nameless (bare titles, numbered chapter
+  dumps, junk like `autoexp_dat.txt`).
 - **Author probes** — beyond the metadata author and the plain
   "Author - Title" / "Title - Author" filename splits, matching also probes
   each individual author of a joint credit ("A & B", "A; B" — one EPUB
@@ -814,15 +855,30 @@ The extracted files are then picked up by the next incoming processing run.
 Archives recorded under Windows UNC paths are remapped to the container mount
 path the same way as the series organizer.
 
-## Flatten-unknown job
+## The `__unknown` quarantine is FLAT
 
-Off by default. Walks every author-level folder inside each quarantine root and
-moves any files nested in subdirectories up to the author folder root, then
-removes the now-empty subdirectories. Useful when an `__unknown/<author>/`
-folder accumulates messy `series/title/` nested layouts that you'd rather see
-flattened to one file per row. Collisions are resolved with `_N` suffixing,
-and `LocalBookFile.FullPath` rows are rewritten to the new path in the same
-transaction.
+The quarantine holds **loose files only — never author or title subfolders**.
+The reprocess-unknown job re-derives each file's author from its name/metadata,
+so folder grouping inside the quarantine carries no value and only clutters it.
+Every path that relocates content into quarantine routes through a single
+helper (`UnknownQuarantine`) that moves files to the quarantine *root*, so a
+folder tree can never be (re)created under `__unknown`:
+- **Sync reconciliation** — an untracked author folder in the main collection is
+  *flattened* into the quarantine root (its files moved loose), not moved as a
+  folder. (Moving the whole folder is what used to keep repopulating the
+  quarantine with `__unknown/<Author>/<Title>/` trees every sync.)
+- **"Wrong author → unknown"** on the author page flattens a folder-shaped row's
+  files into the root too.
+- **Incoming processing** already drops unmatched files flat into the root.
+
+### Flatten-unknown job
+
+Walks every folder under each quarantine root, moves all contained files
+(recursively) up to the quarantine **root**, and removes the now-empty folder
+tree — so any subfolders that pre-date this policy (or were created by an older
+build) are cleaned up. Collisions are resolved with `_N` suffixing; a file that
+can't be moved leaves its folder in place (never recursively deleted) for the
+next run. `LocalBookFile.FullPath` rows are rewritten to the new flat path.
 
 Enable it on the **Schedules** page (`flatten-unknown` job, default cron
 `0 9 * * *`) — or run it once manually via **Run now**.
@@ -1456,11 +1512,11 @@ on every startup.
 | `same-name-authors` | `0 */6 * * *` | Add OpenLibrary authors that share a name with one you already track — a pure DB lookup against the seeded `OpenLibraryAuthor` catalogue, no API calls |
 | `star-physical-authors` | `0 10 * * *` | Give 1 star to any author with at least one manually-owned physical book whose current star rating is 0 |
 | `cache-openlibrary-metadata` | `30 10 * * *` | Backfill missing subjects and cache large OpenLibrary covers for existing books |
-| `flatten-unknown` | `0 9 * * *` (disabled by default) | Flatten any subfolders inside each quarantine author folder so each contains only files. See [Flatten-unknown job](#flatten-unknown-job) |
+| `flatten-unknown` | `0 9 * * *` (disabled by default) | Flatten the quarantine fully: move every file under each quarantine folder up to the `__unknown` root and remove the emptied folder tree, so the quarantine is loose files only. See [the quarantine is flat](#the-__unknown-quarantine-is-flat) |
 | `dedupe-unknown` | `30 9 * * *` (disabled by default) | Delete byte-identical duplicate files inside the quarantine (size-grouped, then SHA-256-verified), keeping the shortest-path copy of each. See [Dedupe-unknown job](#dedupe-unknown-job) |
 | `promote-manual-books` | `30 7 * * *` | Search OpenLibrary for each manually-catalogued book and link it to the real work once OL lists it — in place, or merged into the author's existing row for that work. See [Promote-manual-books job](#promote-manual-books-job) |
 | `check-integrity` | `0 12 * * *` (disabled by default) | Open/convert every matched ebook file and flag any that won't open or have fewer than 20 pages onto the Damaged page. See [Book integrity check](#book-integrity-check) |
-| `prune-stale-files` | `0 20 * * *` | Remove leftover folder-pointer `LocalBookFile` rows (empty/missing title folders) so they stop showing as bogus duplicates. NAS-guarded: only folder-shaped rows, only when the library root is mounted |
+| `prune-stale-files` | `0 20 * * *` | Remove leftover folder-pointer `LocalBookFile` rows (empty/missing title folders) so they stop showing as bogus duplicates, AND delete every recursively-empty directory left behind under each mounted root. NAS-guarded: only folder-shaped rows, only directories with no files beneath them, only when the library root is mounted; library/quarantine/archive/incoming roots are never removed |
 | `content-scan` | `0 21 * * *` (disabled by default) | Read the front matter of unmatched/untracked files to guess author/title/series; results land on the Identified Books page. See [Identifying books from content](#identifying-books-from-content) |
 | `assign-authors` | `*/15 * * * *` | File identified untracked books under their author, creating Pending authors from OpenLibrary where needed — the Identified page's "Assign all untracked books to authors" bulk action on a schedule. Capped at 100 rows per run (OpenLibrary rate limits); skips a firing when the Hangfire queue is already backed up |
 

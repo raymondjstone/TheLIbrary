@@ -400,6 +400,98 @@ function UnmatchedFilesSection({
     )
 }
 
+// Unmatched files belonging to OTHER authors who share this author's name
+// (homonyms split across separate OL keys). Grouped per author, collapsed by
+// default, each expandable. Within a group the user matches a mis-filed copy
+// onto one of THIS author's works — the file is moved into this author's folder.
+function SameNameUnmatchedSection({ groups, books, error, busyIds, sel, setSel, filter, setFilter, onMatch, onPreview }) {
+    const [open, setOpen] = useState(() => new Set())
+    if (!groups.length) return null
+
+    const toggle = (aid) => setOpen(prev => {
+        const n = new Set(prev); n.has(aid) ? n.delete(aid) : n.add(aid); return n
+    })
+
+    return (
+        <>
+            <h3 style={{ marginTop: '2rem' }}>Same-name authors' unmatched files</h3>
+            <p className="subtle">
+                Other distinct authors who share this name have unmatched files below.
+                If one is really this author's book filed under the wrong record, match
+                it to the right work — the file is moved into this author's folder.
+            </p>
+            {error && <p className="error">Match failed: {error}</p>}
+            {groups.map(g => {
+                const isOpen = open.has(g.authorId)
+                return (
+                    <div key={g.authorId} className="callout" style={{ marginBottom: '0.6rem' }}>
+                        <button type="button" className="btn-ghost"
+                                onClick={() => toggle(g.authorId)}
+                                style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', width: '100%', textAlign: 'left' }}>
+                            <span>{isOpen ? '▾' : '▸'}</span>
+                            <strong>{g.authorName}</strong>
+                            <span className="subtle">
+                                {g.openLibraryKey ? `${g.openLibraryKey} · ` : ''}{g.status} ·
+                                {' '}{g.files.length} unmatched file{g.files.length === 1 ? '' : 's'}
+                            </span>
+                        </button>
+                        {isOpen && (
+                            <table className="grid" style={{ marginTop: '0.5rem' }}>
+                                <thead>
+                                    <tr><th>Folder</th><th>Type</th><th>Path</th><th>Match to this author's work</th><th></th></tr>
+                                </thead>
+                                <tbody>
+                                    {g.files.map(u => {
+                                        const busy = busyIds.has(u.id)
+                                        const selected = sel[u.id] ?? ''
+                                        const f = filter[u.id] ?? ''
+                                        return (
+                                            <tr key={u.id}>
+                                                <td><code>{u.titleFolder}</code></td>
+                                                <td>
+                                                    {(u.formats ?? []).length > 0
+                                                        ? u.formats.map(ext => (
+                                                            <FormatChip key={ext} ext={ext} onPreview={onPreview} fileId={u.id} title={u.titleFolder} />))
+                                                        : <span className="subtle">—</span>}
+                                                </td>
+                                                <td className="subtle" style={{ wordBreak: 'break-all' }}>{u.fullPath}</td>
+                                                <td>
+                                                    <input type="text" placeholder="Filter…" value={f} disabled={busy}
+                                                        onChange={e => setFilter(prev => ({ ...prev, [u.id]: e.target.value }))}
+                                                        style={{ display: 'block', width: '100%', marginBottom: '0.25rem', boxSizing: 'border-box' }} />
+                                                    <select value={selected} disabled={busy}
+                                                        onChange={e => setSel(prev => ({ ...prev, [u.id]: e.target.value }))}>
+                                                        <option value="">— pick a work —</option>
+                                                        {[...books]
+                                                            .filter(b => String(b.id) === selected || (!b.foreign && !b.suppressed))
+                                                            .sort((a, b) => (a.title ?? '').localeCompare(b.title ?? ''))
+                                                            .filter(b => !f || String(b.id) === selected || (b.title ?? '').toLowerCase().includes(f.toLowerCase()))
+                                                            .map(b => (
+                                                                <option key={b.id} value={b.id}>
+                                                                    {b.title}{b.firstPublishYear ? ` (${b.firstPublishYear})` : ''}
+                                                                </option>
+                                                            ))}
+                                                    </select>
+                                                </td>
+                                                <td>
+                                                    <button onClick={() => onMatch(u.id)} disabled={busy || !selected}
+                                                            title="Move this file into this author's folder and link it to the selected work">
+                                                        {busy ? 'Matching…' : 'Match here'}
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        )
+                                    })}
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
+                )
+            })}
+        </>
+    )
+}
+
 // Renders a book's local files: live copies inline, with any copies that live
 // under the archive folder tucked behind a collapsed "Show N archived" toggle
 // so they don't clutter the page by default.
@@ -507,6 +599,35 @@ export default function AuthorDetail() {
     const [preview, setPreview] = useState(null)  // { fileId, format, title } | null
     const [openLibraryByFile, setOpenLibraryByFile] = useState({})
     const openPreview = (fileId, format, title) => setPreview({ fileId, format, title })
+    // Same-name (homonym) adopt-match state, keyed by the same-name file id.
+    const [sameNameSel, setSameNameSel] = useState({})     // { fileId: bookId }
+    const [sameNameFilter, setSameNameFilter] = useState({})
+    const [sameNameBusy, setSameNameBusy] = useState(() => new Set())
+    const [sameNameError, setSameNameError] = useState(null)
+
+    const adoptSameNameFile = async (fileId) => {
+        const bookId = sameNameSel[fileId]
+        if (!bookId) return
+        setSameNameError(null)
+        setSameNameBusy(prev => new Set(prev).add(fileId))
+        try {
+            const r = await fetch(`/api/authors/${id}/same-name/${fileId}/match`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ bookId: Number(bookId) })
+            })
+            if (!r.ok) {
+                const body = await r.json().catch(() => null)
+                throw new Error(body?.error ?? r.statusText)
+            }
+            setData(await r.json())
+            setSameNameSel(prev => { const n = { ...prev }; delete n[fileId]; return n })
+        } catch (e) {
+            setSameNameError(String(e.message ?? e))
+        } finally {
+            setSameNameBusy(prev => { const n = new Set(prev); n.delete(fileId); return n })
+        }
+    }
 
     const unlinkAuthor = async () => {
         if (!confirm('Remove the link to the canonical author?')) return
@@ -1720,6 +1841,16 @@ export default function AuthorDetail() {
                 openLibraryByFile={openLibraryByFile}
                 setOpenLibraryByFile={setOpenLibraryByFile}
                 onAddOpenLibraryBook={addOpenLibraryBook} />
+
+            <SameNameUnmatchedSection
+                groups={data.sameNameUnmatched ?? []}
+                books={data.books}
+                error={sameNameError}
+                busyIds={sameNameBusy}
+                sel={sameNameSel} setSel={setSameNameSel}
+                filter={sameNameFilter} setFilter={setSameNameFilter}
+                onMatch={adoptSameNameFile}
+                onPreview={openPreview} />
 
             {suppressedBooks.length > 0 && (
                 <SuppressedBooksSection

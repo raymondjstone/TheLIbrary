@@ -217,6 +217,139 @@ public class AuthorsController : ControllerBase
         )).ToList();
     }
 
+    public sealed record StalledAuthorRow(
+        int Id,
+        string Name,
+        string? OpenLibraryKey,
+        string Status,
+        int UnmatchedFileCount,
+        int? CanonicalId,
+        string? CanonicalName);
+
+    // Returns authors who have unmatched ebook files with no possibility of being
+    // auto-matched: their book catalogue has no unsuppressed, non-foreign entries.
+    // Pending authors are excluded because they haven't been catalogued yet.
+    //
+    // Linked non-pen-name children fold their files into the canonical; the
+    // canonical row is what appears (or is suppressed if the canonical itself has
+    // matchable books). Pen-name children are independent and can appear on their
+    // own if they qualify.
+    [HttpGet("stalled")]
+    public async Task<IReadOnlyList<StalledAuthorRow>> GetStalled(CancellationToken ct)
+    {
+        var archiveLeafRaw = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.DedupeArchiveFolder)
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync(ct);
+        var archiveLeaf = string.IsNullOrWhiteSpace(archiveLeafRaw) ? "__archive" : archiveLeafRaw.Trim();
+
+        // Fetch all authors with their linkage fields — we need the full set to
+        // resolve canonical-author relationships.
+        var allAuthors = await _db.Authors.AsNoTracking()
+            .Select(a => new
+            {
+                a.Id,
+                a.Name,
+                a.OpenLibraryKey,
+                a.Status,
+                a.LinkedToAuthorId,
+                a.IsPenName
+            })
+            .ToListAsync(ct);
+
+        // Authors whose Status == Pending are excluded from the page entirely.
+        var nonPending = allAuthors
+            .Where(a => a.Status != AuthorStatus.Pending)
+            .ToList();
+
+        // Per-author unmatched ebook file count, computed ENTIRELY in SQL.
+        // This page used to materialize every unmatched LocalBookFile row
+        // (two path strings per row, across the whole library) just to count
+        // them in memory — that transfer is what made the page take so long
+        // to load. The grouped count is a few hundred small rows instead;
+        // authors that turn out to be irrelevant are simply never looked up.
+        var leaf = archiveLeaf.Replace('\\', '/').TrimEnd('/');
+        var archivePrefix = leaf + "/";
+        var archiveSegment = "/" + leaf + "/";
+        var fileQuery = _db.LocalBookFiles.AsNoTracking()
+            .Where(f => f.BookId == null && f.AuthorId != null
+                && f.TitleFolder != null && f.TitleFolder != ""
+                && (f.FullPath.EndsWith(".epub") || f.FullPath.EndsWith(".mobi")
+                 || f.FullPath.EndsWith(".azw") || f.FullPath.EndsWith(".azw3")
+                 || f.FullPath.EndsWith(".azw4") || f.FullPath.EndsWith(".kf8")
+                 || f.FullPath.EndsWith(".prc") || f.FullPath.EndsWith(".pdb")
+                 || f.FullPath.EndsWith(".fb2") || f.FullPath.EndsWith(".fbz")
+                 || f.FullPath.EndsWith(".pdf") || f.FullPath.EndsWith(".lit")
+                 || f.FullPath.EndsWith(".cbz") || f.FullPath.EndsWith(".docx")
+                 || f.FullPath.EndsWith(".odt") || f.FullPath.EndsWith(".rtf")
+                 || f.FullPath.EndsWith(".opf") || f.FullPath.EndsWith(".txt")));
+        fileQuery = leaf.Contains('/')
+            ? fileQuery.Where(f => !f.FullPath.Replace("\\", "/").StartsWith(archivePrefix))
+            : fileQuery.Where(f => !f.FullPath.Replace("\\", "/").Contains(archiveSegment));
+        var rawUnmatchedByAuthor = (await fileQuery
+            .GroupBy(f => f.AuthorId!.Value)
+            .Select(g => new { g.Key, Count = g.Count() })
+            .ToListAsync(ct))
+            .ToDictionary(x => x.Key, x => x.Count);
+
+        // Authors (by id) that have at least one matchable book — id list only.
+        var authorsWithMatchableBooks = (await _db.Books.AsNoTracking()
+            .Where(b => !b.Suppressed && !b.Foreign)
+            .Select(b => b.AuthorId)
+            .Distinct()
+            .ToListAsync(ct))
+            .ToHashSet();
+
+        var results = new List<StalledAuthorRow>();
+
+        foreach (var author in nonPending)
+        {
+            // Non-pen-name linked children are always folded into their canonical;
+            // they don't get a separate row on this page.
+            if (author.LinkedToAuthorId.HasValue && !author.IsPenName)
+                continue;
+
+            // Build the set of author ids whose files and books count for this row:
+            // the author itself plus any non-pen-name linked children.
+            var childIds = allAuthors
+                .Where(a => a.LinkedToAuthorId == author.Id && !a.IsPenName)
+                .Select(a => a.Id)
+                .ToList();
+
+            var familyIds = new HashSet<int> { author.Id };
+            foreach (var cid in childIds) familyIds.Add(cid);
+
+            // If any member of the family has matchable books the whole group is fine.
+            if (familyIds.Any(id => authorsWithMatchableBooks.Contains(id)))
+                continue;
+
+            // Sum unmatched files across the whole family.
+            var fileCount = familyIds.Sum(id => rawUnmatchedByAuthor.GetValueOrDefault(id));
+            if (fileCount == 0)
+                continue;
+
+            // For a pen-name child that has its own row, surface which canonical
+            // it belongs to.
+            int? canonicalId = author.IsPenName && author.LinkedToAuthorId.HasValue
+                ? author.LinkedToAuthorId
+                : null;
+            string? canonicalName = canonicalId.HasValue
+                ? allAuthors.FirstOrDefault(a => a.Id == canonicalId.Value)?.Name
+                : null;
+
+            results.Add(new StalledAuthorRow(
+                author.Id,
+                author.Name,
+                author.OpenLibraryKey,
+                author.Status.ToString(),
+                fileCount,
+                canonicalId,
+                canonicalName));
+        }
+
+        return results.OrderBy(r => r.Name).ToList();
+    }
+
     public sealed record SeriesSuggestion(int Id, string Name, string? PrimaryAuthorName);
 
     // Lightweight reference shown next to the canonical / linked authors on the
@@ -251,7 +384,21 @@ public class AuthorsController : ControllerBase
         // Pen-name children — listed for UI navigation but NOT folded in. The
         // user's books pages keep them separate.
         IReadOnlyList<LinkedAuthorRef> PenNames,
-        DateTime? CalibreScannedAt = null);
+        DateTime? CalibreScannedAt = null,
+        // Unmatched files belonging to OTHER, distinct authors that share this
+        // author's name (homonyms split across separate Author rows / OL keys).
+        // Shown below this author's own unmatched list so the user can adopt a
+        // mis-filed copy onto one of THIS author's works. Null/empty when none.
+        IReadOnlyList<SameNameUnmatchedGroup>? SameNameUnmatched = null);
+
+    // One same-name author's unmatched files, for the "other authors with this
+    // name" section. Grouped so the UI can collapse/expand per author.
+    public sealed record SameNameUnmatchedGroup(
+        int AuthorId,
+        string AuthorName,
+        string? OpenLibraryKey,
+        string Status,
+        IReadOnlyList<UnmatchedRow> Files);
 
     public sealed record BookRow(
         int Id,
@@ -331,6 +478,35 @@ public class AuthorsController : ControllerBase
     // directory path (classic Calibre layout). Handle both so the UI shows formats.
     private static bool HasEbookExtension(string path)
         => !string.IsNullOrEmpty(path) && EbookExtensions.Contains(Path.GetExtension(path).ToLowerInvariant());
+
+    // The single source of truth for "does this LocalBookFile row represent a
+    // real ebook?" — used everywhere a list must NOT show a folder-shaped or
+    // empty row as a book / as ownership. A LocalBookFile.FullPath is either a
+    // file (flat-file layout) or a title directory (classic Calibre layout):
+    //   - a file with an ebook extension          → real, format = its extension
+    //   - a directory that holds >= 1 ebook        → real, formats = those inside
+    //   - missing on disk but ebook-shaped path    → kept (a NAS mount glitch must
+    //                                                 never hide a genuine file)
+    //   - an empty / stale title-folder pointer,
+    //     or a folder with no ebook                → NOT real (dropped)
+    private static (IReadOnlyList<string> Formats, bool IsReal) ResolveLocalCopy(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return (Array.Empty<string>(), false);
+        if (System.IO.File.Exists(path))
+        {
+            var ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+            return EbookExtensions.Contains("." + ext) ? (new[] { ext }, true) : (Array.Empty<string>(), false);
+        }
+        if (Directory.Exists(path))
+        {
+            var fmts = FormatsInFolder(path);
+            return (fmts, fmts.Count > 0);
+        }
+        var e = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+        return e.Length > 0 && EbookExtensions.Contains("." + e)
+            ? (new[] { e }, true)
+            : (Array.Empty<string>(), false);
+    }
 
     private static IReadOnlyList<string> FormatsInFolder(string path)
     {
@@ -447,25 +623,37 @@ public class AuthorsController : ControllerBase
             .Select(s => s.Value).FirstOrDefaultAsync(ct);
         var archiveLeaf = string.IsNullOrWhiteSpace(archiveLeafRaw) ? "__archive" : archiveLeafRaw.Trim();
 
-        var books = rawBooks.Select(b => new BookRow(
-            b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
-            b.ManuallyOwned || b.Files.Count > 0,
-            b.ManuallyOwned,
-            b.Files.Count > 0,
-            b.ReadStatus.ToString(),
-            b.ReadAt,
-            b.Wanted,
-            b.Subjects,
-            b.SeriesName,
-            b.SeriesPosition,
-            b.Files.Select(f => new LocalFileRow(f.Id, f.FullPath, FormatsInFolder(f.FullPath), IsUnderArchiveFolder(f.FullPath, archiveLeaf))).ToList(),
-            b.SeriesId,
-            b.SeriesPrimaryAuthorName,
-            b.CoverUrl,
-            b.AuthorId,
-            b.Suppressed,
-            b.Foreign
-        )).ToList();
+        var books = rawBooks.Select(b =>
+        {
+            // Resolve each linked row against disk and DROP the phantoms: a row
+            // whose path is an empty/stale title folder (or a folder holding no
+            // ebook) is not a book copy and must not make this book look owned
+            // or appear as a file. This is the read-path guarantee that a folder
+            // is never shown as a book, independent of when the prune job last ran.
+            var realFiles = b.Files
+                .Select(f => { var (fmts, ok) = ResolveLocalCopy(f.FullPath); return (f.Id, f.FullPath, Formats: fmts, IsReal: ok); })
+                .Where(f => f.IsReal)
+                .ToList();
+            return new BookRow(
+                b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
+                b.ManuallyOwned || realFiles.Count > 0,
+                b.ManuallyOwned,
+                realFiles.Count > 0,
+                b.ReadStatus.ToString(),
+                b.ReadAt,
+                b.Wanted,
+                b.Subjects,
+                b.SeriesName,
+                b.SeriesPosition,
+                realFiles.Select(f => new LocalFileRow(f.Id, f.FullPath, f.Formats, IsUnderArchiveFolder(f.FullPath, archiveLeaf))).ToList(),
+                b.SeriesId,
+                b.SeriesPrimaryAuthorName,
+                b.CoverUrl,
+                b.AuthorId,
+                b.Suppressed,
+                b.Foreign
+            );
+        }).ToList();
 
         // Include orphan rows (AuthorId == null) whose Calibre folder matches
         // any of the folded authors by name or recorded folder. Happens when the
@@ -514,12 +702,63 @@ public class AuthorsController : ControllerBase
             .Select(c => new LinkedAuthorRef(c.Id, c.Name, true))
             .ToList();
 
+        var sameNameGroups = await BuildSameNameUnmatchedAsync(a, foldedIds, archiveLeaf, ct);
+
         return new AuthorDetail(
             a.Id, a.Name, a.OpenLibraryKey, a.CalibreFolderName,
             a.Status.ToString(), a.ExclusionReason, a.Priority, a.LastSyncedAt, a.NextFetchAt, a.RefreshIntervalDays,
             a.Bio, a.Notes, a.NotifyOnNewBooks,
             books, unmatched, associatedSeries,
-            linkedTo, alternates, penNames, a.CalibreScannedAt);
+            linkedTo, alternates, penNames, a.CalibreScannedAt, sameNameGroups);
+    }
+
+    // Finds OTHER, distinct authors sharing this author's (normalized) name and
+    // returns each one's unmatched ebook files, grouped by author. The current
+    // author's own folded family (itself + non-pen-name children) is excluded —
+    // their files are already in the page's own unmatched list. Only real ebook
+    // rows are returned (same disk-reality filter as the main unmatched list),
+    // so empty/stale folder pointers never appear here either.
+    private async Task<IReadOnlyList<SameNameUnmatchedGroup>> BuildSameNameUnmatchedAsync(
+        Author current, IReadOnlyList<int> foldedIds, string archiveLeaf, CancellationToken ct)
+    {
+        var targetNorm = TitleNormalizer.NormalizeAuthor(current.Name);
+        if (string.IsNullOrWhiteSpace(targetNorm)) return Array.Empty<SameNameUnmatchedGroup>();
+
+        // Prefilter in SQL on exact (case-insensitive) name equality — that's how
+        // homonyms actually appear in the data (the same-name-authors job copies
+        // the name verbatim across OL keys) — then confirm by normalized name in
+        // memory to absorb punctuation/spacing variants among that small set.
+        var folded = foldedIds.ToHashSet();
+        var candidates = (await _db.Authors.AsNoTracking()
+                .Where(x => x.Name == current.Name && x.Status != AuthorStatus.Excluded)
+                .Select(x => new { x.Id, x.Name, x.OpenLibraryKey, x.Status })
+                .ToListAsync(ct))
+            .Where(x => !folded.Contains(x.Id)
+                     && TitleNormalizer.NormalizeAuthor(x.Name) == targetNorm)
+            .ToList();
+        if (candidates.Count == 0) return Array.Empty<SameNameUnmatchedGroup>();
+
+        var candidateIds = candidates.Select(c => c.Id).ToHashSet();
+        var rawFiles = await _db.LocalBookFiles.AsNoTracking()
+            .Where(f => f.BookId == null && f.AuthorId != null && candidateIds.Contains(f.AuthorId!.Value))
+            .OrderBy(f => f.TitleFolder)
+            .Select(f => new { f.Id, f.AuthorId, f.TitleFolder, f.FullPath })
+            .ToListAsync(ct);
+
+        var byAuthor = rawFiles
+            .Select(f => new { f.AuthorId, Row = new UnmatchedRow(f.Id, f.TitleFolder, f.FullPath, FormatsInFolder(f.FullPath)) })
+            .Where(x => !string.IsNullOrWhiteSpace(x.Row.TitleFolder)
+                     && (x.Row.Formats.Count > 0 || HasEbookExtension(x.Row.FullPath))
+                     && !IsUnderArchiveFolder(x.Row.FullPath, archiveLeaf))
+            .GroupBy(x => x.AuthorId!.Value)
+            .ToDictionary(g => g.Key, g => g.Select(x => x.Row).ToList());
+
+        return candidates
+            .Where(c => byAuthor.ContainsKey(c.Id))
+            .OrderBy(c => c.Name)
+            .Select(c => new SameNameUnmatchedGroup(
+                c.Id, c.Name, c.OpenLibraryKey, c.Status.ToString(), byAuthor[c.Id]))
+            .ToList();
     }
 
     private static List<string> FolderCandidatesFor(Author a)
@@ -749,6 +988,44 @@ public class AuthorsController : ControllerBase
         return await Get(id, ct);
     }
 
+    // Adopts a file that currently belongs to a DIFFERENT author who shares this
+    // author's name (a homonym split across separate Author rows) onto one of
+    // THIS author's works. The file is physically moved into this author's
+    // folder — the author↔file link is folder-driven, so a DB-only reassignment
+    // would revert on the next sync. POST /api/authors/{id}/same-name/{fileId}/match
+    [HttpPost("{id:int}/same-name/{fileId:int}/match")]
+    public async Task<ActionResult<AuthorDetail>> AdoptSameNameFile(
+        int id, int fileId, [FromBody] MatchLocalFileRequest body, CancellationToken ct)
+    {
+        var author = await _db.Authors.FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (author is null) return NotFound(new { error = "Author not found" });
+
+        var file = await _db.LocalBookFiles.FirstOrDefaultAsync(f => f.Id == fileId, ct);
+        if (file is null) return NotFound(new { error = "Local file not found" });
+        if (file.AuthorId is null || file.AuthorId == id)
+            return BadRequest(new { error = "File does not belong to a different author." });
+
+        // Guard: only adopt files from an author who genuinely shares this name.
+        // Prevents this endpoint being used as an arbitrary cross-author move.
+        var sourceAuthor = await _db.Authors.FirstOrDefaultAsync(x => x.Id == file.AuthorId, ct);
+        if (sourceAuthor is null
+            || TitleNormalizer.NormalizeAuthor(sourceAuthor.Name) != TitleNormalizer.NormalizeAuthor(author.Name))
+            return BadRequest(new { error = "File's author does not share this author's name." });
+
+        var book = await _db.Books.FirstOrDefaultAsync(b => b.Id == body.BookId, ct);
+        if (book is null) return NotFound(new { error = "Book not found" });
+        if (!await BookBelongsToAuthorViewAsync(book, id, ct))
+            return BadRequest(new { error = "Book does not belong to this author" });
+
+        // Folder-driven move into this author's folder (sets AuthorId/AuthorFolder/
+        // FullPath, resets integrity, prunes the now-empty source folder), then link.
+        await MoveFileToAuthorFolderAsync(file, author, ct);
+        file.BookId = book.Id;
+        file.ManuallyUnmatched = false;
+        await _db.SaveChangesAsync(ct);
+        return await Get(id, ct);
+    }
+
     // A book "belongs to" the author's view when its AuthorId is the author
     // itself OR a non-pen-name child folded into that view. Pen-name children
     // are kept separate so their books are intentionally NOT part of the
@@ -964,13 +1241,15 @@ public class AuthorsController : ControllerBase
         {
             if (System.IO.File.Exists(file.FullPath))
             {
-                var final = UniqueFilePath(Path.Combine(unknownBase, leafName));
+                // Flat: a single file drops straight into the quarantine root.
+                var final = UniqueFilePath(Path.Combine(unknownBase, Path.GetFileName(file.FullPath)));
                 System.IO.File.Move(file.FullPath, final);
             }
             else if (Directory.Exists(file.FullPath))
             {
-                var final = UniqueDirectoryPath(unknownBase, SanitizeSegment(leafName));
-                Directory.Move(file.FullPath, final);
+                // FLATTEN a folder-shaped row's files into the root — never
+                // create an author/title subfolder under __unknown.
+                UnknownQuarantine.FlattenFolderIntoRoot(unknownBase, file.FullPath);
             }
             else return BadRequest(new { error = "File no longer exists on disk." });
 
