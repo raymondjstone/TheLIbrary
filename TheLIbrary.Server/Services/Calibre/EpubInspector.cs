@@ -14,7 +14,7 @@ public sealed record EpubInspection(bool Valid, int TextChars, int EstimatedPage
 // an in-memory zip and works equally on a real file or a Calibre-converted temp.
 public static class EpubInspector
 {
-    // Roughly one printed page of prose. Adobe/Calibre use ~1024 chars per
+    // Roughly one printed page of prose. Common readers use ~1024 chars per
     // "page"; we match that so the 20-page floor lines up with expectations.
     public const int CharsPerPage = 1024;
 

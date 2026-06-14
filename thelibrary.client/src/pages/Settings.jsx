@@ -757,7 +757,7 @@ export default function Settings() {
     return (
         <section>
             <h2>Library locations</h2>
-            <p className="subtle">Directories to scan for ebooks. All must use the Calibre layout: <code>&lt;Root&gt;/&lt;Author&gt;/&lt;Title (id)&gt;/…</code> Mark one as <strong>primary</strong> — that's where files from the incoming folder land.</p>
+            <p className="subtle">Directories to scan for ebooks. All must use the library layout: <code>&lt;Root&gt;/&lt;Author&gt;/&lt;Title (id)&gt;/…</code> Mark one as <strong>primary</strong> — that's where files from the incoming folder land.</p>
 
             {error ? <p className="error">{error}</p> : null}
 
@@ -806,7 +806,7 @@ export default function Settings() {
                     ))}
                     <tr>
                         <td><input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="Label (optional)" /></td>
-                        <td><input style={{ width: '100%' }} value={newPath} onChange={e => setNewPath(e.target.value)} placeholder="e.g. D:\\Books\\Calibre" /></td>
+                        <td><input style={{ width: '100%' }} value={newPath} onChange={e => setNewPath(e.target.value)} placeholder="e.g. D:\\Books\\Library" /></td>
                         <td></td>
                         <td></td>
                         <td></td>
@@ -1325,7 +1325,7 @@ export default function Settings() {
 
             <h2 style={{ marginTop: '1.5rem' }}>Author blacklist</h2>
             <p className="subtle">
-                Authors here are never added to the watchlist — incoming scans and Calibre sync treat them as
+                Authors here are never added to the watchlist — incoming scans and library sync treat them as
                 &quot;author not found&quot;, so their files go to <code>__unknown</code> instead of silently
                 re-creating the author. The list is populated when you delete an author from the Authors page;
                 you can also add entries manually.

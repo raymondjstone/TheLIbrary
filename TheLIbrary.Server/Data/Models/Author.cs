@@ -47,7 +47,7 @@ public class Author
     // cadence is calculated from the author's most recent publication year.
     public int? RefreshIntervalDays { get; set; }
 
-    // Stamped after each Calibre file-matching pass. Used to order authors so
+    // Stamped after each library file-matching pass. Used to order authors so
     // the longest-waiting (null = never scanned) are processed first each run.
     public DateTime? CalibreScannedAt { get; set; }
 

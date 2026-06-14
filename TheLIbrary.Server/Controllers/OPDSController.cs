@@ -8,7 +8,7 @@ using TheLibrary.Server.Services.Sync;
 
 namespace TheLibrary.Server.Controllers;
 
-// OPDS 1.2 Atom feed — lets reading apps (KOReader, Calibre, Moon+ Reader, etc.)
+// OPDS 1.2 Atom feed — lets reading apps (KOReader, Moon+ Reader, etc.)
 // browse the library. Navigation-only: no file downloads are exposed since the
 // files live on a local filesystem path, not a web-accessible URL.
 [ApiController]

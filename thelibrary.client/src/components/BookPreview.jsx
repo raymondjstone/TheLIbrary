@@ -6,7 +6,7 @@ import JSZip from 'jszip'
 // five entities (amp, lt, gt, quot, apos), so an EPUB whose markup uses HTML named
 // entities — &nbsp;, &mdash;, &copy;, … — makes the browser's XML parser fail with
 // "Entity 'nbsp' not defined" and the page renders blank up to the first error,
-// even though lenient readers (Calibre, most e-readers) open it fine. We rewrite
+// even though lenient readers (most e-readers) open it fine. We rewrite
 // those entities to their literal Unicode characters before epub.js sees the bytes.
 const XML_ENTITIES = new Set(['amp', 'lt', 'gt', 'quot', 'apos'])
 const ENTITY_RX = /&([a-zA-Z][a-zA-Z0-9]*);/g

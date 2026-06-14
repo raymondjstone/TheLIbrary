@@ -47,7 +47,7 @@ public class PhysicalMatchIndexTests
     [Fact]
     public void Rowan_Vale_matches_Vale_comma_Rowan()
     {
-        // Mirror image — DB has the Calibre author_sort form, inventory has display form.
+        // Mirror image — DB has the "Last, First" author_sort form, inventory has display form.
         var index = Build((101, "Fawn and Flame", "Vale, Rowan"));
         var hit = index.TryMatch("Fawn and Flame", "Rowan Vale");
         Assert.NotNull(hit);

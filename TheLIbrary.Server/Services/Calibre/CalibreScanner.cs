@@ -31,7 +31,7 @@ public sealed class CalibreScanner
     };
 
     // File extensions that are definitively not books or archives and should be
-    // deleted on sight. Common culprits from Calibre imports and Windows drag-drops.
+    // deleted on sight. Common culprits from library imports and Windows drag-drops.
     internal static readonly HashSet<string> JunkExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".xml", ".inf", ".nfo", ".db", ".ini", ".url", ".lnk",
@@ -39,7 +39,7 @@ public sealed class CalibreScanner
         ".html", ".htm", ".css", ".part", ".crdownload"
     };
 
-    // Extensionless metadata/system files dropped by Calibre and similar tools.
+    // Extensionless metadata/system files dropped by library and similar tools.
     // They have no extension so JunkExtensions never matches them, and they're
     // not books — left alone they get shuffled into __unknown on every incoming
     // run. Matched by exact file name (case-insensitive) and deleted on sight.
@@ -55,7 +55,7 @@ public sealed class CalibreScanner
     // Scans library roots and returns one entry per discovered book location.
     //
     // Supported layouts (both handled transparently):
-    //   Classic Calibre:   root\Author\Title Folder\book.epub
+    //   Classic library:   root\Author\Title Folder\book.epub
     //   Flat-file (new):   root\Author\Series\book.epub   or   root\Author\book.epub
     //
     // In the flat-file layout each ebook file is its own CalibreBookEntry with
@@ -127,7 +127,7 @@ public sealed class CalibreScanner
                         var subDirs = EnumerateDirsSafe(bookDir).ToList();
                         if (subDirs.Count > 0 && !HasFiles(bookDir))
                         {
-                            // Classic Calibre: series folder whose children are title folders.
+                            // Classic library: series folder whose children are title folders.
                             foreach (var titleDir in subDirs)
                             {
                                 var titleFolder = Path.GetFileName(titleDir)!;
@@ -137,7 +137,7 @@ public sealed class CalibreScanner
                         }
                         else
                         {
-                            // Classic Calibre title folder (no ebook files — metadata-only
+                            // Classic library title folder (no ebook files — metadata-only
                             // or empty after files were moved by the organizer).
                             var titleFolder = Path.GetFileName(bookDir)!;
                             var (size, mtime) = Fingerprint(bookDir);

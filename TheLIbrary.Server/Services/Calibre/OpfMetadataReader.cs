@@ -2,7 +2,7 @@ using System.Xml.Linq;
 
 namespace TheLibrary.Server.Services.Calibre;
 
-// Standalone OPF file reader — Calibre writes a "metadata.opf" next to each
+// Standalone OPF file reader — library tools write a "metadata.opf" next to each
 // book containing the same Dublin Core metadata that lives inside an EPUB's
 // OPF. We reuse the DC / OPF namespaces and look for <dc:title>, <dc:creator>
 // (with opf:file-as for author_sort), and <dc:language>.

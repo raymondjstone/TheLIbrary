@@ -482,14 +482,14 @@ public class AuthorsController : ControllerBase
     }
 
     // FullPath may be a file path (flat-file layout after organizer runs) or a
-    // directory path (classic Calibre layout). Handle both so the UI shows formats.
+    // directory path (classic library layout). Handle both so the UI shows formats.
     private static bool HasEbookExtension(string path)
         => !string.IsNullOrEmpty(path) && EbookExtensions.Contains(Path.GetExtension(path).ToLowerInvariant());
 
     // The single source of truth for "does this LocalBookFile row represent a
     // real ebook?" — used everywhere a list must NOT show a folder-shaped or
     // empty row as a book / as ownership. A LocalBookFile.FullPath is either a
-    // file (flat-file layout) or a title directory (classic Calibre layout):
+    // file (flat-file layout) or a title directory (classic library layout):
     //   - a file with an ebook extension          → real, format = its extension
     //   - a directory that holds >= 1 ebook        → real, formats = those inside
     //   - missing on disk but ebook-shaped path    → kept (a NAS mount glitch must
@@ -519,7 +519,7 @@ public class AuthorsController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(path)) return Array.Empty<string>();
         // FullPath may point at a single file (flat-file layout: one
-        // LocalBookFile row per file) or at a title directory (classic Calibre
+        // LocalBookFile row per file) or at a title directory (classic library
         // layout: one row for the title folder containing every format). Each
         // row must report only what it actually represents — DO NOT scan
         // siblings when the path is a file, or every row in a multi-format
@@ -662,7 +662,7 @@ public class AuthorsController : ControllerBase
             );
         }).ToList();
 
-        // Include orphan rows (AuthorId == null) whose Calibre folder matches
+        // Include orphan rows (AuthorId == null) whose library folder matches
         // any of the folded authors by name or recorded folder. Happens when the
         // user adds the author to the watchlist after sync had already recorded
         // files into the orphan pool.
@@ -841,7 +841,7 @@ public class AuthorsController : ControllerBase
     }
 
     // True when the local file is either already linked to this author or is
-    // an orphan row whose Calibre folder matches the author. Endpoints that
+    // an orphan row whose library folder matches the author. Endpoints that
     // act on unmatched files use this so the tolerance of Get() extends to
     // match/unmatch/return-to-incoming.
     private static bool FileBelongsToAuthor(LocalBookFile file, Author author)
@@ -1156,7 +1156,7 @@ public class AuthorsController : ControllerBase
         if (!Directory.Exists(source))
             return BadRequest(new { error = $"Source folder no longer exists on disk: {source}" });
 
-        // Use the existing TitleFolder name when we have one (normal Calibre
+        // Use the existing TitleFolder name when we have one (normal library
         // layout), otherwise the AuthorFolder (scanner recorded an empty
         // TitleFolder when the file was directly under the author dir).
         var leafName = !string.IsNullOrWhiteSpace(file.TitleFolder)
@@ -1412,7 +1412,7 @@ public class AuthorsController : ControllerBase
         var existing = await _db.Authors.FirstOrDefaultAsync(a => a.OpenLibraryKey == key, ct);
         if (existing is not null)
         {
-            // Already tracked — still run adoption so any unmatched Calibre files
+            // Already tracked — still run adoption so any unmatched library files
             // get linked immediately without requiring the user to wait for a sync.
             if (string.IsNullOrWhiteSpace(existing.CalibreFolderName))
             {
@@ -1483,7 +1483,7 @@ public class AuthorsController : ControllerBase
             Status = AuthorStatus.Pending
         };
 
-        // If a Calibre folder name matches, link it now so the user can see that
+        // If a library folder name matches, link it now so the user can see that
         // association before the next sync runs.
         var normName = TitleNormalizer.NormalizeAuthor(name);
         var matchFolder = await _db.LocalBookFiles
@@ -1965,6 +1965,9 @@ public class AuthorsController : ControllerBase
     private Task<string> MoveUntrackedPathToAuthorFolderAsync(
         string sourcePath, string rootPath, string? relativePath, Author targetAuthor, CancellationToken ct)
         => _assigner.MoveUntrackedPathToAuthorFolderAsync(sourcePath, rootPath, relativePath, targetAuthor, ct);
+
+    private Task<(string? Root, string? Error)> ResolveDestinationRootAsync(string sourcePath, CancellationToken ct)
+        => _assigner.ResolveDestinationRootAsync(sourcePath, ct);
 
     private static Task PruneEmptyParentsAsync(string? startPath, string stopRoot, CancellationToken ct)
         => UntrackedAuthorAssigner.PruneEmptyParentsAsync(startPath, stopRoot, ct);
@@ -2612,7 +2615,7 @@ public class AuthorsController : ControllerBase
             }
         }
 
-        // If the author's Calibre author-level folders are now empty, prune
+        // If the author's library author-level folders are now empty, prune
         // them so the library view isn't left with ghost directories.
         var parentDirs = files
             .Where(f => !string.IsNullOrWhiteSpace(f.FullPath))
@@ -2691,7 +2694,7 @@ public class AuthorsController : ControllerBase
         string? PrimaryAuthorKey,
         string? PrimaryAuthorName);
 
-    // Calibre author folders that don't match any tracked author.
+    // Library author folders that don't match any tracked author.
     [HttpGet("~/api/unclaimed")]
     public async Task<IReadOnlyList<UnclaimedFolder>> Unclaimed(CancellationToken ct)
     {
@@ -2913,9 +2916,18 @@ public class AuthorsController : ControllerBase
         if (existing is null)
             _db.LocalBookFiles.Add(file);
 
+        // The author folder must be created under a real library location, NOT
+        // under body.RootPath — for the __unknown bucket with a custom path the
+        // request's RootPath IS the __unknown directory, so filing relative to it
+        // would bury the book in a subfolder inside __unknown instead of moving it
+        // out to the author's folder in the library.
+        var (destRoot, destRootError) = await ResolveDestinationRootAsync(sourcePath, ct);
+        if (destRoot is null)
+            return BadRequest(new { error = destRootError });
+
         var finalPath = await MoveUntrackedPathToAuthorFolderAsync(
             sourcePath,
-            body.RootPath,
+            destRoot,
             NormalizeRelativePath(body.RelativePath),
             targetAuthor,
             ct);
@@ -2929,6 +2941,7 @@ public class AuthorsController : ControllerBase
             : Path.GetFileNameWithoutExtension(finalPath);
         file.FullPath = finalPath;
         file.NormalizedTitle = TitleNormalizer.Normalize(file.TitleFolder);
+        file.ResetIntegrity(); // moved into the author folder — re-check it there
 
         await _db.SaveChangesAsync(ct);
         return Ok(new { authorId = targetAuthor.Id, bookId = add.Book.Id, fullPath = finalPath });
@@ -3457,7 +3470,7 @@ public class AuthorsController : ControllerBase
         if (string.IsNullOrWhiteSpace(folder))
             return BadRequest(new { error = "folder is required" });
 
-        // Calibre's "Last, First" gets reordered for the OL query so the
+        // The "Last, First" sort form gets reordered for the OL query so the
         // search picks up the canonical "First Last" form OL prefers.
         var query = folder;
         if (query.Contains(','))

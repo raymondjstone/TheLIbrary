@@ -296,7 +296,7 @@ public class ImportController : ControllerBase
     public sealed record RowAuthorSuggestions(int Id, IReadOnlyList<AuthorCandidate> Candidates);
 
     // Author candidates for every unmatched physical row. An exact name — in
-    // either "Forename Surname" or Calibre's "Surname, Forename" order —
+    // either "Forename Surname" or the "Surname, Forename" sort order —
     // resolves by dictionary lookup and comes back as a single 1.0 candidate
     // the UI auto-selects; only rows with no exact hit fall back to fuzzy
     // scoring. Only top-level authors and pen names are offered — a

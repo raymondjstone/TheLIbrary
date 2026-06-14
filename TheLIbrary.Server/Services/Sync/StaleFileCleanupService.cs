@@ -10,7 +10,7 @@ namespace TheLibrary.Server.Services.Sync;
 public sealed record StaleFileCleanupSummary(int Scanned, int Pruned, int EmptyFoldersRemoved = 0);
 
 // Removes leftover "folder pointer" LocalBookFile rows: rows whose FullPath is a
-// directory (classic Calibre layout) that no longer holds a readable ebook —
+// directory (classic library layout) that no longer holds a readable ebook —
 // usually a title folder left behind after its file was moved or archived. These
 // otherwise surface on the Duplicates page as a bare-folder "copy".
 //

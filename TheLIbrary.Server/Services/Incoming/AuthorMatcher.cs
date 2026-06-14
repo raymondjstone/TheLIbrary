@@ -5,7 +5,7 @@ namespace TheLibrary.Server.Services.Incoming;
 
 // One indexed author — either a tracked watchlist entry or an OpenLibrary
 // catalog row. FolderName is where a matched file goes:
-//   - tracked: the Calibre folder already in use (e.g. author.CalibreFolderName)
+//   - tracked: the library folder already in use (e.g. author.CalibreFolderName)
 //   - ol    : the OL author's display name, sanitized for quarantine grouping
 //
 // TrackedAuthorId is the Author.Id for tracked entries (null for OL-only).
@@ -176,7 +176,7 @@ public sealed class AuthorMatcher
 
     // Same ancestor walk as ResolveFolderAncestor, but also returns the
     // nearest descendant folder name (the one between the author match and
-    // `folderPath`). That's the effective title folder in a Calibre
+    // `folderPath`). That's the effective title folder in a library
     // <Author>/<Title>/... layout. Returns (null, null) on no match.
     public (AuthorIndexEntry? Entry, string? Title) ResolveFolderLayout(string folderPath, string sourceRoot)
     {

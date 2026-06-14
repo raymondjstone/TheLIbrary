@@ -425,6 +425,64 @@ public class AuthorsControllerIntegrationTests
         }
     }
 
+    // Regression: with a CUSTOM __unknown path (outside the library root), the
+    // listing API reports that custom path as the RootPath sentinel. The match
+    // endpoint must NOT file the book relative to that sentinel — doing so buried
+    // the book in a subfolder inside __unknown instead of moving it out to the
+    // author's folder under the real library location.
+    [Fact]
+    public async Task MatchUntrackedToOpenLibrary_With_Custom_Unknown_Path_Files_Under_Library_Not_Quarantine()
+    {
+        using var factory = new LibraryApiFactory();
+        var root = Path.Combine(Path.GetTempPath(), $"thelibrary-customunknown-{Guid.NewGuid():N}");
+        var libRoot = Path.Combine(root, "lib");
+        var customUnknown = Path.Combine(root, "quarantine"); // outside libRoot
+        var sourceDir = Path.Combine(customUnknown, "Loose Author", "Series Shelf");
+        Directory.CreateDirectory(libRoot);
+        Directory.CreateDirectory(sourceDir);
+        var sourceFile = Path.Combine(sourceDir, "Loose Match.epub");
+        await File.WriteAllTextAsync(sourceFile, "test");
+
+        try
+        {
+            await SeedAsync(factory, db =>
+            {
+                db.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "Default", Path = libRoot, Enabled = true, IsPrimary = true, CreatedAt = DateTime.UtcNow });
+                db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.UnknownFolder, Value = customUnknown });
+            });
+            using var client = factory.CreateClient();
+
+            // The listing API hands back the custom path as the RootPath sentinel.
+            var response = await client.PostAsJsonAsync("/api/untracked/match-openlibrary",
+                new AuthorsController.MatchUntrackedOpenLibraryRequest(
+                    "unknown",
+                    "Loose Author",
+                    customUnknown,
+                    "Series Shelf/Loose Match.epub",
+                    "/works/OL999W",
+                    "Loose Match",
+                    2001,
+                    42,
+                    "Target Author",
+                    "OL123A",
+                    "Target Author"));
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var scope = factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+            var file = Assert.Single(db.LocalBookFiles);
+            // Must land under the library root, never inside the quarantine path.
+            Assert.StartsWith(libRoot, file.FullPath, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(customUnknown, file.FullPath, StringComparison.OrdinalIgnoreCase);
+            Assert.True(File.Exists(file.FullPath));
+            Assert.False(File.Exists(sourceFile));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task ListUnknownFolders_Includes_Loose_Files_At_Quarantine_Root()
     {

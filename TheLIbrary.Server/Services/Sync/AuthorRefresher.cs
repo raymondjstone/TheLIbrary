@@ -89,7 +89,7 @@ public sealed class AuthorRefresher
         if (string.IsNullOrEmpty(author.OpenLibraryKey))
         {
             var searchName = author.CalibreFolderName ?? author.Name;
-            // Calibre writes "Last, First" — flip so OL search ranks better.
+            // Library folders often use "Last, First" — flip so OL search ranks better.
             if (searchName.Contains(','))
             {
                 var parts = searchName.Split(',', 2, StringSplitOptions.TrimEntries);
@@ -113,7 +113,7 @@ public sealed class AuthorRefresher
                     author.ExclusionReason, 0, 0, author.NextFetchAt);
             }
 
-            // Another Author row might already own this OL key — two Calibre
+            // Another Author row might already own this OL key — two library
             // folder spellings that both resolve to the same person, or a
             // manual-add-plus-auto-create pair. Fold this row into the canonical
             // one instead of letting the unique index blow up.

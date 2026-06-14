@@ -28,6 +28,7 @@ export default function Authors() {
     const [page, setPage] = useState(1)
     const [dialog, setDialog] = useState(null)
     const [busyId, setBusyId] = useState(null)
+    const [refreshingId, setRefreshingId] = useState(null)
     const [error, setError] = useState(null)
     const [selected, setSelected] = useState(new Set())
     const [bulkBusy, setBulkBusy] = useState(false)
@@ -71,6 +72,22 @@ export default function Authors() {
             load()
         } catch (e) { setError(String(e.message || e)) }
         finally { setBusyId(null) }
+    }
+
+    // Re-fetch this author's works from OpenLibrary, then reload the list so the
+    // works/owned counts and last-synced timestamp reflect the refresh.
+    const refreshOl = async (author) => {
+        setRefreshingId(author.id)
+        setError(null)
+        try {
+            const r = await fetch(`/api/authors/${author.id}/refresh`, { method: 'POST' })
+            if (!r.ok) {
+                const body = await r.json().catch(() => ({}))
+                throw new Error(body.error || r.statusText)
+            }
+            await load()
+        } catch (e) { setError(`Refresh failed for ${author.name}: ${e.message || e}`) }
+        finally { setRefreshingId(null) }
     }
 
     const setPriority = async (author, value) => {
@@ -326,9 +343,17 @@ export default function Authors() {
                                         <td>{a.ownedCount}</td>
                                         <td>{a.lastSyncedAt ? new Date(a.lastSyncedAt).toLocaleString() : '—'}</td>
                                         <td>
-                                            <button className="btn-danger" disabled={busyId === a.id} onClick={() => remove(a)}>
-                                                {busyId === a.id ? 'Removing…' : 'Remove'}
-                                            </button>
+                                            <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'flex-end' }}>
+                                                <button className="btn-ghost"
+                                                    disabled={refreshingId === a.id || busyId === a.id}
+                                                    title="Re-fetch this author's works from OpenLibrary"
+                                                    onClick={() => refreshOl(a)}>
+                                                    {refreshingId === a.id ? 'Refreshing…' : '↻ Refresh OL data'}
+                                                </button>
+                                                <button className="btn-danger" disabled={busyId === a.id || refreshingId === a.id} onClick={() => remove(a)}>
+                                                    {busyId === a.id ? 'Removing…' : 'Remove'}
+                                                </button>
+                                            </div>
                                         </td>
                                     </tr>
                                 ))}

@@ -2,7 +2,7 @@ namespace TheLibrary.Server.Data.Models;
 
 // An author name the user has banished from the watchlist. Populated when a
 // tracked author is deleted (their files go back to incoming, their row goes
-// here). Incoming processing and the Calibre scanner both consult this list
+// here). Incoming processing and the library scanner both consult this list
 // and treat any hit as "author not found" — so files land in __unknown
 // instead of silently resurrecting the deleted author.
 public class AuthorBlacklist
@@ -18,7 +18,7 @@ public class AuthorBlacklist
     // the blacklist lookup is a single indexed Contains() per run.
     public string NormalizedName { get; set; } = string.Empty;
 
-    // The Calibre folder name the deleted author was using, if any. Kept
+    // The library folder name the deleted author was using, if any. Kept
     // so re-imports that see the same folder layout can be filtered
     // separately from the display name.
     public string? FolderName { get; set; }

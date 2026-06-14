@@ -22,7 +22,7 @@ const inputStyle = {
 // catalogue a new one.
 function ResolvePanel({ row, authors, suggestedAuthors, onResolved, onCancel }) {
     // Auto-select the best author guess so the common case needs no input —
-    // an exact name (incl. Calibre's "Surname, Forename") comes back as a 1.0
+    // an exact name (incl. the "Surname, Forename" form) comes back as a 1.0
     // candidate, and even a fuzzy top guess is shown selected and overridable.
     const [authorId, setAuthorId] = useState(
         suggestedAuthors?.[0] ? String(suggestedAuthors[0].authorId) : '')

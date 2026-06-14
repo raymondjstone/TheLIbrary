@@ -780,7 +780,7 @@ export default function Untracked() {
             {filteredUnclaimed.length > 0 && (
                 <div className="callout">
                     <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <strong>{filteredUnclaimed.length} Calibre folder(s) not yet tracked.</strong>
+                        <strong>{filteredUnclaimed.length} Library folder(s) not yet tracked.</strong>
                         <button
                             className="btn-ghost btn-danger"
                             disabled={busyAllUnclaimed}

@@ -235,7 +235,7 @@ public class FilenameGuesserTests
         // Real-world shape: "Bradley, Marion Zimmer - [Darkover 06] - A Flame In Hali (v1.0) [rtf]_1.lit"
         // Author is inverted (Last, First Middle), series tag is in the middle,
         // version tag "(v1.0)" is in round brackets, format tag "[rtf]" is in
-        // square brackets, and "_1" is a Calibre duplicate suffix.
+        // square brackets, and "_1" is a library duplicate suffix.
         var guesses = FilenameGuesser.Interpret(
             @"/incoming/Quibble, Marion Anne - [Frost Series 06] - A Flame In Vance (v1.0) [rtf]_1.lit");
         Assert.Contains(guesses, g =>

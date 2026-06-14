@@ -20,7 +20,7 @@ public class AuthorPrefixStripTests
                 "Terry Brooks", "Magic Kingdom for Sale")]
     [InlineData("Arthur C. Clarke - Rendezvous with Rama",
                 "Arthur C. Clarke", "Rendezvous with Rama")]
-    [InlineData("Brooks, Terry - Magic Kingdom for Sale",       // Calibre-style author sort
+    [InlineData("Brooks, Terry - Magic Kingdom for Sale",       // "Last, First" author sort
                 "Terry Brooks", "Magic Kingdom for Sale")]
     [InlineData("Brooks Terry - Magic Kingdom",                 // surname-first, no comma
                 "Terry Brooks", "Magic Kingdom")]

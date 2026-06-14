@@ -63,7 +63,7 @@ public class FilesController : ControllerBase
             .FirstOrDefaultAsync(f => f.Id == fileId, ct);
         if (lbf is null) return NotFound(new { error = "File record not found" });
 
-        // Resolve the actual source file. lbf.FullPath may be a directory (Calibre
+        // Resolve the actual source file. lbf.FullPath may be a directory (library
         // layout) or a direct file path (flat layout). For conversion we need a file.
         var supportedConversions = new[] { "mobi", "azw", "azw3", "fb2", "lit", "docx", "odt" };
         var fmt = format.ToLowerInvariant();
@@ -196,7 +196,7 @@ public class FilesController : ControllerBase
         var ext = Path.GetExtension(lbf.FullPath).ToLowerInvariant();
         if (ext != ".cbz" && ext != ".zip" && ext != ".cbr" && ext != ".rar")
         {
-            // Classic Calibre layout: FullPath is a folder — pick a comic archive
+            // Classic library layout: FullPath is a folder — pick a comic archive
             // inside it (zip/cbz or rar/cbr).
             if (Directory.Exists(lbf.FullPath))
             {

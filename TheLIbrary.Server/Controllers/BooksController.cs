@@ -777,7 +777,7 @@ public class BooksController : ControllerBase
 
     // Decides whether a LocalBookFile row is a real, actionable duplicate copy
     // and returns its format. A plain file is a copy (by extension). A directory
-    // (classic Calibre layout) is a copy ONLY if it holds a readable ebook file
+    // (classic library layout) is a copy ONLY if it holds a readable ebook file
     // — so empty/stale title-folder pointers, or folders that only contain a
     // cover, are not treated as duplicates. A path that is neither an existing
     // file nor directory is kept only if it *looks* like an ebook file (a NAS
@@ -819,7 +819,7 @@ public class BooksController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(fullPath)) return null;
 
-        // Calibre layout: FullPath is a directory — find the best readable file inside it.
+        // Library layout: FullPath is a directory — find the best readable file inside it.
         // Check this BEFORE the extension fast-path because folder names like "My Book v1.5"
         // or "Title (2)" would otherwise fool Path.GetExtension into returning ".5" or ".2".
         if (Directory.Exists(fullPath))

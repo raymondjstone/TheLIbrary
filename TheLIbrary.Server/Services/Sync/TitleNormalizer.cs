@@ -84,7 +84,7 @@ public static class TitleNormalizer
         return s;
     }
 
-    // Returns normalized title candidates for a Calibre folder name, from most
+    // Returns normalized title candidates for a library folder name, from most
     // to least specific. The matching loop in SyncService stops at the first hit.
     //
     // Handled patterns (in addition to straight normalization):

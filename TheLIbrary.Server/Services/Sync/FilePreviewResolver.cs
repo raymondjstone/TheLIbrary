@@ -30,7 +30,7 @@ public static class FilePreviewResolver
 
     // Resolves a preview request against the on-disk layout. `storedPath` is
     // either a file path (flat-file layout) or a directory path (classic
-    // Calibre). `format` is the lower-cased extension the user requested. The
+    // library layout). `format` is the lower-cased extension the user requested. The
     // returned path is guaranteed to be:
     //   - canonicalised (no `..`)
     //   - of a supported extension
@@ -56,7 +56,7 @@ public static class FilePreviewResolver
         }
         else
         {
-            // Directory layout (classic Calibre): pick the first file in the
+            // Directory layout (classic library): pick the first file in the
             // directory whose extension matches the requested format. The
             // enumerator is parameterised so tests can avoid disk I/O.
             enumerateFiles ??= Directory.EnumerateFiles;

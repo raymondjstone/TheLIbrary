@@ -1,15 +1,20 @@
 # The Library
 
+<p align="center">
+  <img src="thelibrary.client/public/the-library-cover.png" alt="The Library — your books, organised, automated, always at hand" width="420">
+</p>
+
 Self-hosted collection manager that tracks a **watchlist of authors from
 [OpenLibrary](https://openlibrary.org/developers/api)** and reconciles their
 published works against your local ebook files so you can see, per author,
 which books you own and which you're missing. Also handles ingesting new files
 from a drop folder and re-running matching against previously-unmatched files.
 
-**You don't need an existing Calibre library to start.** Point it at an empty
+**You don't need an existing ebook library to start.** Point it at an empty
 folder and grow the collection through the drop-folder pipeline, use any plain
-folder tree (Calibre layout is supported but not required), or run it with no
-local files at all as a pure author/works tracker and wishlist.
+folder tree (the `<Root>/<Author>/<Title>` library layout is supported but not
+required), or run it with no local files at all as a pure author/works tracker
+and wishlist.
 
 ## Stack
 
@@ -22,8 +27,8 @@ local files at all as a pure author/works tracker and wishlist.
 - **Author management** — priority ratings (0–5), blacklist, per-author
   next-fetch scheduling with optional fixed interval override, exclusion reasons
 - **Data source of truth** — OpenLibrary (works only, English, published 1930 or later)
-- **Local source** — a Calibre folder tree or flat-file layout under one or more
-  library roots
+- **Local source** — a structured `<Root>/<Author>/<Title>` folder tree or
+  flat-file layout under one or more library roots
 - **Ingest formats** — EPUB, MOBI / AZW / AZW3 / AZW4 / KF8 / PRC / PDB,
   FB2 / FBZ / `.fb2.zip`, PDF, LIT (magic validated; title/author via filename
   fallback), CBZ (ComicInfo.xml), DOCX / ODT (Dublin Core), TXT (filename
@@ -39,8 +44,9 @@ local files at all as a pure author/works tracker and wishlist.
 
 | Page | Route | Purpose |
 |------|-------|---------|
-| Authors | `/authors` | Full watchlist with filter, sort, pagination, A–Z jump index, per-row selection, bulk status (Active / Pending / Excluded), and author merge |
-| Author detail | `/authors/:id` | Books (grouped by series), bio, read status, NZB links, reMarkable send, Calibre scan timestamp, bulk "Mark all missing as wanted". A book's local files show its live copies inline; any copies under the archive folder are hidden behind a per-book **"Show N archived"** toggle |
+| Home | `/` | Landing page with the cover art and quick links into the app. This is the default route (replaced the old redirect to the author list) |
+| Authors | `/authors` | Full watchlist with filter, sort, pagination, A–Z jump index, per-row selection, bulk status (Active / Pending / Excluded), author merge, and a per-row **Refresh OL data** button that re-fetches that author's works from OpenLibrary |
+| Author detail | `/authors/:id` | Books (grouped by series), bio, read status, NZB links, reMarkable send, library scan timestamp, bulk "Mark all missing as wanted". A book's local files show its live copies inline; any copies under the archive folder are hidden behind a per-book **"Show N archived"** toggle |
 | Recent Releases | `/recent-releases` | New works from starred authors (last 5 years) |
 | All Releases | `/all-releases` | New works from all tracked authors |
 | Missing Works | `/missing` | Unowned books from starred authors — bulk-own, wanted flag, genre filter, year range filter, CSV export, per-book file-candidate matching panel (fuzzy-matched from author unmatched files + unknown folder) |
@@ -52,7 +58,7 @@ local files at all as a pure author/works tracker and wishlist.
 | Damaged | `/damaged` | Ebook files the integrity job couldn't open/convert, or that have fewer than 20 pages — **grouped by book**, with NZB replacement-search links, per-book "add to Wanted" + "archive all bad copies", per-file preview/mark-OK/recheck/remove/restore-from-archive, an on-demand **Check now**, and a **★ Starred authors only** filter (starred authors are flagged with a ★ on each group). See [Book integrity check](#book-integrity-check) |
 | Identified | `/identified` | Author/title/series guessed from the front matter of unmatched & untracked files (the *Identify books from content* job), to review, preview, **Apply** (match to an OpenLibrary work), or dismiss. A per-row **Find on OL** opens the OpenLibrary title search and the selected work is **matched immediately** — author resolved/created, book ensured, file moved and linked, row retired — no separate Apply click. See [Identifying books from content](#identifying-books-from-content) |
 | Manual Books | `/manual-books` | Every manually-added book (works not on OpenLibrary), **grouped by author** with a filter per column (title, author, year, series, owned), inline edit and delete. The daily [promote-manual-books job](#promote-manual-books-job) links each one to its real OpenLibrary work once OL lists it |
-| Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket — folders AND loose book files sitting directly at the quarantine root (with one-click "Try matching all" against the current watchlist). Each unclaimed folder shows an **integrity tally** (✓ ok / ⚠ damaged / ◌ unchecked) across its files, and an **Integrity** filter narrows the list to OK / Damaged / Unchecked (which then hides the `__unknown` items, since loose quarantine files have no integrity record). The browse pane drills into a folder, previews EPUB/PDF/TXT files in-place, matches a single file to an OpenLibrary work, and deletes files/folders (disk + DB) — and stays open after matching when other files remain; loose files get Preview / Match to book / Return to Incoming / Delete |
+| Untracked | `/untracked` | Unclaimed library folders and `__unknown` bucket — folders AND loose book files sitting directly at the quarantine root (with one-click "Try matching all" against the current watchlist). Each unclaimed folder shows an **integrity tally** (✓ ok / ⚠ damaged / ◌ unchecked) across its files, and an **Integrity** filter narrows the list to OK / Damaged / Unchecked (which then hides the `__unknown` items, since loose quarantine files have no integrity record). The browse pane drills into a folder, previews EPUB/PDF/TXT files in-place, matches a single file to an OpenLibrary work, and deletes files/folders (disk + DB) — and stays open after matching when other files remain; loose files get Preview / Match to book / Return to Incoming / Delete |
 | Unmatched physical | `/physical-unmatched` | Editable list of physical-books-import rows that couldn't be matched; "Re-run matching" re-tries the whole list against the current library |
 | Sync | `/sync` | Live sync dashboard with phase tracking and progress |
 | Schedules | `/schedules` | Cron expressions and enabled/disabled flags for background jobs; per-job last-N-run history panel |
@@ -86,13 +92,13 @@ author from the UI and add them — the sync then does the rest.
 4. **Fetch author bio** — on the first refresh after an OL key is resolved, the
    author's bio is pulled from `/authors/{key}.json` and stored. Displayed on
    the author detail page.
-5. **Scan** every enabled **library location** for Calibre-structured folders:
+5. **Scan** every enabled **library location** for library-structured folders:
    `<Root>/<Author>/<Title (id)>/…`.
-6. **Match** each Calibre author folder to a tracked author by normalized name
+6. **Match** each library author folder to a tracked author by normalized name
    (handles `Last, First`, diacritics, casing). Match each title folder to a
    work by normalized title — see [Title matching](#title-matching) for the
    multi-candidate strategy that handles `by Author`, trailing parens, etc.
-7. **Surface** Calibre folders with no matching tracked author as
+7. **Surface** library folders with no matching tracked author as
    "unclaimed" — click one to kick off an OpenLibrary search pre-filled with
    that folder's name, so you can add the author in one click.
 8. **Stamp** `CalibreScannedAt` on each author as their file-matching pass
@@ -346,7 +352,7 @@ layers that compound rather than override each other:
 
 1. **Author-prefix / suffix strip.** Files named `<Author> - <Title>.epub` or
    `<Title> - <Author>.epub` are rewritten to just the title before matching,
-   using the author's known name variants (display name, Calibre folder name,
+   using the author's known name variants (display name, library folder name,
    surname-first rotation, comma form). Without this, `Terry Brooks - Magic
    Kingdom for Sale.epub` would never find the `Magic Kingdom for Sale` book.
 2. **Series-filename parse.** When the stem matches the series grammar
@@ -399,7 +405,7 @@ suggestions also **never offer a book you've flagged foreign or suppressed**.
 
 ## Title matching
 
-Calibre folder names are normalized to lowercase alphanumeric + spaces, then
+Library folder names are normalized to lowercase alphanumeric + spaces, then
 matched against the `NormalizedTitle` stored for each OpenLibrary work.
 Multiple candidates are tried per folder in order; the first hit wins:
 
@@ -412,7 +418,7 @@ Characters `_`, `-`, `,`, `(`, `)` are all treated as whitespace during
 normalization, so `The_Hobbit_by_Tolkien_JRR` feeds the same pipeline.
 
 Leading articles (`the`, `a`, `an`) are stripped, diacritics are decomposed,
-and Calibre's trailing `(id)` numeric suffix is removed before any of the
+and the trailing `(id)` numeric suffix is removed before any of the
 above steps.
 
 **Suppressed / foreign books are never match targets.** A book you've hidden
@@ -425,7 +431,7 @@ the book list.
 ## Series filename parsing
 
 `TryParseSeriesFilename` recognises a range of common naming conventions used
-by libgen, Calibre downloads, and various ebook tools so the series organiser
+by libgen and various ebook tools so the series organiser
 can shelve a file under the right series folder even when the DB has no series
 metadata yet. The examples below are intentionally synthetic / anonymised, but
 they preserve the exact filename shapes the parser understands
@@ -445,7 +451,7 @@ they preserve the exact filename shapes the parser understands
 
 Positions are normalised — leading zeros are stripped (`069` → `69`), `.0`
 suffixes dropped (`3.0` → `3`), and fractionals preserved (`1.5`, `06.5`).
-Calibre `(123)` duplicate-ids and tool-added `_2` / `_3` suffixes are stripped
+Library `(123)` duplicate-ids and tool-added `_2` / `_3` suffixes are stripped
 from the recovered title. Nested series resolve to the deepest unambiguous
 match — `Empire Cycle - 311 - Ashen Banner 03 - Hollow Sky` picks the inner
 subseries because it's more specific than the outer index. Bare parent indices
@@ -516,7 +522,7 @@ sort/filter dimension on the list.
 Starred authors (priority ≥ 1) bypass the English-only language filter so works
 in any language are retrieved.
 
-The **author blacklist** (`AuthorBlacklist` table) prevents a Calibre folder
+The **author blacklist** (`AuthorBlacklist` table) prevents a library folder
 from ever being promoted to a tracked author. Blacklisted entries are matched
 by normalized name at scan time. Blacklisted authors that are already tracked
 are silently skipped when processing their works. **Exception:** if a folder
@@ -533,7 +539,7 @@ that targets the tracked watchlist and lets you choose one of two modes:
 
 - **Duplicate** — `IsPenName = false`. The child row is hidden from the main
   Authors list, its books are folded into the canonical's detail view, and its
-  on-disk files are physically moved from the child's Calibre folder into the
+  on-disk files are physically moved from the child's library folder into the
   canonical's. The merged book counts on the Authors list reflect both.
 - **Pen name** — `IsPenName = true`. Both authors stay independent and keep
   their own pages and files. Each page just shows a "Pen name of *X*" banner
@@ -732,7 +738,7 @@ order forms, and alternate names all resolve to the same entry:
 - **`Last, First` form** — `Clarke, Arthur C.` → `arthur c clarke`
 - **Surname-first rotation** — `arthur c clarke` also indexes as `clarke arthur c`
 - **First-token-to-back rotation** (3+ tokens) — `c clarke arthur`
-- **Calibre folder name** — same set of variants applied independently
+- **Library folder name** — same set of variants applied independently
 - **OL `alternate_names` and `personal_name`** — when an `OpenLibraryAuthor`
   row exists for the tracked author's OL key, every entry from
   `AlternateNames` (semicolon-delimited) and the `PersonalName` is indexed
@@ -838,7 +844,7 @@ author folder. On each pass:
    3. **Filename fallback** — when the DB has no series at all, the filename is parsed (`"Chaoswar Saga 03 - Title.epub"` → series `"Chaoswar Saga"`, position `3`) and backfilled into the database.
 3. Files already at the correct location are skipped; their DB paths are
    updated from the legacy directory format to the actual file path if needed.
-4. **Flat-file vs. classic layout** — when `FullPath` points to a file (flat-file), only that file is moved. When it points to a folder (classic Calibre layout), all folder contents are moved together so nested structures collapse in one pass.
+4. **Flat-file vs. classic layout** — when `FullPath` points to a file (flat-file), only that file is moved. When it points to a folder (classic library layout), all folder contents are moved together so nested structures collapse in one pass.
 5. Junk files (`.xml`, `.inf`, etc.) encountered during a move are deleted
    rather than copied to the target.
 6. Source containers and their empty ancestors are pruned bottom-up after each
@@ -993,7 +999,7 @@ ebook format — `epub`, `pdf`, `mobi`, `azw`/`azw3`, `fb2`, `cbz`/`cbr`, `lit`,
 - **EPUB** — the zip, `container.xml`, OPF package and spine must all parse, and
   the spine's combined text must estimate to ≥ 20 pages. EPUB has no fixed page
   count, so pages are estimated from readable text length at **~1,024 characters
-  per page** (the figure Calibre/Adobe use); markup is stripped before counting.
+  per page** (the figure Adobe uses); markup is stripped before counting.
   Spine documents are resolved tolerantly — URL-encoded hrefs, OPF-relative
   paths, `#fragments`, and case differences are all handled, with a fallback that
   tallies every content document in the archive — so a perfectly readable book is
@@ -1457,7 +1463,7 @@ Rows that match nothing are persisted to the `PhysicalBookUnmatched` table
 - **Edit** any row's Author / Title / Series-position / ISBN inline.
 - **Delete** rows you don't care about.
 - **Resolve** a row through an inline panel: it auto-selects a likely tracked
-  author (an exact name — including Calibre's "Surname, Forename" order —
+  author (an exact name — including the "Surname, Forename" order —
   resolves with no typing), then either matches the row to one of that
   author's books (with fuzzy title suggestions) or **adds it as a new book**
   under that author. Only top-level authors and pen names are offered as
@@ -1476,7 +1482,7 @@ the unmatched list shrinks every time you fix, resolve, or add a row.
 
 The library exposes an
 [OPDS 1.2](https://specs.opds.io/opds-1.2) Atom feed for reading apps (KOReader,
-Moon+ Reader, Calibre's Browse by server, etc.).
+Moon+ Reader, and other OPDS-capable clients).
 
 | Feed | URL |
 |------|-----|
@@ -1594,9 +1600,10 @@ endpoint still performs the real move/rename pass.
   [nodejs.org](https://nodejs.org). Check with `node --version`.
 - **A SQL Server instance** — any edition reachable over TCP/IP works. The next
   section walks through the easy free options.
-- **A folder for ebooks** — *not required to be a Calibre library, or to exist
-  yet.* An existing Calibre library works; so does any plain folder tree, or an
-  empty folder you populate later through the incoming pipeline. You can even
+- **A folder for ebooks** — *not required to be a structured library, or to exist
+  yet.* An existing `<Root>/<Author>/<Title>` library works; so does any plain
+  folder tree, or an empty folder you populate later through the incoming
+  pipeline. You can even
   skip library locations entirely and use the app purely to track authors,
   works, and a wishlist.
 - *(optional)* **Calibre's `ebook-convert` CLI** — only needed if you want to
@@ -2041,7 +2048,7 @@ itself lives in the same registry.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET    | `/api/unclaimed` | Calibre folders with no matching tracked author |
+| GET    | `/api/unclaimed` | Library folders with no matching tracked author |
 | DELETE | `/api/unclaimed?folder=` | Move a folder back to incoming and blacklist the name |
 | DELETE | `/api/unclaimed/all` | Move all unclaimed folders back to incoming |
 | GET    | `/api/unknown-folders` | Author-level folders AND loose book files inside `__unknown` (or the custom quarantine path when set); loose files carry `isFile: true` |
@@ -2050,7 +2057,7 @@ itself lives in the same registry.
 | DELETE | `/api/unknown-folders/all` | Move all `__unknown` folders and loose root files back to incoming |
 | GET    | `/api/untracked/contents` | List files and subfolders inside a single unclaimed / unknown author folder, used by the Untracked browse pane |
 | GET    | `/api/untracked/preview?format=` | Stream an EPUB / PDF / TXT file from inside the quarantine bucket for the in-browser preview modal |
-| POST   | `/api/untracked/match-openlibrary` | Match a single file or sub-folder inside the browse pane to an OpenLibrary work, creating the author if needed and moving the file onto disk |
+| POST   | `/api/untracked/match-openlibrary` | Match a single file or sub-folder inside the browse pane to an OpenLibrary work, creating the author if needed and moving the file onto disk. The destination is resolved from the file's current location to a real **library location** (primary/first enabled as a fallback) — never the quarantine path, so matching an item out of a custom `__unknown` folder files it under the author's library folder instead of burying it in a subfolder inside `__unknown` |
 | DELETE | `/api/untracked` | Delete a file or folder under the unclaimed / unknown bucket from disk and prune matching `LocalBookFile` rows. The Untracked page only asks for confirmation when the deletion is big (> 100 items) or of unknown size (an uncounted sub-folder); single files and small folders delete without a popup |
 
 ### Locations, settings, and ignored folders
@@ -2147,7 +2154,7 @@ trusted LAN).
 
 ## Data model
 
-- `Author` — OL key, name, Calibre folder name, status (Pending / Active /
+- `Author` — OL key, name, library folder name, status (Pending / Active /
   Excluded / NotFound), exclusion reason, priority (0–5), bio (from OL),
   last-synced timestamp, next-fetch-due-at, `CalibreScannedAt` (for fair scan
   ordering), `RefreshIntervalDays` (optional fixed cadence override in days),
@@ -2174,7 +2181,7 @@ trusted LAN).
   section at the bottom of the author detail page, never deleted),
   `Isbn` (ISBN-13 preferred, normalised on insert), FK to Author.
 - `LocalBookFile` — path on disk (file path after organizer runs, directory path
-  in classic Calibre layout), Calibre folder names, optional FKs to Author
+  in classic library layout), library folder names, optional FKs to Author
   and Book (null FK = unmatched), `Isbn` (extracted from `dc:identifier` when
   the EPUB has one), `AdditionalBookIds` (comma-separated list of secondary
   Book ids for omnibus / boxed-set files; the primary Book stays on `BookId`).

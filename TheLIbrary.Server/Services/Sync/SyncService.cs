@@ -13,11 +13,11 @@ using TheLibrary.Server.Services.Scheduling;
 namespace TheLibrary.Server.Services.Sync;
 
 // Sync pipeline:
-//   1. Scan every enabled library location (Calibre layout).
-//   2. Ensure an Author row exists for each Calibre author folder.
-//   3. For every Author (whether Calibre-derived or manually added), resolve
+//   1. Scan every enabled library location (library layout).
+//   2. Ensure an Author row exists for each library author folder.
+//   3. For every Author (whether library-derived or manually added), resolve
 //      its OpenLibrary key if missing, then fetch English works.
-//   4. Link each Calibre folder/file to its author and book by normalized name.
+//   4. Link each library folder/file to its author and book by normalized name.
 //   5. Prune LocalBookFile rows not seen during this run.
 public sealed class SyncService
 {
@@ -101,11 +101,11 @@ public sealed class SyncService
         foreach (var loc in locations) loc.LastScanAt = syncStartedUtc;
         await db.SaveChangesAsync(ct);
 
-        // Phase 2: reconcile every Calibre folder to a DB Author row (opportunistically
+        // Phase 2: reconcile every library folder to a DB Author row (opportunistically
         // stamping an OL key from the local catalog so Phase 3 can skip the OL
         // search step entirely for any folder whose name normalizes to a known
         // OL author).
-        MutateState(s => { s.Phase = SyncPhase.ResolvingAuthors; s.Message = "Registering authors from Calibre folders"; });
+        MutateState(s => { s.Phase = SyncPhase.ResolvingAuthors; s.Message = "Registering authors from library folders"; });
         await ReconcileAuthorFoldersAsync(db, entries, ct);
 
         // Phase 3: per-author unified pass — resolve OL key and fetch works
@@ -134,7 +134,7 @@ public sealed class SyncService
         });
     }
 
-    // Reconciles Calibre folders against the tracked-author watchlist.
+    // Reconciles library folders against the tracked-author watchlist.
     // Only folders whose Author row has Priority>0 or Status=Active stay in the
     // main collection — everything else is relocated to __unknown. New folders
     // with no existing Author row are also sent to __unknown; authors must be
@@ -347,7 +347,7 @@ public sealed class SyncService
         foreach (var f in existingList) existingByPath[Canon(f.FullPath)] = f;
 
         // Migration bridge: for records whose FullPath points to a folder (classic
-        // Calibre layout), also index by the primary ebook file inside that folder.
+        // library layout), also index by the primary ebook file inside that folder.
         // This lets the updated scanner (which returns file-path entries for the
         // flat-file layout) find and migrate old folder-path records transparently
         // on the first sync after the series organizer has moved the files.
@@ -761,7 +761,7 @@ public sealed class SyncService
     }
 
     // True when `segment` normalises (with name-variant rotations) to the
-    // author's name or Calibre folder name.
+    // author's name or library folder name.
     private static bool MatchesAuthor(string segment, Author author)
     {
         if (string.IsNullOrWhiteSpace(segment)) return false;

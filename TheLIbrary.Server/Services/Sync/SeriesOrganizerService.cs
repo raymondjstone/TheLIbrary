@@ -401,7 +401,7 @@ public sealed class SeriesOrganizerService
             {
                 bool hasSubdirFiles = false;
                 // Only look for title-subfolder remnants when the DB record still
-                // points to a directory (old Calibre layout). If the record already
+                // points to a directory (old library layout). If the record already
                 // points to a specific file, there is nothing for THIS record to
                 // flatten. recordIsDirectory was determined by the single listing
                 // above — no extra stat here.
@@ -489,7 +489,7 @@ public sealed class SeriesOrganizerService
                 // the whole sourceContainer would drag sibling books (which
                 // have their own records) into the wrong series subfolder.
                 //
-                // Classic Calibre layout: FullPath is a title folder whose
+                // Classic library layout: FullPath is a title folder whose
                 // entire contents belong to this one book. Enumerate everything.
                 bool isFlatFile = primaryEbook is not null
                     && File.Exists(primaryEbook)

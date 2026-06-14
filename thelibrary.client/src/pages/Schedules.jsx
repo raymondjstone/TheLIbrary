@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 
 const labels = {
-    'sync': 'Sync (Calibre → OpenLibrary)',
+    'sync': 'Sync (Library → OpenLibrary)',
     'seed': 'Seed authors from dump',
     'author-updates': 'Apply author updates',
     'incoming': 'Process incoming folder',

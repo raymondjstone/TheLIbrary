@@ -39,7 +39,7 @@ public static class FrontMatterExtractor
     private static readonly Regex Isbn13Bare = new(
         @"\b(97[89][-\s]?(?:[0-9][-\s]?){9}[0-9])\b", RegexOptions.Compiled);
 
-    // Project Gutenberg / Calibre plain-text headers.
+    // Project Gutenberg / e-reader plain-text headers.
     private static readonly Regex GutenbergTitle = new(@"^\s*Title\s*:\s*(.+?)\s*$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex GutenbergAuthor = new(@"^\s*Author\s*:\s*(.+?)\s*$",

@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Link, Outlet } from 'react-router-dom'
 import './App.css'
 import CoverHoverLayer from './components/CoverHoverLayer.jsx'
 
@@ -7,8 +7,9 @@ export default function Layout() {
         <div className="layout">
             <CoverHoverLayer />
             <header className="topbar">
-                <h1 className="brand">The Library</h1>
+                <Link to="/" className="brand">The Library</Link>
                 <nav>
+                    <NavLink to="/" end>Home</NavLink>
                     <NavLink to="/authors">Authors</NavLink>
                     <NavLink to="/recent-releases">Recent Releases</NavLink>
                     <NavLink to="/all-releases">All Releases</NavLink>

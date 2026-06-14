@@ -62,6 +62,10 @@ export default function Sync() {
         poll()
     }
 
+    // The server's SyncPhase enum still serializes "ScanningCalibre"; show a
+    // library-branded label instead so the UI never surfaces "Calibre".
+    const phaseLabel = (phase) => phase === 'ScanningCalibre' ? 'ScanningLibrary' : phase
+
     const incomingRunning = incoming?.phase === 'Running'
 
     const running = state && !['Idle', 'Done', 'Failed'].includes(state.phase)
@@ -103,7 +107,7 @@ export default function Sync() {
                 </div>
             ) : null}
 
-            <p>Scans Calibre, resolves authors on OpenLibrary, fetches English works (filters variants and pre-1930-only authors), and matches local files.</p>
+            <p>Scans the library, resolves authors on OpenLibrary, fetches English works (filters variants and pre-1930-only authors), and matches local files.</p>
 
             <div className="toolbar">
                 <button onClick={() => post('/api/sync/start')} disabled={running}>
@@ -135,7 +139,7 @@ export default function Sync() {
 
             {state ? (
                 <div className="sync-status">
-                    <div><strong>Phase:</strong> {state.phase}</div>
+                    <div><strong>Phase:</strong> {phaseLabel(state.phase)}</div>
                     {state.message ? <div><strong>Step:</strong> {state.message}</div> : null}
 
                     {seeding || state.dumpAuthorsInserted > 0 ? (

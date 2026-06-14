@@ -85,9 +85,23 @@ public sealed class BookIntegrityService
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
 
         var max = await LoadMaxBooksPerRunAsync(db, ct);
+        var untrackedFirst = await LoadUntrackedFirstAsync(db, ct);
         var archiveLeaf = await LoadArchiveLeafAsync(db, ct);
         var locations = await db.LibraryLocations.AsNoTracking()
             .Where(l => l.Enabled).Select(l => l.Path).ToListAsync(ct);
+
+        // When "Scan untracked files first" is enabled, run the __unknown bucket
+        // phase before author-linked files. We still respect the overall max-per-run
+        // budget: the untracked phase uses as many slots as it needs (up to max),
+        // and any remainder goes to the tracked phase in the same run.
+        if (untrackedFirst)
+        {
+            var (untrackedSummary, remaining) = await RunUntrackedPhaseAsync(db, max, archiveLeaf, locations, ct);
+            if (remaining == 0)
+                return untrackedSummary; // budget fully consumed by untracked files
+            // Continue below with the tracked phase, using the remaining budget.
+            max = remaining;
+        }
 
         // Self-heal: clear the damaged flag on any flagged row that isn't an ebook
         // FILE — a directory / extensionless row an older check wrongly flagged.
@@ -168,7 +182,8 @@ public sealed class BookIntegrityService
         {
             // All author-linked files are done — move on to the untracked files
             // sitting in the __unknown bucket (the UnknownFiles index).
-            return await RunUntrackedPhaseAsync(db, max, archiveLeaf, locations, ct);
+            var (summary, _) = await RunUntrackedPhaseAsync(db, max, archiveLeaf, locations, ct);
+            return summary;
         }
 
         // Whenever the run touches a file that belongs to a book, fold in EVERY
@@ -335,12 +350,12 @@ public sealed class BookIntegrityService
         return Path.Combine(dir, $"{stem}_{DateTime.UtcNow:yyyyMMddHHmmss}{ext}");
     }
 
-    // Phase 2: only reached once every author-linked file is done. Checks the
-    // untracked files in the __unknown bucket (UnknownFiles index); a damaged one
-    // is archived (author unknown — the move just preserves its library-relative
-    // path). Healthy ones are recorded in UnknownFileChecks so they aren't
-    // re-checked every run (that table survives the UnknownFiles re-index).
-    private async Task<BookIntegritySummary> RunUntrackedPhaseAsync(
+    // Checks the untracked files in the __unknown bucket (UnknownFiles index).
+    // A damaged file is archived; healthy ones are recorded in UnknownFileChecks
+    // so they aren't re-checked on every run (that table survives the UnknownFiles
+    // re-index). Returns the summary plus the number of budget slots still unused,
+    // so the caller can continue with tracked files when UntrackedFirst is enabled.
+    private async Task<(BookIntegritySummary Summary, int Remaining)> RunUntrackedPhaseAsync(
         LibraryDbContext db, int max, string archiveLeaf, IReadOnlyList<string> locations, CancellationToken ct)
     {
         var candidates = await db.UnknownFiles.AsNoTracking()
@@ -361,7 +376,7 @@ public sealed class BookIntegrityService
         {
             _log.LogInformation("Book-integrity job: nothing new to check (author-linked + untracked all done)");
             _currentMessage = "Done — nothing to check";
-            return new BookIntegritySummary(0, 0, 0, 0);
+            return (new BookIntegritySummary(0, 0, 0, 0), max);
         }
 
         int checkedCount = 0, ok = 0, damaged = 0, skipped = 0, archived = 0;
@@ -417,7 +432,10 @@ public sealed class BookIntegrityService
             "Book-integrity untracked phase done — checked {Checked}, ok {Ok}, damaged {Damaged} ({Archived} archived), skipped {Skipped}",
             checkedCount, ok, damaged, archived, skipped);
         _currentMessage = $"Done — checked {checkedCount} untracked, {archived} damaged archived";
-        return new BookIntegritySummary(checkedCount, ok, damaged, skipped);
+        // Return remaining budget so the caller can continue with tracked files
+        // when UntrackedFirst is enabled and the full budget wasn't consumed.
+        var remaining = Math.Max(0, max - candidates.Count);
+        return (new BookIntegritySummary(checkedCount, ok, damaged, skipped), remaining);
     }
 
     private static async Task RecordUntrackedCheckAsync(LibraryDbContext db, UnknownFile uf, CancellationToken ct)
@@ -450,6 +468,15 @@ public sealed class BookIntegrityService
             .FirstOrDefaultAsync(ct);
         return int.TryParse(raw, out var n) && n > 0 ? n : DefaultMaxBooksPerRun;
     }
+
+    private static async Task<bool> LoadUntrackedFirstAsync(LibraryDbContext db, CancellationToken ct)
+        => string.Equals(
+            await db.AppSettings.AsNoTracking()
+                .Where(s => s.Key == AppSettingKeys.ContentScanUntrackedFirst)
+                .Select(s => s.Value)
+                .FirstOrDefaultAsync(ct),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
 
     // The dedupe archive folder (leaf name or absolute path), forward-slash
     // normalised. Used only to rank archived copies last in the candidate scan.

@@ -214,7 +214,12 @@ public sealed class UntrackedAuthorAssigner
     // Which enabled library root should a file's author folder live under?
     // Files in the custom quarantine folder are intentionally outside every
     // library location — the primary (or first enabled) location stands in.
-    private async Task<(string? Root, string? Error)> ResolveDestinationRootAsync(
+    // Resolves the library root that an untracked file should be filed under,
+    // given its current on-disk path. A file living under __unknown (especially
+    // a CUSTOM __unknown path that sits outside every library location) must NOT
+    // be filed relative to __unknown — its author folder belongs under a real
+    // library root, so fall back to the primary/first enabled location.
+    public async Task<(string? Root, string? Error)> ResolveDestinationRootAsync(
         string sourcePath, CancellationToken ct)
     {
         var locations = await _db.LibraryLocations.AsNoTracking().Where(l => l.Enabled).ToListAsync(ct);

@@ -1503,8 +1503,8 @@ export default function AuthorDetail() {
                     ? <>Next refresh: {new Date(data.nextFetchAt).toLocaleDateString()}{' · '}</>
                     : <>Next refresh: due now{' · '}</>}
                 {data.calibreScannedAt
-                    ? <>Last Calibre scan: {new Date(data.calibreScannedAt).toLocaleDateString()}{' · '}</>
-                    : <>Last Calibre scan: never{' · '}</>}
+                    ? <>Last library scan: {new Date(data.calibreScannedAt).toLocaleDateString()}{' · '}</>
+                    : <>Last library scan: never{' · '}</>}
                 {editingInterval ? (
                     <span>
                         <input

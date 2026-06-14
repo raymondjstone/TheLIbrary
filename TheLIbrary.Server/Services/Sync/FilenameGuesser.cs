@@ -95,8 +95,8 @@ public static class FilenameGuesser
     private static readonly Regex TrailingParenAuthor = new(
         @"^(?<t>.+?)\s*\((?<a>[^()]{3,60})\)$", RegexOptions.Compiled);
 
-    // Segments that are placeholder noise, not data — Calibre writes
-    // "<something> - Unknown" when it has no title. Never a title, and
+    // Segments that are placeholder noise, not data — library tools write
+    // "<something> - Unknown" when they have no title. Never a title, and
     // CRUCIALLY never an author: the OL catalogue contains literal "Unknown"/
     // "Anonymous" author records, so an unfiltered placeholder would validate.
     private static readonly HashSet<string> PlaceholderSegments =
@@ -382,7 +382,7 @@ public static class FilenameGuesser
         if (string.IsNullOrWhiteSpace(raw)) return null;
         // Strip format/version tags first so "[rtf]_1" doesn't leave "1" behind.
         var s = FormatTag.Replace(raw, "");
-        // "_1", "_2" — Calibre duplicate suffixes; strip before the _ → space pass.
+        // "_1", "_2" — library duplicate suffixes; strip before the _ → space pass.
         s = Regex.Replace(s, @"_\d+$", "");
         // "_" is how a sanitiser wrote ":" ("Honest Man_ A BWWM Romance");
         // a lone "_" elsewhere was some other illegal character — a space will do.
