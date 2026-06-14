@@ -34,9 +34,11 @@ and wishlist.
   fallback), CBZ (ComicInfo.xml), DOCX / ODT (Dublin Core), TXT (filename
   fallback only)
 - **In-browser preview** — EPUB / PDF / TXT render natively via epub.js,
-  the browser's PDF viewer, and a plain `<pre>` block respectively (available
-  on the author page **and** in the Untracked browse pane for files not yet
-  linked to a book)
+  the browser's PDF viewer, and a plain `<pre>` block respectively; **every
+  other supported format (MOBI / AZW / AZW3 / FB2 / LIT / DOCX / ODT) is
+  automatically converted to EPUB on the server first**, so it can be read
+  in-browser too (available on the author page **and** in the Untracked browse
+  pane for files not yet linked to a book)
 - **Pushover alerts** — optional per-author push notifications when a new
   book by that author is detected during a refresh
 
@@ -462,7 +464,7 @@ spanning every pattern above plus negative examples that must return all-null.
 
 ## In-browser preview
 
-Click any previewable format chip (`epub`, `pdf`, `txt`, `rtf`, `mobi`, `azw`, `azw3`, `fb2`, `lit`, `docx`, `odt`, `cbz`, `cbr`, `zip`) on an author detail page or the Untracked page to open an in-browser preview modal. The modal handles each format dynamically:
+Click any previewable format chip (`epub`, `pdf`, `txt`, `rtf`, `mobi`, `azw`, `azw3`, `fb2`, `lit`, `docx`, `odt`, `cbz`, `cbr`, `zip`) on an author detail page or the Untracked page to open an in-browser preview modal. **EPUB, PDF and TXT render directly; any other supported ebook format is automatically converted to EPUB on the server first (`ebook-convert`) and then streamed to the EPUB reader — so you can read it in the browser without downloading or installing anything.** The modal handles each format dynamically:
 
 - **EPUB** — rendered with [epub.js](https://github.com/futurepress/epub.js).
   Has prev/next paging controls and uses byte-range requests so large books
