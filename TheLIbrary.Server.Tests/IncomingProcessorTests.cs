@@ -203,10 +203,10 @@ public class IncomingProcessorTests
         Assert.Equal(1, result.Matched);
         Assert.Equal(0, result.UnknownAuthor);
         // File must be under the author's folder, not __unknown.
-        Assert.False(fs.ExistingFiles.Any(f =>
-            f.Contains("__unknown", StringComparison.OrdinalIgnoreCase)));
-        Assert.True(fs.ExistingFiles.Any(f =>
-            f.Contains("Michael Todd", StringComparison.OrdinalIgnoreCase)));
+        Assert.DoesNotContain(fs.ExistingFiles, f =>
+            f.Contains("__unknown", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(fs.ExistingFiles, f =>
+            f.Contains("Michael Todd", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -250,10 +250,10 @@ public class IncomingProcessorTests
         Assert.Equal(1, result.Processed);
         Assert.Equal(1, result.Matched);
         Assert.Equal(0, result.UnknownAuthor);
-        Assert.False(fs.ExistingFiles.Any(f =>
-            f.Contains("__unknown", StringComparison.OrdinalIgnoreCase)));
-        Assert.True(fs.ExistingFiles.Any(f =>
-            f.Contains("Michael Todd", StringComparison.OrdinalIgnoreCase)));
+        Assert.DoesNotContain(fs.ExistingFiles, f =>
+            f.Contains("__unknown", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(fs.ExistingFiles, f =>
+            f.Contains("Michael Todd", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -282,6 +282,40 @@ public class IncomingProcessorTests
         Assert.Equal(AuthorStatus.Pending, author.Status);
         Assert.True(fs.FileExists("C:\\library\\Felicia Plimsoll\\A Most Unusual Mango\\A Most Unusual Mango - Felicia Plimsoll.azw3"));
         Assert.True(fs.FileExists("C:\\library\\Felicia Plimsoll\\A Most Unusual Kumquat\\A Most Unusual Kumquat - Felicia Plimsoll.azw3"));
+    }
+
+    [Fact]
+    public async Task ProcessUnknownAsync_AutoAdds_OL_Catalogue_Author_And_Files_The_Book()
+    {
+        // The user's exact case: a single quarantined file whose author IS in
+        // the OpenLibraryAuthors table but is NOT on the watchlist. Reprocess
+        // must add them (Pending) and deliver the file — not bin it.
+        await using var db = CreateDb();
+        db.LibraryLocations.Add(new LibraryLocation { Id = 1, Path = "C:\\library", IsPrimary = true, Enabled = true, Label = "Default", CreatedAt = DateTime.UtcNow });
+        db.OpenLibraryAuthors.Add(new OpenLibraryAuthor
+        {
+            OlKey = "OL999A",
+            Name = "Jane Olwriter",
+            NormalizedName = TitleNormalizer.NormalizeAuthor("Jane Olwriter"),
+            ImportedAt = DateTime.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        var fs = new FakeFileSystem();
+        fs.CreateDirectory("C:\\library");
+        fs.CreateDirectory("C:\\library\\__unknown");
+        var f1 = "C:\\library\\__unknown\\Some Book - Jane Olwriter.azw3";
+        fs.AddFile(f1);
+        fs.FilesByDirectory["C:\\library\\__unknown"] = [f1];
+
+        var sut = new IncomingProcessor(db, fs, NullLogger<IncomingProcessor>.Instance);
+        var result = await sut.ProcessUnknownAsync(null, CancellationToken.None);
+
+        Assert.Equal(1, result.Matched);
+        var author = Assert.Single(db.Authors.Where(a => a.Name == "Jane Olwriter"));
+        Assert.Equal(AuthorStatus.Pending, author.Status);
+        Assert.Equal("OL999A", author.OpenLibraryKey);
+        Assert.True(fs.FileExists("C:\\library\\Jane Olwriter\\Some Book\\Some Book - Jane Olwriter.azw3"));
     }
 
     [Fact]

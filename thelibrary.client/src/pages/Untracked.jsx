@@ -41,11 +41,33 @@ function OlSuggestionPanel({ state, onQuickAdd, quickAddBusy }) {
     )
 }
 
+// Integrity-check tally for an unclaimed folder. null result = never checked,
+// true = passed, false = damaged (see BookIntegrityService / LocalBookFile).
+function IntegrityBadge({ ok = 0, damaged = 0, unchecked: notChecked = 0 }) {
+    if (ok + damaged + notChecked === 0) return null
+    return (
+        <span style={{ marginLeft: '0.4rem', display: 'inline-flex', gap: '0.55rem' }}>
+            {damaged > 0 && <span className="error" title="Failed the integrity check (damaged)">⚠ {damaged} damaged</span>}
+            {ok > 0 && <span style={{ color: 'var(--ok, #16a34a)' }} title="Passed the integrity check">✓ {ok} ok</span>}
+            {notChecked > 0 && <span className="subtle" title="Not yet integrity checked">◌ {notChecked} unchecked</span>}
+        </span>
+    )
+}
+
+// Classify a folder by its worst integrity state, for the status filter.
+const integrityStatus = (u) => {
+    if ((u.integrityDamaged || 0) > 0) return 'damaged'
+    if ((u.integrityUnchecked || 0) > 0) return 'unchecked'
+    if ((u.integrityOk || 0) > 0) return 'ok'
+    return 'unchecked'
+}
+
 export default function Untracked() {
     const [unclaimed, setUnclaimed] = useState([])
     const [unknownFolders, setUnknownFolders] = useState([])
     const [search, setSearch] = useState('')
     const [suffixFilter, setSuffixFilter] = useState('')
+    const [statusFilter, setStatusFilter] = useState('all')
     const [sortOrder, setSortOrder] = useState('name')
     const [pageSize, setPageSize] = useState(100)
     const [unclaimedPage, setUnclaimedPage] = useState(1)
@@ -642,8 +664,11 @@ export default function Untracked() {
         }
         return a.authorFolder.localeCompare(b.authorFolder)
     }
-    const filteredUnclaimed = [...unclaimed.filter(matchesFolderFilters)].sort(compareFolders)
-    const filteredUnknownFolders = [...unknownFolders.filter(matchesFolderFilters)].sort(compareFolders)
+    const matchesStatusFilter = (u) => statusFilter === 'all' || integrityStatus(u) === statusFilter
+    const filteredUnclaimed = [...unclaimed.filter(matchesFolderFilters).filter(matchesStatusFilter)].sort(compareFolders)
+    // Unknown-folder items now carry IntegrityOk/IntegrityUnchecked tallies from
+    // the server, so they can be filtered by status the same way unclaimed items are.
+    const filteredUnknownFolders = [...unknownFolders.filter(matchesFolderFilters).filter(matchesStatusFilter)].sort(compareFolders)
 
     const totalUnclaimedPages = Math.max(1, Math.ceil(filteredUnclaimed.length / pageSize))
     const totalUnknownPages = Math.max(1, Math.ceil(filteredUnknownFolders.length / pageSize))
@@ -684,6 +709,19 @@ export default function Untracked() {
                     }}>
                         <option value="">All</option>
                         {allFormats.map(format => <option key={format} value={format}>{format.toUpperCase()}</option>)}
+                    </select>
+                </label>
+                <label className="subtle" style={{ display: 'inline-flex', gap: '0.4rem', alignItems: 'center' }}>
+                    Integrity
+                    <select value={statusFilter} onChange={e => {
+                        setStatusFilter(e.target.value)
+                        setUnclaimedPage(1)
+                        setUnknownPage(1)
+                    }}>
+                        <option value="all">All</option>
+                        <option value="ok">✓ OK</option>
+                        <option value="damaged">⚠ Damaged</option>
+                        <option value="unchecked">◌ Unchecked</option>
                     </select>
                 </label>
                 <label className="subtle" style={{ display: 'inline-flex', gap: '0.4rem', alignItems: 'center' }}>
@@ -757,6 +795,7 @@ export default function Untracked() {
                             <li key={u.authorFolder}>
                                 <span title="Folder" style={{ marginRight: '0.3rem' }}>📁</span>
                                 <code>{u.authorFolder}</code> <span className="subtle">(folder · {u.fileCount} item{u.fileCount === 1 ? '' : 's'}{u.formats?.length ? ` · ${u.formats.map(f => f.toUpperCase()).join(', ')}` : ''})</span>
+                                <IntegrityBadge ok={u.integrityOk} damaged={u.integrityDamaged} unchecked={u.integrityUnchecked} />
                                 <button className="btn-ghost"
                                     onClick={() => fetchSuggestions(u.authorFolder)}
                                     disabled={suggestionsByFolder[u.authorFolder]?.loading}>
@@ -831,6 +870,7 @@ export default function Untracked() {
                             <li key={u.authorFolder}>
                                 <span title={u.isFile ? 'File' : 'Folder'} style={{ marginRight: '0.3rem' }}>{u.isFile ? '📄' : '📁'}</span>
                                 <code>{u.authorFolder}</code> <span className="subtle">({u.isFile ? 'file' : `folder · ${u.fileCount} item${u.fileCount === 1 ? '' : 's'}`}{u.formats?.length ? ` · ${u.formats.map(f => f.toUpperCase()).join(', ')}` : ''})</span>
+                                <IntegrityBadge ok={u.integrityOk} damaged={0} unchecked={u.integrityUnchecked} />
                                 {!u.isFile && (
                                     <>
                                         <button className="btn-ghost"

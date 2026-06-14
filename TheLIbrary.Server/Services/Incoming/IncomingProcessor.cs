@@ -411,9 +411,16 @@ public sealed class IncomingProcessor
                         {
                             unknown++;
                             allMoved = false;
-                            Report(null, identifiedButUntracked is not null
-                                ? $"author identified ({identifiedButUntracked}) but not on watchlist: {file}"
-                                : $"still unmatched: {file}");
+                            // During reprocess (autoAddOlAuthors=true) an OL-catalogue
+                            // author would have been auto-added, so a refusal here can
+                            // ONLY mean the author is excluded or blacklisted — say
+                            // that, not the misleading "not on watchlist" (which is
+                            // only the correct reason for a regular incoming run).
+                            Report(null, identifiedButUntracked is null
+                                ? $"still unmatched: {file}"
+                                : autoAddOlAuthors
+                                    ? $"author identified ({identifiedButUntracked}) but excluded or blacklisted — left in unknown: {file}"
+                                    : $"author identified ({identifiedButUntracked}) but not on watchlist: {file}");
                             continue;
                         }
                         unknown++;
@@ -653,14 +660,23 @@ public sealed class IncomingProcessor
     {
         if (entry.IsTracked && entry.TrackedAuthorId is int trackedId)
         {
-            // An Excluded author must not attract files into a collection
-            // folder — the user banished them. The OL-only branch below already
-            // refuses Excluded; without this the tracked branch didn't.
-            var status = await _db.Authors.AsNoTracking()
-                .Where(a => a.Id == trackedId)
-                .Select(a => (AuthorStatus?)a.Status)
-                .FirstOrDefaultAsync(ct);
-            if (status is null or AuthorStatus.Excluded) return null;
+            // An Excluded author must not attract files during a regular incoming
+            // run. During reprocess-unknown (autoAddOlAuthors=true) the file was
+            // identified from its own content — un-exclude the author and proceed
+            // so the file is delivered instead of left in quarantine indefinitely.
+            var trackedAuthor = await _db.Authors.FirstOrDefaultAsync(a => a.Id == trackedId, ct);
+            if (trackedAuthor is null) return null;
+            if (trackedAuthor.Status == AuthorStatus.Excluded)
+            {
+                if (!autoAddOlAuthors) return null;
+                _log.LogInformation(
+                    "Auto-lifting exclusion on author '{Name}' — identified from file content during unknown reprocess",
+                    trackedAuthor.Name);
+                trackedAuthor.Status = AuthorStatus.Pending;
+                trackedAuthor.ExclusionReason = null;
+                await _db.SaveChangesAsync(ct);
+                await RemoveFromBlacklistIfPresentAsync(trackedAuthor.Name, blacklistSet, ct);
+            }
 
             if (!string.IsNullOrEmpty(entry.OpenLibraryKey))
             {
@@ -681,20 +697,19 @@ public sealed class IncomingProcessor
 
                 // Mismatch — wipe the suspect key and restore the original name
                 // so AuthorRefresher searches with the correct string next sync.
-                var stale = await _db.Authors.FirstOrDefaultAsync(a => a.Id == trackedId, ct);
-                if (stale is not null)
+                if (trackedAuthor is not null)
                 {
-                    stale.OpenLibraryKey = null;
-                    stale.Name = entry.FolderName;
-                    stale.Status = AuthorStatus.Pending;
-                    stale.NextFetchAt = null;
+                    trackedAuthor.OpenLibraryKey = null;
+                    trackedAuthor.Name = entry.FolderName;
+                    trackedAuthor.Status = AuthorStatus.Pending;
+                    trackedAuthor.NextFetchAt = null;
                     await _db.SaveChangesAsync(ct);
                 }
                 // Fall through to backfill; garbage names won't be in the
                 // OL catalog → returns null → file routed to __unknown.
             }
 
-            var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == trackedId, ct);
+            var author = trackedAuthor;
             if (author is null) return null;
             if (!string.IsNullOrEmpty(author.OpenLibraryKey))
             {
@@ -742,12 +757,32 @@ public sealed class IncomingProcessor
             if (!autoAddOlAuthors) return null;
 
             var normName = TitleNormalizer.NormalizeAuthor(entry.DisplayName);
-            if (blacklistSet.Contains(normName)) return null;
+            if (blacklistSet.Contains(normName))
+            {
+                // During reprocess-unknown, a corroborated author in the blacklist
+                // was placed there when the user previously deleted them. The file
+                // content now identifies them again — remove the blacklist entry
+                // so they can be re-created as Pending below.
+                if (!autoAddOlAuthors) return null;
+                _log.LogInformation(
+                    "Auto-removing '{Name}' from blacklist — identified from file content during unknown reprocess",
+                    entry.DisplayName);
+                await RemoveFromBlacklistIfPresentAsync(entry.DisplayName, blacklistSet, ct);
+            }
 
             var byName = await _db.Authors.FirstOrDefaultAsync(a => a.Name == entry.DisplayName, ct);
             if (byName is not null)
             {
-                if (byName.Status == AuthorStatus.Excluded) return null;
+                if (byName.Status == AuthorStatus.Excluded)
+                {
+                    if (!autoAddOlAuthors) return null;
+                    _log.LogInformation(
+                        "Auto-lifting exclusion on author '{Name}' — identified from file content during unknown reprocess",
+                        byName.Name);
+                    byName.Status = AuthorStatus.Pending;
+                    byName.ExclusionReason = null;
+                    await _db.SaveChangesAsync(ct);
+                }
                 return new AuthorIndexEntry(
                     DisplayName: byName.Name,
                     FolderName: !string.IsNullOrWhiteSpace(byName.CalibreFolderName) ? byName.CalibreFolderName! : byName.Name,
@@ -775,7 +810,22 @@ public sealed class IncomingProcessor
         if (existing is not null)
         {
             if (existing.Status == AuthorStatus.Excluded)
-                return null;
+            {
+                if (!autoAddOlAuthors)
+                {
+                    _log.LogInformation(
+                        "Author '{Name}' ({OlKey}) is EXCLUDED — leaving file in __unknown (not auto-added)",
+                        existing.Name, entry.OpenLibraryKey);
+                    return null;
+                }
+                _log.LogInformation(
+                    "Auto-lifting exclusion on author '{Name}' ({OlKey}) — identified from file content during unknown reprocess",
+                    existing.Name, entry.OpenLibraryKey);
+                existing.Status = AuthorStatus.Pending;
+                existing.ExclusionReason = null;
+                await _db.SaveChangesAsync(ct);
+                await RemoveFromBlacklistIfPresentAsync(existing.Name, blacklistSet, ct);
+            }
 
             var calibreFolder = existing.CalibreFolderName;
             var folderName = !string.IsNullOrWhiteSpace(calibreFolder) && TitleNormalizer.IsPlausibleAuthorName(calibreFolder)
@@ -792,7 +842,20 @@ public sealed class IncomingProcessor
         var normDisplay = TitleNormalizer.NormalizeAuthor(entry.DisplayName);
         var normFolder = TitleNormalizer.NormalizeAuthor(entry.FolderName);
         if (blacklistSet.Contains(normDisplay) || blacklistSet.Contains(normFolder))
-            return null;
+        {
+            if (!autoAddOlAuthors)
+            {
+                _log.LogInformation(
+                    "Author '{Name}' ({OlKey}) is BLACKLISTED — leaving file in __unknown (not auto-added)",
+                    entry.DisplayName, entry.OpenLibraryKey);
+                return null;
+            }
+            _log.LogInformation(
+                "Auto-removing '{Name}' ({OlKey}) from blacklist — identified from file content during unknown reprocess",
+                entry.DisplayName, entry.OpenLibraryKey);
+            await RemoveFromBlacklistIfPresentAsync(entry.DisplayName, blacklistSet, ct);
+            await RemoveFromBlacklistIfPresentAsync(entry.FolderName, blacklistSet, ct);
+        }
 
         // Author matched OL but is not on the watchlist yet.
         // During a reprocess-unknown run we auto-create a Pending Author row so
@@ -823,6 +886,24 @@ public sealed class IncomingProcessor
             "Author '{Name}' ({OlKey}) matched OL but is not tracked — routing to __unknown",
             entry.DisplayName, entry.OpenLibraryKey);
         return null;
+    }
+
+    // Removes all blacklist entries whose NormalizedName matches the given name
+    // and also purges the name from the in-memory set so the current run sees
+    // the change immediately. Safe to call when no entry exists.
+    private async Task RemoveFromBlacklistIfPresentAsync(
+        string name, HashSet<string> blacklistSet, CancellationToken ct)
+    {
+        var norm = TitleNormalizer.NormalizeAuthor(name);
+        var rows = await _db.AuthorBlacklist
+            .Where(b => b.NormalizedName == norm)
+            .ToListAsync(ct);
+        if (rows.Count > 0)
+        {
+            _db.AuthorBlacklist.RemoveRange(rows);
+            await _db.SaveChangesAsync(ct);
+        }
+        blacklistSet.Remove(norm);
     }
 
     private static readonly System.Text.RegularExpressions.Regex CorroborationAuthorSeparator = new(

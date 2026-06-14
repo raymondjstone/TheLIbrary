@@ -405,6 +405,15 @@ public sealed class AuthorRefresher
             author.Status = AuthorStatus.Active;
             author.ExclusionReason = null;
         }
+        // An author whose ebook files we physically hold is never excluded.
+        // Excluding them makes sync sweep their folder into __unknown, which is
+        // how the library was bleeding into the quarantine — OpenLibrary
+        // returning no recent works says nothing about books already on disk.
+        else if (await _db.LocalBookFiles.AnyAsync(f => f.AuthorId == author.Id, ct))
+        {
+            author.Status = AuthorStatus.Active;
+            author.ExclusionReason = null;
+        }
         else if (bookCount == 0)
         {
             author.Status = AuthorStatus.Excluded;

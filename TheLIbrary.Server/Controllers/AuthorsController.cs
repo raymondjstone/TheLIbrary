@@ -2173,16 +2173,31 @@ public class AuthorsController : ControllerBase
         if (ids.Count == 0) return Ok(new BulkStatusResult(0));
 
         var authors = await _db.Authors.Where(a => ids.Contains(a.Id)).ToListAsync(ct);
+
+        // An author whose ebook files we physically hold is never excluded:
+        // excluding them makes sync quarantine their folder into __unknown. Such
+        // authors are skipped (the rest of the batch still applies).
+        var withFiles = status == AuthorStatus.Excluded
+            ? (await _db.LocalBookFiles
+                .Where(f => f.AuthorId != null && ids.Contains(f.AuthorId.Value))
+                .Select(f => f.AuthorId!.Value)
+                .Distinct()
+                .ToListAsync(ct)).ToHashSet()
+            : new HashSet<int>();
+
+        var updated = 0;
         foreach (var a in authors)
         {
+            if (status == AuthorStatus.Excluded && withFiles.Contains(a.Id)) continue;
             a.Status = status;
             if (status == AuthorStatus.Excluded)
                 a.ExclusionReason = string.IsNullOrWhiteSpace(body.ExclusionReason) ? null : body.ExclusionReason.Trim();
             else
                 a.ExclusionReason = null;
+            updated++;
         }
         await _db.SaveChangesAsync(ct);
-        return Ok(new BulkStatusResult(authors.Count));
+        return Ok(new BulkStatusResult(updated));
     }
 
     public sealed record SetPriorityRequest(int Priority);
@@ -2642,7 +2657,11 @@ public class AuthorsController : ControllerBase
         return NoContent();
     }
 
-    public sealed record UnclaimedFolder(string AuthorFolder, int FileCount, IReadOnlyList<string> RootPaths, IReadOnlyList<string> Formats);
+    public sealed record UnclaimedFolder(
+        string AuthorFolder, int FileCount, IReadOnlyList<string> RootPaths, IReadOnlyList<string> Formats,
+        // Integrity-check tally across this folder's files (see BookIntegrityService):
+        // Ok = passed, Damaged = failed, Unchecked = never run yet.
+        int IntegrityOk, int IntegrityDamaged, int IntegrityUnchecked);
 
     public sealed record UntrackedFolderEntry(
         string Name,
@@ -2699,7 +2718,10 @@ public class AuthorsController : ControllerBase
                 g.SelectMany(f => FormatsInFolder(f.FullPath))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .OrderBy(x => x)
-                    .ToList()))
+                    .ToList(),
+                g.Count(f => f.IntegrityOk == true),
+                g.Count(f => f.IntegrityOk == false),
+                g.Count(f => f.IntegrityOk == null)))
             .ToList();
     }
 
@@ -3122,7 +3144,11 @@ public class AuthorsController : ControllerBase
         return NoContent();
     }
 
-    public sealed record UnknownFolder(string AuthorFolder, int FileCount, IReadOnlyList<string> RootPaths, IReadOnlyList<string> Formats, bool IsFile);
+    public sealed record UnknownFolder(string AuthorFolder, int FileCount, IReadOnlyList<string> RootPaths, IReadOnlyList<string> Formats, bool IsFile,
+        // Integrity-check tally for files in this folder (UnknownFileChecks table).
+        // A check is valid when SizeBytes+ModifiedAt still match the UnknownFile row.
+        // There is no "damaged" state for unknown files — only ok or unchecked.
+        int IntegrityOk = 0, int IntegrityUnchecked = 0);
 
     // Lists author-level folders AND loose book files that exist inside the
     // __unknown quarantine bucket across all enabled library locations. Loose
@@ -3162,26 +3188,98 @@ public class AuthorsController : ControllerBase
             }
         }
 
+        // Load UnknownFiles and their valid integrity checks so we can show
+        // per-folder integrity status. A check is valid when the file's
+        // SizeBytes and ModifiedAt still match the check record.
+        var unknownFiles = await _db.UnknownFiles.AsNoTracking()
+            .Select(f => new { f.FullPath, f.SizeBytes, f.ModifiedAt })
+            .ToListAsync(ct);
+
+        var checks = await _db.UnknownFileChecks.AsNoTracking()
+            .Select(c => new { c.FullPath, c.SizeBytes, c.ModifiedAt })
+            .ToListAsync(ct);
+
+        // Build a set of fully-checked paths (valid = size+modified still match).
+        var checkedPaths = new HashSet<string>(
+            checks
+                .Join(unknownFiles,
+                    c => c.FullPath,
+                    f => f.FullPath,
+                    (c, f) => new { c.FullPath, Valid = c.SizeBytes == f.SizeBytes && c.ModifiedAt == f.ModifiedAt })
+                .Where(x => x.Valid)
+                .Select(x => x.FullPath),
+            StringComparer.OrdinalIgnoreCase);
+
+        // Map each indexed file to its parent folder name (one level below the unknown root).
+        // We need this to aggregate per-folder counts.
+        var filesByFolder = unknownFiles
+            .Select(f =>
+            {
+                foreach (var (unknownRoot, _) in scanRoots)
+                {
+                    if (f.FullPath.StartsWith(unknownRoot, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var rel = f.FullPath.Substring(unknownRoot.Length).TrimStart(Path.DirectorySeparatorChar, '/');
+                        var slash = rel.IndexOfAny(new[] { Path.DirectorySeparatorChar, '/' });
+                        if (slash > 0)
+                            return (FolderName: rel.Substring(0, slash), FilePath: f.FullPath, IsLoose: false);
+                        // Loose file at the unknown root — folder key is the filename itself.
+                        return (FolderName: rel, FilePath: f.FullPath, IsLoose: true);
+                    }
+                }
+                return (FolderName: (string?)null, FilePath: f.FullPath, IsLoose: false);
+            })
+            .Where(x => x.FolderName != null)
+            .GroupBy(x => (x.FolderName!, x.IsLoose))
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(x => x.FilePath).ToList());
+
+        static (int Ok, int Unchecked) CountIntegrity(IEnumerable<string> paths, HashSet<string> checkedSet)
+        {
+            int ok = 0, unchecked_ = 0;
+            foreach (var p in paths)
+            {
+                if (checkedSet.Contains(p)) ok++;
+                else unchecked_++;
+            }
+            return (ok, unchecked_);
+        }
+
         var folders = result
             .GroupBy(r => r.Folder)
-            .Select(g => new UnknownFolder(
-                g.Key,
-                g.Sum(x => x.Count),
-                g.Select(x => x.RootPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
-                g.SelectMany(x => FormatsInUnknownFolder(x.RootPath, x.Folder))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .OrderBy(x => x)
-                    .ToList(),
-                IsFile: false));
+            .Select(g =>
+            {
+                var paths = filesByFolder.TryGetValue((g.Key, false), out var fp) ? fp : [];
+                var (ok, unc) = CountIntegrity(paths, checkedPaths);
+                return new UnknownFolder(
+                    g.Key,
+                    g.Sum(x => x.Count),
+                    g.Select(x => x.RootPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                    g.SelectMany(x => FormatsInUnknownFolder(x.RootPath, x.Folder))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(x => x)
+                        .ToList(),
+                    IsFile: false,
+                    IntegrityOk: ok,
+                    IntegrityUnchecked: unc);
+            });
 
         var files = looseFiles
             .GroupBy(f => f.Name)
-            .Select(g => new UnknownFolder(
-                g.Key,
-                g.Count(),
-                g.Select(x => x.RootPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
-                g.Select(x => x.Ext).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x).ToList(),
-                IsFile: true));
+            .Select(g =>
+            {
+                var paths = filesByFolder.TryGetValue((g.Key, true), out var fp) ? fp : [];
+                var (ok, unc) = CountIntegrity(paths, checkedPaths);
+                return new UnknownFolder(
+                    g.Key,
+                    g.Count(),
+                    g.Select(x => x.RootPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                    g.Select(x => x.Ext).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x).ToList(),
+                    IsFile: true,
+                    IntegrityOk: ok,
+                    IntegrityUnchecked: unc);
+            });
 
         return folders.Concat(files)
             .OrderBy(u => u.AuthorFolder)

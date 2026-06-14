@@ -43,6 +43,32 @@ public class AuthorsControllerIntegrationTests
     }
 
     [Fact]
+    public async Task BulkStatus_Does_Not_Exclude_An_Author_Whose_Files_Are_On_Disk()
+    {
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Has Files", Status = AuthorStatus.Active });
+            db.Authors.Add(new Author { Id = 2, Name = "No Files", Status = AuthorStatus.Active });
+            db.LocalBookFiles.Add(new LocalBookFile
+            {
+                Id = 10, AuthorId = 1, AuthorFolder = "Has Files", TitleFolder = "Book", FullPath = "/lib/Has Files/Book/x.epub"
+            });
+        });
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/authors/bulk-status",
+            new AuthorsController.BulkStatusRequest(new[] { 1, 2 }, "Excluded", "test"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        // The author whose files we hold is left Active; only the fileless one is excluded.
+        Assert.Equal(AuthorStatus.Active, (await db.Authors.FindAsync(1))!.Status);
+        Assert.Equal(AuthorStatus.Excluded, (await db.Authors.FindAsync(2))!.Status);
+    }
+
+    [Fact]
     public async Task SetRefreshInterval_Rejects_Invalid_Range()
     {
         using var factory = new LibraryApiFactory();

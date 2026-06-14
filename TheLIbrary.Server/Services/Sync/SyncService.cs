@@ -158,9 +158,8 @@ public sealed class SyncService
         foreach (var a in dbAuthors)
             foreach (var k in AuthorKeys(a)) authorByKey.TryAdd(k, a);
 
-        static bool IsTracked(Author a) => a.Status != AuthorStatus.Excluded;
-
         var movedFolders = new List<string>();
+        var blacklistKeysToClear = new List<string>();
         var unknownRootCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         async Task<string> UnknownRootFor(string locationPath)
         {
@@ -178,32 +177,52 @@ public sealed class SyncService
             var folder = group.Key;
             var folderKey = TitleNormalizer.NormalizeAuthor(folder);
             var locationPath = group.First().LocationPath;
-            var unknownRoot = await UnknownRootFor(locationPath);
 
-            if (blacklistedNormalized.Contains(folderKey))
-            {
-                if (MoveToUnknown(locationPath, folder, unknownRoot)) movedFolders.Add(folder);
-                continue;
-            }
+            var hasAuthor = authorByKey.TryGetValue(folderKey, out var existing);
+            var isBlacklisted = blacklistedNormalized.Contains(folderKey);
 
-            if (authorByKey.TryGetValue(folderKey, out var existing))
+            // This folder is on disk, so we physically hold files for this author.
+            // Rule: an author whose files we hold is never excluded or blacklisted.
+            // The refresher's "no recent OpenLibrary works" exclusion (and stale
+            // manual ones) used to mark such authors Excluded, after which this
+            // reconciliation swept their whole folder into __unknown every sync —
+            // steadily draining the real library into the quarantine. Heal both
+            // states here and KEEP the folder instead of quarantining it.
+            if (hasAuthor || isBlacklisted)
             {
-                if (IsTracked(existing))
+                if (isBlacklisted && blacklistedNormalized.Remove(folderKey))
+                    blacklistKeysToClear.Add(folderKey);
+
+                if (existing is not null)
                 {
+                    if (existing.Status == AuthorStatus.Excluded)
+                    {
+                        existing.Status = AuthorStatus.Active;
+                        existing.ExclusionReason = null;
+                        _log.LogInformation(
+                            "Un-excluded '{Name}' — their files are present on disk", existing.Name);
+                    }
                     if (string.IsNullOrEmpty(existing.CalibreFolderName))
                         existing.CalibreFolderName = folder;
-                    continue;
                 }
-
-                // Author exists but is not on the watchlist (Priority=0, not Active).
-                // Move their folder to __unknown; keep the Author row so the user
-                // can still find and star it later.
-                if (MoveToUnknown(locationPath, folder, unknownRoot)) movedFolders.Add(folder);
                 continue;
             }
 
-            // No Author row — move to __unknown. Authors must be added explicitly.
+            // No Author row and not blacklisted — move to __unknown. Authors must
+            // be added explicitly, not auto-discovered from disk.
+            var unknownRoot = await UnknownRootFor(locationPath);
             if (MoveToUnknown(locationPath, folder, unknownRoot)) movedFolders.Add(folder);
+        }
+
+        // Drop blacklist entries for any author whose files turned up on disk.
+        if (blacklistKeysToClear.Count > 0)
+        {
+            var removed = await db.AuthorBlacklist
+                .Where(x => blacklistKeysToClear.Contains(x.NormalizedName))
+                .ExecuteDeleteAsync(ct);
+            if (removed > 0)
+                _log.LogInformation(
+                    "Removed {N} blacklist entr(ies) for author(s) whose files are present on disk", removed);
         }
 
         // Purge LocalBookFile rows for every relocated folder. Those paths are no

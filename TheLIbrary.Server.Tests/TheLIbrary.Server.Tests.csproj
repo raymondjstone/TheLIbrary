@@ -9,6 +9,11 @@
     <!-- xUnit v3 test projects are executables (each produces its own runner host). -->
     <OutputType>Exe</OutputType>
     <RunSettingsFilePath>$(MSBuildThisFileDirectory)..\CodeCoverage.runsettings</RunSettingsFilePath>
+    <!-- xUnit1051: prefer TestContext.Current.CancellationToken over
+         CancellationToken.None. Pure cooperative-cancellation responsiveness
+         advice that doesn't matter for these (fast, non-cancellable) tests —
+         suppress rather than thread a token through 600+ call sites. -->
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

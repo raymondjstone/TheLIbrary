@@ -52,7 +52,7 @@ local files at all as a pure author/works tracker and wishlist.
 | Damaged | `/damaged` | Ebook files the integrity job couldn't open/convert, or that have fewer than 20 pages — **grouped by book**, with NZB replacement-search links, per-book "add to Wanted" + "archive all bad copies", per-file preview/mark-OK/recheck/remove/restore-from-archive, an on-demand **Check now**, and a **★ Starred authors only** filter (starred authors are flagged with a ★ on each group). See [Book integrity check](#book-integrity-check) |
 | Identified | `/identified` | Author/title/series guessed from the front matter of unmatched & untracked files (the *Identify books from content* job), to review, preview, **Apply** (match to an OpenLibrary work), or dismiss. A per-row **Find on OL** opens the OpenLibrary title search and the selected work is **matched immediately** — author resolved/created, book ensured, file moved and linked, row retired — no separate Apply click. See [Identifying books from content](#identifying-books-from-content) |
 | Manual Books | `/manual-books` | Every manually-added book (works not on OpenLibrary), **grouped by author** with a filter per column (title, author, year, series, owned), inline edit and delete. The daily [promote-manual-books job](#promote-manual-books-job) links each one to its real OpenLibrary work once OL lists it |
-| Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket — folders AND loose book files sitting directly at the quarantine root (with one-click "Try matching all" against the current watchlist). The browse pane drills into a folder, previews EPUB/PDF/TXT files in-place, matches a single file to an OpenLibrary work, and deletes files/folders (disk + DB) — and stays open after matching when other files remain; loose files get Preview / Match to book / Return to Incoming / Delete |
+| Untracked | `/untracked` | Unclaimed Calibre folders and `__unknown` bucket — folders AND loose book files sitting directly at the quarantine root (with one-click "Try matching all" against the current watchlist). Each unclaimed folder shows an **integrity tally** (✓ ok / ⚠ damaged / ◌ unchecked) across its files, and an **Integrity** filter narrows the list to OK / Damaged / Unchecked (which then hides the `__unknown` items, since loose quarantine files have no integrity record). The browse pane drills into a folder, previews EPUB/PDF/TXT files in-place, matches a single file to an OpenLibrary work, and deletes files/folders (disk + DB) — and stays open after matching when other files remain; loose files get Preview / Match to book / Return to Incoming / Delete |
 | Unmatched physical | `/physical-unmatched` | Editable list of physical-books-import rows that couldn't be matched; "Re-run matching" re-tries the whole list against the current library |
 | Sync | `/sync` | Live sync dashboard with phase tracking and progress |
 | Schedules | `/schedules` | Cron expressions and enabled/disabled flags for background jobs; per-job last-N-run history panel |
@@ -75,7 +75,14 @@ author from the UI and add them — the sync then does the rest.
    as a sentinel so the book is not re-checked on future syncs.
 3. **Exclude** authors that have no English works, or whose works were all
    first published before 1930. Starred authors are always kept Active regardless
-   of date or language criteria.
+   of date or language criteria. **An author whose ebook files are already on
+   disk is also never excluded** — what OpenLibrary returns says nothing about
+   books you already hold, and excluding such an author would make the sync
+   sweep their whole folder into `__unknown`. The same guard applies to the
+   manual bulk **Excluded** action (authors with files are skipped) and, in
+   reverse, the folder reconciliation: when a folder on disk maps to an excluded
+   or blacklisted author it is **un-excluded / un-blacklisted and kept**, not
+   quarantined.
 4. **Fetch author bio** — on the first refresh after an OL key is resolved, the
    author's bio is pulled from `/authors/{key}.json` and stored. Displayed on
    the author detail page.
@@ -512,7 +519,11 @@ in any language are retrieved.
 The **author blacklist** (`AuthorBlacklist` table) prevents a Calibre folder
 from ever being promoted to a tracked author. Blacklisted entries are matched
 by normalized name at scan time. Blacklisted authors that are already tracked
-are silently skipped when processing their works.
+are silently skipped when processing their works. **Exception:** if a folder
+for a blacklisted (or excluded) name is actually present on disk during sync
+reconciliation, its files are real, so the blacklist entry is removed (and any
+matching author un-excluded) and the folder is kept — an author whose files we
+hold is never blacklisted or excluded.
 
 ## Author linking (duplicates and pen names)
 
