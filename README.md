@@ -1564,8 +1564,15 @@ of the data you can't easily regenerate:
 Bulk catalogue data (OpenLibrary works, the OL author dump, disk-scan
 `LocalBookFile` rows, the `__unknown` index) is deliberately excluded — a sync or
 seed rebuilds it. `GET /api/backup/export` (add `?manifest=true` for the file
-list) returns the archive. A guarded **restore** that re-applies an archive is a
-separate, explicitly-confirmed step (planned next).
+list) returns the archive.
+
+**Restore** (also in the Backup section) uploads an archive back via
+`POST /api/backup/import` and **merges** it in by natural keys — authors by
+OpenLibrary key (or name), series by normalized name, books by work key — so it
+works even after a full rebuild where the original row IDs are gone. Existing
+rows are updated in place and missing ones (manual books, books carrying user
+state) are created; **nothing is deleted**. The whole import runs in one
+execution-strategy transaction, so it's all-or-nothing.
 
 ## reMarkable sync
 

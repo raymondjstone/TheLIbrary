@@ -1503,7 +1503,62 @@ function BackupSection() {
             <a href={href} download className="btn-primary" style={{ display: 'inline-block', padding: '0.5rem 1rem', borderRadius: '6px', textDecoration: 'none' }}>
                 ⬇ Download backup
             </a>
+
+            <RestoreSection />
         </>
+    )
+}
+
+// Guarded restore: re-applies a backup archive by natural keys (OL key /
+// normalized name / work key). Merges into the current data — existing rows are
+// updated, nothing is deleted — so it's safe to run against a live or rebuilt DB.
+function RestoreSection() {
+    const [file, setFile] = useState(null)
+    const [busy, setBusy] = useState(false)
+    const [result, setResult] = useState(null)
+    const [error, setError] = useState(null)
+
+    const restore = async () => {
+        if (!file) return
+        if (!confirm('Restore this backup? It merges into your current data (updates existing rows, adds missing ones; nothing is deleted). Continue?')) return
+        setBusy(true); setError(null); setResult(null)
+        try {
+            const form = new FormData()
+            form.append('file', file)
+            const r = await fetch('/api/backup/import', { method: 'POST', body: form })
+            const body = await r.json()
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setResult(body)
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setBusy(false) }
+    }
+
+    return (
+        <div style={{ marginTop: '1rem' }}>
+            <h3 style={{ fontSize: '0.95rem' }}>Restore from backup</h3>
+            <p className="subtle" style={{ marginTop: 0 }}>
+                Upload a backup ZIP to merge it back in. Matches authors by OpenLibrary key (or name),
+                series by name, and books by work key — so it works even after a full rebuild. Existing
+                rows are updated; nothing is deleted.
+            </p>
+            {error ? <p className="error">{error}</p> : null}
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <input type="file" accept=".zip" onChange={e => { setFile(e.target.files?.[0] ?? null); setResult(null) }} />
+                <button className="btn-danger" disabled={!file || busy} onClick={restore}>
+                    {busy ? 'Restoring…' : '⬆ Restore'}
+                </button>
+            </div>
+            {result && (
+                <p className="subtle" style={{ marginTop: '0.5rem' }}>
+                    Restored: {result.authorsCreated} new / {result.authorsUpdated} updated authors,
+                    {' '}{result.booksCreated} new / {result.booksUpdated} updated books,
+                    {' '}{result.series} series, {result.settings} settings, {result.locations} locations,
+                    {' '}{result.nzbSites} NZB sites, {result.blacklist} blacklist, {result.ignoredFolders} ignored,
+                    {' '}{result.physical} physical rows.
+                    {result.warnings?.length ? ` ${result.warnings.length} warning(s).` : ''}
+                </p>
+            )}
+        </div>
     )
 }
 
