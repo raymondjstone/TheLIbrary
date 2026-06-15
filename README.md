@@ -57,6 +57,7 @@ and wishlist.
 | Recommendations | `/recommendations` | "Authors you might want to watch" — un-starred authors already in your catalogue ranked by how well their genres overlap the books you own, plus co-authors on series you own; one-click **★ Watch** promotes one onto the watchlist. Backed by `GET /api/recommendations` (local data only, no OpenLibrary calls) |
 | Series | `/series` | Hierarchical series tree with owned/total progress bars; create new series; inline edit of name, primary author, additional authors, parent series, and reading order position; deep-linkable via `?q=SeriesName` |
 | Series Completion | `/series-completion` | Series ranked by how close to complete you are (most-complete-but-unfinished first), each with an owned/total bar and a one-click **"Want N missing"** button that marks every not-owned volume in the series as Wanted. Optional "hide complete series" filter |
+| Collections | `/collections` | User-defined shelves (e.g. "To read 2026", "Favorites") that cut across authors/series — create / rename / delete, view a shelf's books. Books are added from the **shelf** button on any book row (author detail). Also shows **auto genre tags** derived from OpenLibrary subjects; clicking one opens `/genre/:genre`, a browse-by-genre book list (owned / missing filter) |
 | Stats | `/stats` | KPI cards, books-read-by-year chart, top genres, per-author coverage, file-format breakdown chart, files-acquired-by-month chart |
 | Duplicates | `/duplicates` | Books matched to more than one **real** local copy (a file, or a folder that actually holds an ebook — empty/stale title-folder rows are not counted). Each copy shows its integrity status (✓ ok / ✗ damaged / ? unchecked) and the **keeper is never a damaged copy** when a healthy one exists |
 | Damaged | `/damaged` | Ebook files the integrity job couldn't open/convert, or that have fewer than 20 pages — **grouped by book**, with NZB replacement-search links, per-book "add to Wanted" + "archive all bad copies", per-file preview/mark-OK/recheck/remove/restore-from-archive, an on-demand **Check now**, and a **★ Starred authors only** filter (starred authors are flagged with a ★ on each group). See [Book integrity check](#book-integrity-check) |
@@ -2213,6 +2214,9 @@ trusted LAN).
   across authors (e.g. co-written or continued by another writer).
 - `SeriesAuthor` — join table linking `Series` ↔ `Author` for additional/co-authors
   beyond the primary.
+- `Collection` — a user-defined shelf (unique normalised name). `BookCollection`
+  is the `Collection` ↔ `Book` join (cascades from either side). Genre tags are
+  *not* stored — they're derived on the fly from `Book.Subjects`.
 - `Book` — OL work key (unique per author; a synthetic `XX…W` key for
   manually-added books not yet on OpenLibrary), title, first-publish year,
   `CoverId` (OpenLibrary cover) and `CoverUrl` (custom cover, mainly for manual

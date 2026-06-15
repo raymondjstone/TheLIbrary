@@ -23,6 +23,8 @@ public class LibraryDbContext : DbContext
     public DbSet<UnknownFile> UnknownFiles => Set<UnknownFile>();
     public DbSet<UnknownFileCheck> UnknownFileChecks => Set<UnknownFileCheck>();
     public DbSet<BookContentScan> BookContentScans => Set<BookContentScan>();
+    public DbSet<Collection> Collections => Set<Collection>();
+    public DbSet<BookCollection> BookCollections => Set<BookCollection>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -140,6 +142,20 @@ public class LibraryDbContext : DbContext
         {
             e.HasIndex(x => x.FullPath).IsUnique();
             e.HasIndex(x => x.NormalizedTitle);
+        });
+
+        b.Entity<Collection>(e =>
+        {
+            e.HasIndex(x => x.NormalizedName).IsUnique();
+        });
+
+        b.Entity<BookCollection>(e =>
+        {
+            e.HasKey(x => new { x.CollectionId, x.BookId });
+            e.HasOne(x => x.Collection).WithMany(c => c.Books)
+                .HasForeignKey(x => x.CollectionId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.Book).WithMany(bk => bk.Collections)
+                .HasForeignKey(x => x.BookId).OnDelete(DeleteBehavior.Cascade);
         });
 
         b.Entity<OpenLibraryAuthor>(e =>

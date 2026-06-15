@@ -90,4 +90,5 @@ public class Book
     public Author Author { get; set; } = null!;
 
     public List<LocalBookFile> LocalFiles { get; set; } = new();
+    public List<BookCollection> Collections { get; set; } = new();
 }

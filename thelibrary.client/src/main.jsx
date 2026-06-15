@@ -19,6 +19,8 @@ import Stats from './pages/Stats.jsx'
 import Duplicates from './pages/Duplicates.jsx'
 import Series from './pages/Series.jsx'
 import SeriesCompletion from './pages/SeriesCompletion.jsx'
+import Collections from './pages/Collections.jsx'
+import Genre from './pages/Genre.jsx'
 import Wanted from './pages/Wanted.jsx'
 import PhysicalUnmatched from './pages/PhysicalUnmatched.jsx'
 import ManualBooks from './pages/ManualBooks.jsx'
@@ -46,6 +48,8 @@ createRoot(document.getElementById('root')).render(
                     <Route path="duplicates" element={<Duplicates />} />
                     <Route path="series" element={<Series />} />
                     <Route path="series-completion" element={<SeriesCompletion />} />
+                    <Route path="collections" element={<Collections />} />
+                    <Route path="genre/:genre" element={<Genre />} />
                     <Route path="sync" element={<Sync />} />
                     <Route path="schedules" element={<Schedules />} />
                     <Route path="settings" element={<Settings />} />

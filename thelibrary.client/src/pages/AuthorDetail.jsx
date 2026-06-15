@@ -6,6 +6,7 @@ import BookPreview from '../components/BookPreview.jsx'
 import AddBookDialog from './AddBookDialog.jsx'
 import BookEditDialog from './BookEditDialog.jsx'
 import OpenLibraryWorkSearch from '../components/OpenLibraryWorkSearch.jsx'
+import CollectionMenu from '../components/CollectionMenu.jsx'
 import { bookCoverSrc } from '../bookCover.js'
 
 // Compact per-book edit / delete controls shown next to the title.
@@ -84,6 +85,7 @@ function BookActions({ book, onEdit, onDelete, onToggleSuppress, onMarkForeign }
                     foreign
                 </button>
             )}
+            <CollectionMenu bookId={book.id} />
         </span>
     )
 }
