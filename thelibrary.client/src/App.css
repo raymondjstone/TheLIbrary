@@ -225,3 +225,25 @@ a:hover { text-decoration: underline; }
 .home-actions a.btn-primary:hover { background: var(--accent-h); text-decoration: none; }
 .home-actions a.btn-ghost { color: var(--accent); border: 1px solid var(--border); }
 .home-actions a.btn-ghost:hover { background: var(--accent-bg); text-decoration: none; }
+
+/* Dashboard stat cards */
+.home-cards {
+    width: 100%; max-width: 920px;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0.75rem;
+}
+.home-card {
+    display: flex; flex-direction: column; gap: 0.15rem;
+    padding: 0.85rem 1rem; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--card); color: var(--text); text-decoration: none;
+    border-left: 4px solid var(--border);
+    transition: transform var(--transition), box-shadow var(--transition), border-color var(--transition);
+}
+.home-card:hover { text-decoration: none; transform: translateY(-2px); box-shadow: var(--shadow-sm); }
+.home-card-value { font-size: 1.7rem; font-weight: 700; letter-spacing: -0.5px; line-height: 1.1; }
+.home-card-label { font-size: 0.85rem; color: var(--subtle); font-weight: 500; }
+.home-card-hint { font-size: 0.72rem; color: var(--subtle); }
+.home-card-accent  { border-left-color: var(--accent); }
+.home-card-danger  { border-left-color: var(--err); }
+.home-card-warn    { border-left-color: #d97706; }
+.home-card-muted   { opacity: 0.5; }
+.home-card-muted:hover { opacity: 0.75; }

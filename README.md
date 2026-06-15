@@ -46,7 +46,7 @@ and wishlist.
 
 | Page | Route | Purpose |
 |------|-------|---------|
-| Home | `/` | Landing page with the cover art and quick links into the app. This is the default route (replaced the old redirect to the author list) |
+| Home | `/` | Landing dashboard: cover art plus live **stat cards** (wanted, damaged copies, untracked folders, unknown files, authors due for refresh, releases this year, files added this week, owned/missing/active counts) that link straight into the page that acts on each. Backed by the cheap count-only `/api/dashboard` endpoint. This is the default route (replaced the old redirect to the author list) |
 | Authors | `/authors` | Full watchlist with filter, sort, pagination, A–Z jump index, per-row selection, bulk status (Active / Pending / Excluded), author merge, and a per-row **Refresh OL data** button that re-fetches that author's works from OpenLibrary |
 | Author detail | `/authors/:id` | Books (grouped by series), bio, read status, NZB links, reMarkable send, library scan timestamp, bulk "Mark all missing as wanted". A book's local files show its live copies inline; any copies under the archive folder are hidden behind a per-book **"Show N archived"** toggle |
 | Recent Releases | `/recent-releases` | New works from starred authors (last 5 years) |
@@ -2033,6 +2033,7 @@ itself lives in the same registry.
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET    | `/api/stats` | Library KPIs, read-by-year, top genres, author coverage, file-format breakdown, files-acquired-by-month |
+| GET    | `/api/dashboard` | Count-only summary for the Home dashboard cards (wanted, damaged, untracked folders, unknown files, authors due refresh, releases this year, added this week, owned/missing/active) — all COUNT queries so it stays fast on a large library |
 | POST   | `/api/import/goodreads` | Import a Goodreads export CSV (multipart/form-data `file`) |
 | POST   | `/api/import/physical-books` | Import a physical-books inventory (tab or fixed-width); marks matches as `ManuallyOwned` and persists unmatched rows for later editing |
 | GET    | `/api/import/physical-books/unmatched` | List rows from past imports that couldn't be matched |
