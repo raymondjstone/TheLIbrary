@@ -17,6 +17,7 @@ import Untracked from './pages/Untracked.jsx'
 import Stats from './pages/Stats.jsx'
 import Duplicates from './pages/Duplicates.jsx'
 import Series from './pages/Series.jsx'
+import SeriesCompletion from './pages/SeriesCompletion.jsx'
 import Wanted from './pages/Wanted.jsx'
 import PhysicalUnmatched from './pages/PhysicalUnmatched.jsx'
 import ManualBooks from './pages/ManualBooks.jsx'
@@ -42,6 +43,7 @@ createRoot(document.getElementById('root')).render(
                     <Route path="stats" element={<Stats />} />
                     <Route path="duplicates" element={<Duplicates />} />
                     <Route path="series" element={<Series />} />
+                    <Route path="series-completion" element={<SeriesCompletion />} />
                     <Route path="sync" element={<Sync />} />
                     <Route path="schedules" element={<Schedules />} />
                     <Route path="settings" element={<Settings />} />

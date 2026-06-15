@@ -17,6 +17,7 @@ export default function Layout() {
                     <NavLink to="/missing">Missing Works</NavLink>
                     <NavLink to="/wanted">Wanted</NavLink>
                     <NavLink to="/series">Series</NavLink>
+                    <NavLink to="/series-completion">Series Completion</NavLink>
                     <NavLink to="/stats">Stats</NavLink>
                     <NavLink to="/duplicates">Duplicates</NavLink>
                     <NavLink to="/damaged">Damaged</NavLink>

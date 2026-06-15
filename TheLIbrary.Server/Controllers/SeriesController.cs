@@ -229,6 +229,64 @@ public class SeriesController : ControllerBase
         return 1 + maxChildDepth;
     }
 
+    public sealed record SeriesCompletion(
+        int Id, string Name,
+        int? PrimaryAuthorId, string? PrimaryAuthorName,
+        int Total, int Owned, int Missing, int Percent);
+
+    // Per-series completion ranking for the Series Completion page. Counts each
+    // series' books (excluding suppressed foreign/duplicate rows) and how many
+    // are owned (a local file or a manual ownership flag). Only series with at
+    // least one non-suppressed book are returned. Ordered so the series you're
+    // closest to finishing — but haven't — surface first.
+    [HttpGet("completion")]
+    public async Task<IReadOnlyList<SeriesCompletion>> Completion(CancellationToken ct)
+    {
+        var rows = await _db.Series.AsNoTracking()
+            .Select(s => new
+            {
+                s.Id, s.Name, s.PrimaryAuthorId,
+                PrimaryAuthorName = s.PrimaryAuthor != null ? s.PrimaryAuthor.Name : null,
+                Total = s.Books.Count(b => !b.Suppressed),
+                Owned = s.Books.Count(b => !b.Suppressed && (b.ManuallyOwned || b.LocalFiles.Any())),
+            })
+            .Where(x => x.Total > 0)
+            .ToListAsync(ct);
+
+        return rows
+            .Select(x =>
+            {
+                var missing = x.Total - x.Owned;
+                var percent = (int)Math.Round(100.0 * x.Owned / x.Total);
+                return new SeriesCompletion(x.Id, x.Name, x.PrimaryAuthorId, x.PrimaryAuthorName,
+                    x.Total, x.Owned, missing, percent);
+            })
+            // Incomplete series first (most-complete at the top), then finished
+            // series, each tie broken by fewest missing then name.
+            .OrderBy(c => c.Missing == 0)
+            .ThenByDescending(c => c.Percent)
+            .ThenBy(c => c.Missing)
+            .ThenBy(c => c.Name)
+            .ToList();
+    }
+
+    // One-click "fill the gaps": marks every not-owned, non-suppressed book in
+    // the series as Wanted so it shows up on the Wanted page / NZB search.
+    [HttpPost("{id:int}/want-missing")]
+    public async Task<ActionResult<object>> WantMissing(int id, CancellationToken ct)
+    {
+        if (!await _db.Series.AnyAsync(s => s.Id == id, ct))
+            return NotFound(new { error = "Series not found." });
+
+        var missing = await _db.Books
+            .Where(b => b.SeriesId == id && !b.Suppressed && !b.Wanted
+                     && !b.ManuallyOwned && !b.LocalFiles.Any())
+            .ToListAsync(ct);
+        foreach (var b in missing) b.Wanted = true;
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { updated = missing.Count });
+    }
+
     private static SeriesDetailResponse ToResponse(Series s) => new(
         s.Id, s.Name, s.NormalizedName,
         s.PrimaryAuthorId, s.PrimaryAuthor?.Name,
