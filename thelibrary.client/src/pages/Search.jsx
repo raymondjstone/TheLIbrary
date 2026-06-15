@@ -106,11 +106,11 @@ export default function Search() {
                         <button className="btn-ghost btn-danger" onClick={clearIndex}>Clear index</button>}
                 </div>
             )}
-            {status && status.engine && status.engine.includes('LIKE') && (
+            {status && status.engine === 'Word index' && (
                 <p className="subtle">
-                    ⚠ Search is using a substring scan, which can be slow (and time out) on a large index.
-                    Install the <strong>SQL Server Full-Text Search</strong> component on your database server
-                    and re-run indexing to switch to the fast engine automatically.
+                    Using the built-in word index (works without the SQL Server Full-Text component). If you
+                    indexed <em>before</em> this update, click <strong>Clear index</strong> then{' '}
+                    <strong>Run indexing</strong> once to build the word index.
                 </p>
             )}
             {status && status.indexed < status.eligible && !status.running && (

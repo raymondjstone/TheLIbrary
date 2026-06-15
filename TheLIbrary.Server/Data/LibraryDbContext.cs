@@ -26,6 +26,7 @@ public class LibraryDbContext : DbContext
     public DbSet<Collection> Collections => Set<Collection>();
     public DbSet<BookCollection> BookCollections => Set<BookCollection>();
     public DbSet<BookTextIndex> BookTextIndexes => Set<BookTextIndex>();
+    public DbSet<TextIndexWord> TextIndexWords => Set<TextIndexWord>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -166,6 +167,14 @@ public class LibraryDbContext : DbContext
             e.Property(x => x.Content).HasColumnType("nvarchar(max)");
             e.HasOne(x => x.Book).WithMany()
                 .HasForeignKey(x => x.BookId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        b.Entity<TextIndexWord>(e =>
+        {
+            e.Property(x => x.Word).HasMaxLength(64);
+            e.HasKey(x => new { x.Word, x.TextIndexId });   // clustered → prefix seek on Word
+            e.HasOne(x => x.TextIndex).WithMany()
+                .HasForeignKey(x => x.TextIndexId).OnDelete(DeleteBehavior.Cascade);
         });
 
         b.Entity<OpenLibraryAuthor>(e =>

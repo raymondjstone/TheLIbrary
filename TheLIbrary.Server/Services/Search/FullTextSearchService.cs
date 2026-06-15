@@ -145,9 +145,10 @@ public sealed class FullTextSearchService
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
         var opt = await ReadOptionsAsync(db, ct);
         if (!opt.Enabled) { _log.LogInformation("Full-text indexing skipped — feature disabled"); return; }
-        await EnsureFtAsync(db, ct);   // stand up the FT index up front if possible
+        var useFt = await EnsureFtAsync(db, ct);   // stand up the FT index up front if possible
         _currentMessage = $"Indexing up to {opt.MaxPerRun} files";
-        var indexed = await IndexBatchCoreAsync(db, opt, ct);
+        // Build the inverted word index only when SQL full-text CONTAINS isn't the engine.
+        var indexed = await IndexBatchCoreAsync(db, opt, buildWords: !useFt, ct);
         _log.LogInformation("Full-text indexing: indexed {Indexed} files", indexed);
     }
 
@@ -168,7 +169,7 @@ public sealed class FullTextSearchService
         var last = await db.BookTextIndexes.AsNoTracking()
             .OrderByDescending(x => x.IndexedAt).Select(x => (DateTime?)x.IndexedAt).FirstOrDefaultAsync(ct);
         var engine = !opt.Enabled ? "disabled"
-            : (await EnsureFtAsync(db, ct)) ? "SQL Server full-text (fast)" : "Substring scan (LIKE — slower)";
+            : (await EnsureFtAsync(db, ct)) ? "SQL Server full-text" : "Word index";
         return new IndexStatus(opt.Enabled, opt.IncludeUnmatched, opt.IncludeUnknown,
             indexed, indexed + outstanding, opt.MaxPerRun, _isRunning, _currentMessage, last, engine);
     }
@@ -193,7 +194,7 @@ public sealed class FullTextSearchService
 
     private sealed record Candidate(string FullPath, TextIndexSource Source, int? BookId, int? AuthorId, string Title, long SizeBytes, DateTime ModifiedAt);
 
-    private async Task<int> IndexBatchCoreAsync(LibraryDbContext db, Options opt, CancellationToken ct)
+    private async Task<int> IndexBatchCoreAsync(LibraryDbContext db, Options opt, bool buildWords, CancellationToken ct)
     {
         var over = opt.MaxPerRun * 4;
         var candidates = new List<Candidate>();
@@ -240,6 +241,13 @@ public sealed class FullTextSearchService
             .GroupBy(c => c.FullPath).Select(g => g.First())   // de-dupe by path
             .Take(opt.MaxPerRun).ToList();
 
+        // Author names for the batch (so author search works in the word index too).
+        var batchAuthorIds = batch.Where(c => c.AuthorId != null).Select(c => c.AuthorId!.Value).Distinct().ToList();
+        var authorNames = batchAuthorIds.Count == 0
+            ? new Dictionary<int, string>()
+            : await db.Authors.AsNoTracking().Where(a => batchAuthorIds.Contains(a.Id))
+                .ToDictionaryAsync(a => a.Id, a => a.Name, ct);
+
         var indexed = 0;
         foreach (var c in batch)
         {
@@ -248,26 +256,61 @@ public sealed class FullTextSearchService
             string content;
             try { content = await _reader.ReadHeadAsync(c.FullPath, MaxCharsPerBook, ct) ?? ""; }
             catch (Exception ex) { _log.LogDebug(ex, "Full-text index: failed to read {Path}", c.FullPath); content = ""; }
+            content = Sanitize(content);
+            var authorName = c.AuthorId != null && authorNames.TryGetValue(c.AuthorId.Value, out var an) ? an : null;
 
             var entry = new BookTextIndex
             {
                 FullPath = c.FullPath, Source = c.Source, BookId = c.BookId, AuthorId = c.AuthorId,
-                Title = c.Title, Content = Sanitize(content),
+                Title = c.Title, Content = content,
                 SizeBytes = c.SizeBytes, ModifiedAt = c.ModifiedAt, IndexedAt = DateTime.UtcNow,
             };
             db.BookTextIndexes.Add(entry);
-            try { await db.SaveChangesAsync(ct); indexed++; }
+            var stored = false;
+            try { await db.SaveChangesAsync(ct); stored = true; }
             catch (Exception ex)
             {
                 _log.LogWarning(ex, "Full-text index: could not store text for {Path}; storing empty", c.FullPath);
                 db.Entry(entry).State = EntityState.Detached;
                 entry.Content = "";
                 db.BookTextIndexes.Add(entry);
-                try { await db.SaveChangesAsync(ct); indexed++; }
+                try { await db.SaveChangesAsync(ct); stored = true; }
                 catch (Exception ex2) { _log.LogError(ex2, "Full-text index: giving up on {Path}", c.FullPath); db.Entry(entry).State = EntityState.Detached; }
+            }
+            if (!stored) continue;
+            indexed++;
+
+            // Inverted word index (only when not using SQL full-text CONTAINS).
+            if (buildWords)
+            {
+                try { await IndexWordsAsync(db, entry.Id, $"{content} {c.Title} {authorName}", ct); }
+                catch (Exception ex) { _log.LogDebug(ex, "Full-text index: word indexing failed for {Path}", c.FullPath); }
             }
         }
         return indexed;
+    }
+
+    private const int WordsCapPerFile = 1000;
+
+    private static async Task IndexWordsAsync(LibraryDbContext db, int textIndexId, string text, CancellationToken ct)
+    {
+        var words = Tokenize(text, WordsCapPerFile);
+        if (words.Count == 0) return;
+        foreach (var w in words)
+            db.TextIndexWords.Add(new TextIndexWord { Word = w, TextIndexId = textIndexId });
+        await db.SaveChangesAsync(ct);
+    }
+
+    // Distinct lowercase alphanumeric tokens (length 2..64), capped. Enumeration
+    // is lazy, so we stop scanning once the cap of distinct words is reached.
+    private static List<string> Tokenize(string text, int cap)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (string.IsNullOrEmpty(text)) return new();
+        foreach (System.Text.RegularExpressions.Match m in
+                 System.Text.RegularExpressions.Regex.Matches(text.ToLowerInvariant(), @"[\p{L}\p{Nd}]{2,64}"))
+            if (seen.Add(m.Value) && seen.Count >= cap) break;
+        return seen.ToList();
     }
 
     public async Task<int> ClearAsync(CancellationToken ct)
@@ -295,13 +338,13 @@ public sealed class FullTextSearchService
         if (q.Length < 2) return new SearchResponse(true, q, Array.Empty<SearchHit>());
 
         var useFt = await EnsureFtAsync(db, ct);
-        var like = $"%{q}%";
 
         IQueryable<BookTextIndex> baseQuery;
         if (useFt && BuildContainsTerm(q) is { } term)
         {
             // Fast path: SQL Server full-text CONTAINS over Content + Title. The
             // author-name match stays a (cheap) LIKE on the small Authors table.
+            var like = $"%{q}%";
             baseQuery = db.BookTextIndexes.AsNoTracking()
                 .Where(ix => EF.Functions.Contains(ix.Content, term)
                           || EF.Functions.Contains(ix.Title, term)
@@ -309,14 +352,21 @@ public sealed class FullTextSearchService
         }
         else
         {
-            // Fallback: bounded LIKE scan. Cap the command timeout below the
-            // typical 60s reverse-proxy timeout so a slow scan returns a clean
-            // JSON error (via ApiExceptionFilter) instead of a 504.
-            db.Database.SetCommandTimeout(45);
-            baseQuery = db.BookTextIndexes.AsNoTracking()
-                .Where(ix => EF.Functions.Like(ix.Content, like)
-                          || EF.Functions.Like(ix.Title, like)
-                          || (ix.Book != null && ix.Book.Author != null && EF.Functions.Like(ix.Book.Author.Name, like)));
+            // Fallback: the inverted word index. Each query word is an indexed
+            // prefix seek; rows must contain ALL words (AND). This never touches
+            // the off-row text column, so it's fast on any SQL Server edition.
+            var words = Tokenize(q, 8);
+            if (words.Count == 0) return new SearchResponse(true, q, Array.Empty<SearchHit>());
+            IQueryable<int>? ids = null;
+            foreach (var w in words)
+            {
+                var pref = w + "%";
+                var s = db.TextIndexWords.AsNoTracking()
+                    .Where(t => EF.Functions.Like(t.Word, pref)).Select(t => t.TextIndexId).Distinct();
+                ids = ids is null ? s : ids.Intersect(s);
+            }
+            var hitIds = await ids!.Take(2000).ToListAsync(ct);
+            baseQuery = db.BookTextIndexes.AsNoTracking().Where(ix => hitIds.Contains(ix.Id));
         }
 
         var rows = await baseQuery
