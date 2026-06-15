@@ -35,6 +35,17 @@ public class SearchController : ControllerBase
         return Ok(new { started = true });
     }
 
+    // POST /api/search/reindex — legacy alias for older cached clients that
+    // looped this endpoint. Kicks off the same background run and returns the
+    // old { indexed, remaining } shape with indexed=0 so that loop stops after
+    // one call. New clients use /run.
+    [HttpPost("reindex")]
+    public IActionResult Reindex()
+    {
+        _fts.TryStart(_lifetime.ApplicationStopping, out _);
+        return Ok(new { enabled = true, indexed = 0, remaining = 0 });
+    }
+
     // POST /api/search/clear — drop the whole index (rebuild / reclaim space).
     [HttpPost("clear")]
     public async Task<IActionResult> Clear(CancellationToken ct)
