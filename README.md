@@ -46,6 +46,7 @@ and wishlist.
 
 | Page | Route | Purpose |
 |------|-------|---------|
+| Search | `/search` | Full-text search across the text of your matched ebooks (opt-in). Shows index progress with build / refresh / clear controls, then returns books with a matching snippet. Off until enabled in Settings |
 | Home | `/` | Landing dashboard: cover art plus live **stat cards** (wanted, damaged copies, untracked folders, unknown files, authors due for refresh, releases this year, files added this week, owned/missing/active counts) that link straight into the page that acts on each. Backed by the cheap count-only `/api/dashboard` endpoint. This is the default route (replaced the old redirect to the author list) |
 | Authors | `/authors` | Full watchlist with filter, sort, pagination, A–Z jump index, per-row selection, bulk status (Active / Pending / Excluded), author merge, and a per-row **Refresh OL data** button that re-fetches that author's works from OpenLibrary |
 | Author detail | `/authors/:id` | Books (grouped by series), bio, read status, NZB links, reMarkable send, library scan timestamp, bulk "Mark all missing as wanted". A book's local files show its live copies inline; any copies under the archive folder are hidden behind a per-book **"Show N archived"** toggle |
@@ -1515,6 +1516,34 @@ For plain feed readers (and automation like IFTTT/n8n), there's also an **RSS
 Items cover works first published in the last 5 years (deduped per author/title,
 newest first, up to 200), each linking to its OpenLibrary page. The Recent
 Releases page has a 🔖 **RSS** link in its header.
+
+## Full-text search
+
+Optional search **inside** the text of your matched ebooks, **off by default**
+(toggle under **Settings → Full-text search**). It's opt-in because indexing
+extracts and stores book text, which is heavy.
+
+- A `BookTextIndex` table holds the head of each matched book's readable text
+  (capped at ~200k chars), keyed by `BookId`. Only books with a local ebook file
+  are indexed — the unmatched `__unknown` quarantine is skipped.
+- Indexing reuses `BookTextReader` (the same extractor the integrity check uses,
+  converting MOBI/AZW/etc. to text as needed) and runs **on demand** from the
+  Search page in capped batches, so a large library can be indexed incrementally
+  without blocking. The page loops batches until the backlog clears, with a Stop
+  control.
+- Search is a substring match over the extracted text plus title/author, returning
+  each hit with a ~160-char snippet around the match. (A SQL Server full-text
+  catalog could be layered over the `Content` column later for ranked CONTAINS
+  queries; the current implementation is a portable `LIKE` index that works on any
+  SQL Server edition without the Full-Text component installed.)
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET    | `/api/search?q=` | Search indexed text (returns hits + snippets; empty when disabled) |
+| GET    | `/api/search/status` | Enabled flag, indexed/eligible counts, running state, last-indexed time |
+| POST   | `/api/search/reindex` | Index one capped batch of not-yet-indexed books; returns indexed + remaining |
+| POST   | `/api/search/clear` | Drop the whole index |
+| GET/PUT | `/api/settings/full-text-search` | Read / set the on-off toggle (default off) |
 
 ## Backup
 

@@ -10,6 +10,7 @@ export default function Layout() {
                 <Link to="/" className="brand">The Library</Link>
                 <nav>
                     <NavLink to="/" end>Home</NavLink>
+                    <NavLink to="/search">Search</NavLink>
                     <NavLink to="/authors">Authors</NavLink>
                     <NavLink to="/recent-releases">Recent Releases</NavLink>
                     <NavLink to="/all-releases">All Releases</NavLink>

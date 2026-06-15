@@ -1428,9 +1428,56 @@ export default function Settings() {
 
             <PhysicalBooksImport />
 
+            <FullTextSearchSection />
+
             <BackupSection />
 
         </section>
+    )
+}
+
+// Toggle for the opt-in full-text search feature (default off). Indexing/search
+// controls live on the Search page; this is just the on/off switch.
+function FullTextSearchSection() {
+    const [enabled, setEnabled] = useState(null)
+    const [busy, setBusy] = useState(false)
+    const [error, setError] = useState(null)
+
+    useEffect(() => {
+        fetch('/api/settings/full-text-search')
+            .then(r => r.ok ? r.json() : null)
+            .then(d => setEnabled(d ? d.enabled : false))
+            .catch(() => setEnabled(false))
+    }, [])
+
+    const save = async (next) => {
+        setBusy(true); setError(null)
+        try {
+            const r = await fetch('/api/settings/full-text-search', {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: next }),
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            setEnabled(next)
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setBusy(false) }
+    }
+
+    return (
+        <>
+            <h2 style={{ marginTop: '1.5rem' }}>Full-text search</h2>
+            <p className="subtle">
+                Search inside the text of your matched ebooks. Off by default — indexing extracts and
+                stores book text, which is heavy, so it's strictly opt-in. When on, build the index from
+                the <a href="/search">Search</a> page.
+            </p>
+            {error ? <p className="error">{error}</p> : null}
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <input type="checkbox" disabled={enabled === null || busy}
+                       checked={!!enabled} onChange={e => save(e.target.checked)} />
+                Enable full-text search
+            </label>
+        </>
     )
 }
 

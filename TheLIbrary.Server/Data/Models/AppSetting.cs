@@ -74,6 +74,12 @@ public static class AppSettingKeys
     // the cover. UI-only preference; unset/anything-but-"true" = disabled.
     public const string CoverHoverEnabled = "CoverHoverEnabled";
 
+    // When "true", the optional full-text search feature is on: the indexer
+    // extracts ebook text into BookTextIndex and the Search page queries it.
+    // Default OFF (unset/anything-but-"true") — indexing is heavy, so it's
+    // strictly opt-in from the Settings page.
+    public const string FullTextSearchEnabled = "FullTextSearchEnabled";
+
     // Size multiplier for the cover-hover pop-up. 1 = default, 2 = double all
     // dimensions, etc. Stored invariant-culture; unset/invalid = 1.
     public const string CoverHoverScale = "CoverHoverScale";

@@ -580,6 +580,26 @@ public class SettingsController : ControllerBase
     private static double ClampScale(double scale)
         => double.IsFinite(scale) ? Math.Clamp(scale, 1.0, 4.0) : 1.0;
 
+    public sealed record FullTextSearchDto(bool Enabled);
+
+    [HttpGet("full-text-search")]
+    public async Task<FullTextSearchDto> GetFullTextSearch(CancellationToken ct)
+    {
+        var v = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.FullTextSearchEnabled)
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync(ct);
+        return new FullTextSearchDto(string.Equals(v, "true", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [HttpPut("full-text-search")]
+    public async Task<ActionResult<FullTextSearchDto>> SetFullTextSearch([FromBody] FullTextSearchDto body, CancellationToken ct)
+    {
+        await UpsertSettingAsync(AppSettingKeys.FullTextSearchEnabled, body.Enabled ? "true" : "false", ct);
+        await _db.SaveChangesAsync(ct);
+        return new FullTextSearchDto(body.Enabled);
+    }
+
     public sealed record CoverCacheFolderDto(string Path, string Default, bool Writable, int BatchSize);
 
     [HttpGet("cover-cache-folder")]

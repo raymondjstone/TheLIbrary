@@ -60,6 +60,7 @@ builder.Services.AddSingleton<TheLibrary.Server.Services.Incoming.IncomingServic
 builder.Services.AddScoped<TheLibrary.Server.Services.AuthorUpdates.AuthorUpdateProcessor>();
 builder.Services.AddScoped<TheLibrary.Server.Services.Sync.AuthorRefresher>();
 builder.Services.AddScoped<TheLibrary.Server.Services.Sync.ManualBookService>();
+builder.Services.AddScoped<TheLibrary.Server.Services.Search.FullTextSearchService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.AuthorRefreshCoordinator>();
 builder.Services.Configure<TheLibrary.Server.Services.Remarkable.RemarkableOptions>(
     builder.Configuration.GetSection("Remarkable"));

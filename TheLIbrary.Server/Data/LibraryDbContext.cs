@@ -25,6 +25,7 @@ public class LibraryDbContext : DbContext
     public DbSet<BookContentScan> BookContentScans => Set<BookContentScan>();
     public DbSet<Collection> Collections => Set<Collection>();
     public DbSet<BookCollection> BookCollections => Set<BookCollection>();
+    public DbSet<BookTextIndex> BookTextIndexes => Set<BookTextIndex>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -155,6 +156,14 @@ public class LibraryDbContext : DbContext
             e.HasOne(x => x.Collection).WithMany(c => c.Books)
                 .HasForeignKey(x => x.CollectionId).OnDelete(DeleteBehavior.Cascade);
             e.HasOne(x => x.Book).WithMany(bk => bk.Collections)
+                .HasForeignKey(x => x.BookId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        b.Entity<BookTextIndex>(e =>
+        {
+            e.HasIndex(x => x.BookId).IsUnique();
+            e.Property(x => x.Content).HasColumnType("nvarchar(max)");
+            e.HasOne(x => x.Book).WithMany()
                 .HasForeignKey(x => x.BookId).OnDelete(DeleteBehavior.Cascade);
         });
 
