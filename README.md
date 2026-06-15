@@ -1500,6 +1500,20 @@ thumbnails from the OpenLibrary covers CDN. The feed is navigation-only — file
 downloads are not served because the files live on a local filesystem path, not
 a web-accessible URL.
 
+### RSS feed of new releases
+
+For plain feed readers (and automation like IFTTT/n8n), there's also an **RSS
+2.0** feed of new releases that any reader understands:
+
+| Feed | URL |
+|------|-----|
+| New releases (starred authors) | `/rss/recent.xml` |
+| New releases (all tracked authors) | `/rss/recent.xml?all=true` |
+
+Items cover works first published in the last 5 years (deduped per author/title,
+newest first, up to 200), each linking to its OpenLibrary page. The Recent
+Releases page has a 🔖 **RSS** link in its header.
+
 ## reMarkable sync
 
 Pair a reMarkable tablet from the **Settings** page to push EPUB / PDF files
@@ -2152,6 +2166,7 @@ itself lives in the same registry.
 | GET    | `/opds/authors/{id}.xml` | One author's works |
 | GET    | `/opds/missing.xml` | Unowned books from starred authors (up to 200) |
 | GET    | `/opds/recent.xml` | Recent releases from starred authors (up to 200) |
+| GET    | `/rss/recent.xml` | RSS 2.0 feed of new releases (starred authors; `?all=true` for every tracked author) |
 
 The Hangfire dashboard is served at `/hangfire` (no auth — intended for a
 trusted LAN).

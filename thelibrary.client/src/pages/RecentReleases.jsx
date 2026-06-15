@@ -241,6 +241,8 @@ export default function RecentReleases() {
 
             <div className="toolbar">
                 <h2 style={{ margin: 0, fontWeight: 600 }}>Recent Releases</h2>
+                <a className="subtle" href="/rss/recent.xml" target="_blank" rel="noreferrer"
+                   title="Subscribe to new releases from starred authors (RSS)">🔖 RSS</a>
                 <input
                     type="search"
                     placeholder="Search title or author…"
