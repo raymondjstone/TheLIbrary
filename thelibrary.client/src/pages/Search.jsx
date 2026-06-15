@@ -2,17 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 // Full-text search across indexed ebook text. Opt-in: when the feature is off
-// the page points at Settings. When on, it shows index progress plus controls
-// to build/refresh or clear the index.
+// the page points at Settings. When on, it shows index progress plus a control
+// to run the background indexing job (a batch per run) or clear the index.
 export default function Search() {
     const [status, setStatus] = useState(null)
     const [q, setQ] = useState('')
     const [hits, setHits] = useState(null)
     const [searching, setSearching] = useState(false)
-    const [indexing, setIndexing] = useState(false)
-    const [progress, setProgress] = useState(null)
     const [error, setError] = useState(null)
-    const stopRef = useRef(false)
+    const pollRef = useRef(null)
 
     const loadStatus = async () => {
         try {
@@ -21,6 +19,16 @@ export default function Search() {
         } catch (e) { setError(String(e.message || e)) }
     }
     useEffect(() => { loadStatus() }, [])
+
+    // While indexing is running, poll status so the counts and progress update.
+    useEffect(() => {
+        if (status?.running && !pollRef.current) {
+            pollRef.current = setInterval(loadStatus, 2000)
+        } else if (!status?.running && pollRef.current) {
+            clearInterval(pollRef.current); pollRef.current = null
+        }
+        return () => { if (pollRef.current && !status?.running) { clearInterval(pollRef.current); pollRef.current = null } }
+    }, [status?.running])
 
     const run = async (e) => {
         e?.preventDefault()
@@ -36,20 +44,14 @@ export default function Search() {
         finally { setSearching(false) }
     }
 
-    const buildIndex = async () => {
-        setIndexing(true); setError(null); stopRef.current = false
+    const runIndexing = async () => {
+        setError(null)
         try {
-            // Loop batch reindex until nothing remains (or a batch makes no progress).
-            for (let i = 0; i < 1000 && !stopRef.current; i++) {
-                const r = await fetch('/api/search/reindex', { method: 'POST' })
-                const body = await r.json()
-                if (!r.ok) throw new Error(body.error || r.statusText)
-                setProgress({ indexed: body.indexed, remaining: body.remaining })
-                await loadStatus()
-                if (body.remaining === 0 || body.indexed === 0) break
-            }
+            const r = await fetch('/api/search/run', { method: 'POST' })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            await loadStatus()
         } catch (e) { setError(String(e.message || e)) }
-        finally { setIndexing(false); setProgress(null) }
     }
 
     const clearIndex = async () => {
@@ -81,17 +83,23 @@ export default function Search() {
                     <span className="subtle">
                         Indexed <strong>{status.indexed.toLocaleString()}</strong> of{' '}
                         <strong>{status.eligible.toLocaleString()}</strong> matched books
+                        {' '}· {status.maxPerRun}/run
                         {status.lastIndexedAt ? ` · last ${new Date(status.lastIndexedAt).toLocaleString()}` : ''}
                     </span>
-                    <button className="btn-ghost" disabled={indexing} onClick={buildIndex}>
-                        {indexing
-                            ? `Indexing…${progress ? ` (${progress.remaining.toLocaleString()} left)` : ''}`
-                            : status.indexed < status.eligible ? 'Build / update index' : 'Re-check index'}
-                    </button>
-                    {indexing && <button className="btn-ghost" onClick={() => { stopRef.current = true }}>Stop</button>}
-                    {status.indexed > 0 && !indexing &&
+                    {status.running
+                        ? <span className="subtle">⏳ Indexing… {status.message ? `(${status.message})` : ''}</span>
+                        : <button className="btn-ghost" onClick={runIndexing}>
+                            {status.indexed < status.eligible ? 'Run indexing now' : 'Re-check index'}
+                          </button>}
+                    {status.indexed > 0 && !status.running &&
                         <button className="btn-ghost btn-danger" onClick={clearIndex}>Clear index</button>}
                 </div>
+            )}
+            {status && status.indexed < status.eligible && !status.running && (
+                <p className="subtle">
+                    Each run indexes up to {status.maxPerRun} books (set in Settings). Schedule the{' '}
+                    <code>index-fulltext</code> job to work through the backlog automatically.
+                </p>
             )}
 
             <form className="toolbar" onSubmit={run}>

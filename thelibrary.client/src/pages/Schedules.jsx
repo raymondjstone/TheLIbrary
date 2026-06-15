@@ -24,6 +24,7 @@ const labels = {
     'prune-stale-files': 'Prune stale folder records (remove leftover empty title-folder rows)',
     'content-scan': 'Identify books from content (read front matter of unmatched/untracked files)',
     'assign-authors': 'Assign untracked books to authors (created from OL if needed)',
+    'index-fulltext': 'Index ebook text for full-text search (opt-in; books per run set in Settings)',
 }
 
 const fmtNextRun = (iso) => {

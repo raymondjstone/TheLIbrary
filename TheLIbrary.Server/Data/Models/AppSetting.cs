@@ -80,6 +80,10 @@ public static class AppSettingKeys
     // strictly opt-in from the Settings page.
     public const string FullTextSearchEnabled = "FullTextSearchEnabled";
 
+    // Max books the full-text indexer processes per run (scheduled or manual).
+    // Unset/invalid = 200.
+    public const string FullTextIndexMaxPerRun = "FullTextIndexMaxPerRun";
+
     // Size multiplier for the cover-hover pop-up. 1 = default, 2 = double all
     // dimensions, etc. Stored invariant-culture; unset/invalid = 1.
     public const string CoverHoverScale = "CoverHoverScale";

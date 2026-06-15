@@ -1323,55 +1323,6 @@ export default function Settings() {
                 </tbody>
             </table>
 
-            <h2 style={{ marginTop: '1.5rem' }}>Author blacklist</h2>
-            <p className="subtle">
-                Authors here are never added to the watchlist — incoming scans and library sync treat them as
-                &quot;author not found&quot;, so their files go to <code>__unknown</code> instead of silently
-                re-creating the author. The list is populated when you delete an author from the Authors page;
-                you can also add entries manually.
-            </p>
-
-            <table className="grid" style={{ maxWidth: 720 }}>
-                <thead>
-                    <tr>
-                        <th>Name</th>
-                        <th>Folder</th>
-                        <th>Reason</th>
-                        <th>Added</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {blacklist.map(b => (
-                        <tr key={b.id}>
-                            <td>{b.name}</td>
-                            <td className="subtle"><code>{b.folderName ?? '—'}</code></td>
-                            <td className="subtle">{b.reason ?? '—'}</td>
-                            <td className="subtle">{new Date(b.addedAt).toLocaleDateString()}</td>
-                            <td><button className="btn-danger" onClick={() => removeBlacklist(b.id)}>Remove</button></td>
-                        </tr>
-                    ))}
-                    <tr>
-                        <td>
-                            <input
-                                value={newBlName}
-                                onChange={e => setNewBlName(e.target.value)}
-                                onKeyDown={e => e.key === 'Enter' && addBlacklist()}
-                                placeholder="Author name" />
-                        </td>
-                        <td></td>
-                        <td>
-                            <input
-                                value={newBlReason}
-                                onChange={e => setNewBlReason(e.target.value)}
-                                onKeyDown={e => e.key === 'Enter' && addBlacklist()}
-                                placeholder="Reason (optional)" />
-                        </td>
-                        <td></td>
-                        <td><button onClick={addBlacklist} disabled={!newBlName.trim()}>Add</button></td>
-                    </tr>
-                </tbody>
-            </table>
             <h2 style={{ marginTop: '1.5rem' }}>NZB search sites</h2>
             <p className="subtle">
                 Configure sites to search for book NZBs. Use <code>{'{Title}'}</code>, <code>{'{Author}'}</code>,
@@ -1432,6 +1383,57 @@ export default function Settings() {
 
             <BackupSection />
 
+            {/* Excluded authors (blacklist) — kept at the very bottom of the page. */}
+            <h2 style={{ marginTop: '1.5rem' }}>Excluded authors (blacklist)</h2>
+            <p className="subtle">
+                Authors here are never added to the watchlist — incoming scans and library sync treat them as
+                &quot;author not found&quot;, so their files go to <code>__unknown</code> instead of silently
+                re-creating the author. The list is populated when you delete an author from the Authors page;
+                you can also add entries manually.
+            </p>
+
+            <table className="grid" style={{ maxWidth: 720 }}>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Folder</th>
+                        <th>Reason</th>
+                        <th>Added</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {blacklist.map(b => (
+                        <tr key={b.id}>
+                            <td>{b.name}</td>
+                            <td className="subtle"><code>{b.folderName ?? '—'}</code></td>
+                            <td className="subtle">{b.reason ?? '—'}</td>
+                            <td className="subtle">{new Date(b.addedAt).toLocaleDateString()}</td>
+                            <td><button className="btn-danger" onClick={() => removeBlacklist(b.id)}>Remove</button></td>
+                        </tr>
+                    ))}
+                    <tr>
+                        <td>
+                            <input
+                                value={newBlName}
+                                onChange={e => setNewBlName(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && addBlacklist()}
+                                placeholder="Author name" />
+                        </td>
+                        <td></td>
+                        <td>
+                            <input
+                                value={newBlReason}
+                                onChange={e => setNewBlReason(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && addBlacklist()}
+                                placeholder="Reason (optional)" />
+                        </td>
+                        <td></td>
+                        <td><button onClick={addBlacklist} disabled={!newBlName.trim()}>Add</button></td>
+                    </tr>
+                </tbody>
+            </table>
+
         </section>
     )
 }
@@ -1439,15 +1441,15 @@ export default function Settings() {
 // Toggle for the opt-in full-text search feature (default off). Indexing/search
 // controls live on the Search page; this is just the on/off switch.
 function FullTextSearchSection() {
-    const [enabled, setEnabled] = useState(null)
+    const [cfg, setCfg] = useState(null)   // { enabled, maxPerRun }
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState(null)
 
     useEffect(() => {
         fetch('/api/settings/full-text-search')
             .then(r => r.ok ? r.json() : null)
-            .then(d => setEnabled(d ? d.enabled : false))
-            .catch(() => setEnabled(false))
+            .then(d => setCfg(d ?? { enabled: false, maxPerRun: 200 }))
+            .catch(() => setCfg({ enabled: false, maxPerRun: 200 }))
     }, [])
 
     const save = async (next) => {
@@ -1455,10 +1457,10 @@ function FullTextSearchSection() {
         try {
             const r = await fetch('/api/settings/full-text-search', {
                 method: 'PUT', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled: next }),
+                body: JSON.stringify(next),
             })
             if (!r.ok) throw new Error(r.statusText)
-            setEnabled(next)
+            setCfg(await r.json())
         } catch (e) { setError(String(e.message || e)) }
         finally { setBusy(false) }
     }
@@ -1468,14 +1470,23 @@ function FullTextSearchSection() {
             <h2 style={{ marginTop: '1.5rem' }}>Full-text search</h2>
             <p className="subtle">
                 Search inside the text of your matched ebooks. Off by default — indexing extracts and
-                stores book text, which is heavy, so it's strictly opt-in. When on, build the index from
-                the <a href="/search">Search</a> page.
+                stores book text, which is heavy, so it's strictly opt-in. When on, indexing runs as the
+                schedulable <code>index-fulltext</code> background job (a few books per run) — or trigger
+                it from the <a href="/search">Search</a> page.
             </p>
             {error ? <p className="error">{error}</p> : null}
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <input type="checkbox" disabled={enabled === null || busy}
-                       checked={!!enabled} onChange={e => save(e.target.checked)} />
+                <input type="checkbox" disabled={cfg === null || busy}
+                       checked={!!cfg?.enabled} onChange={e => save({ ...cfg, enabled: e.target.checked })} />
                 Enable full-text search
+            </label>
+            <label className="subtle" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
+                Books to index per run
+                <input type="number" min="1" max="5000" style={{ width: '6rem' }}
+                       disabled={cfg === null || busy}
+                       value={cfg?.maxPerRun ?? 200}
+                       onChange={e => setCfg(c => ({ ...c, maxPerRun: Number(e.target.value) }))}
+                       onBlur={() => cfg && save(cfg)} />
             </label>
         </>
     )

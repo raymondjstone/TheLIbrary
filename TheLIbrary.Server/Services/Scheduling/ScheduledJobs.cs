@@ -38,6 +38,7 @@ public sealed class ScheduledJobs
     private readonly StaleFileCleanupService _pruneStaleFiles;
     private readonly ContentScanService _contentScan;
     private readonly UntrackedAuthorAssignmentService _assignAuthors;
+    private readonly TheLibrary.Server.Services.Search.FullTextSearchService _fullText;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -62,6 +63,7 @@ public sealed class ScheduledJobs
         StaleFileCleanupService pruneStaleFiles,
         ContentScanService contentScan,
         UntrackedAuthorAssignmentService assignAuthors,
+        TheLibrary.Server.Services.Search.FullTextSearchService fullText,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
@@ -70,7 +72,7 @@ public sealed class ScheduledJobs
         _disambiguator = disambiguator; _sameNames = sameNames; _physicalStars = physicalStars; _metadataCache = metadataCache;
         _flattenUnknown = flattenUnknown; _dedupeUnknown = dedupeUnknown; _dedupeAuthorFiles = dedupeAuthorFiles; _promoteManualBooks = promoteManualBooks; _adoptUnknownAuthors = adoptUnknownAuthors; _archiveForeign = archiveForeign;
         _mergeLinkedAuthors = mergeLinkedAuthors; _integrity = integrity; _pruneStaleFiles = pruneStaleFiles;
-        _contentScan = contentScan; _assignAuthors = assignAuthors;
+        _contentScan = contentScan; _assignAuthors = assignAuthors; _fullText = fullText;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -237,6 +239,12 @@ public sealed class ScheduledJobs
             ct => _assignAuthors.TryStart(ct, out var err) ? (true, err) : (false, err),
             () => _assignAuthors.IsRunning);
     }
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunIndexFullText(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.IndexFullText, manualTrigger,
+        ct => _fullText.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _fullText.IsRunning);
 
     internal Task RunWithPollingForTests(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,

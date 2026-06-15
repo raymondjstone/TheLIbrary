@@ -46,7 +46,7 @@ and wishlist.
 
 | Page | Route | Purpose |
 |------|-------|---------|
-| Search | `/search` | Full-text search across the text of your matched ebooks (opt-in). Shows index progress with build / refresh / clear controls, then returns books with a matching snippet. Off until enabled in Settings |
+| Search | `/search` | Full-text search across the text of your matched ebooks (opt-in). Shows index progress with a "run indexing now" button (a background batch) and a clear control, then returns books with a matching snippet. Off until enabled in Settings |
 | Home | `/` | Landing dashboard: cover art plus live **stat cards** (wanted, damaged copies, untracked folders, unknown files, authors due for refresh, releases this year, files added this week, owned/missing/active counts) that link straight into the page that acts on each. Backed by the cheap count-only `/api/dashboard` endpoint. This is the default route (replaced the old redirect to the author list) |
 | Authors | `/authors` | Full watchlist with filter, sort, pagination, A–Z jump index, per-row selection, bulk status (Active / Pending / Excluded), author merge, and a per-row **Refresh OL data** button that re-fetches that author's works from OpenLibrary |
 | Author detail | `/authors/:id` | Books (grouped by series), bio, read status, NZB links, reMarkable send, library scan timestamp, bulk "Mark all missing as wanted". A book's local files show its live copies inline; any copies under the archive folder are hidden behind a per-book **"Show N archived"** toggle |
@@ -1527,10 +1527,16 @@ extracts and stores book text, which is heavy.
   (capped at ~200k chars), keyed by `BookId`. Only books with a local ebook file
   are indexed — the unmatched `__unknown` quarantine is skipped.
 - Indexing reuses `BookTextReader` (the same extractor the integrity check uses,
-  converting MOBI/AZW/etc. to text as needed) and runs **on demand** from the
-  Search page in capped batches, so a large library can be indexed incrementally
-  without blocking. The page loops batches until the backlog clears, with a Stop
-  control.
+  converting MOBI/AZW/etc. to text as needed) and runs as a **background job** —
+  the schedulable `index-fulltext` task, or a manual "Run indexing now" on the
+  Search page. Each run indexes up to **`FullTextIndexMaxPerRun`** books (set in
+  Settings, default 200), so a large library is worked through incrementally
+  without ever blocking a request. It follows the same singleton-coordinator
+  pattern as the other scheduled jobs (`TryStart` / `IsRunning`), and the Search
+  page polls status while a run is in progress.
+- Extracted text is **sanitised** before storage (NUL bytes, C0 control chars and
+  unpaired UTF-16 surrogates are stripped) and each book is saved independently,
+  so a single malformed file can't fail the whole run.
 - Search is a substring match over the extracted text plus title/author, returning
   each hit with a ~160-char snippet around the match. (A SQL Server full-text
   catalog could be layered over the `Content` column later for ranked CONTAINS
@@ -1540,10 +1546,10 @@ extracts and stores book text, which is heavy.
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | GET    | `/api/search?q=` | Search indexed text (returns hits + snippets; empty when disabled) |
-| GET    | `/api/search/status` | Enabled flag, indexed/eligible counts, running state, last-indexed time |
-| POST   | `/api/search/reindex` | Index one capped batch of not-yet-indexed books; returns indexed + remaining |
+| GET    | `/api/search/status` | Enabled flag, indexed/eligible counts, per-run cap, running state + message, last-indexed time |
+| POST   | `/api/search/run` | Start a background indexing run (one batch of up to `FullTextIndexMaxPerRun` books); returns immediately |
 | POST   | `/api/search/clear` | Drop the whole index |
-| GET/PUT | `/api/settings/full-text-search` | Read / set the on-off toggle (default off) |
+| GET/PUT | `/api/settings/full-text-search` | Read / set the on-off toggle (default off) and the per-run batch size |
 
 ## Backup
 
@@ -1656,6 +1662,7 @@ on every startup.
 | `prune-stale-files` | `0 20 * * *` | Remove leftover folder-pointer `LocalBookFile` rows (empty/missing title folders) so they stop showing as bogus duplicates, AND delete every recursively-empty directory left behind under each mounted root. NAS-guarded: only folder-shaped rows, only directories with no files beneath them, only when the library root is mounted; library/quarantine/archive/incoming roots are never removed |
 | `content-scan` | `0 21 * * *` (disabled by default) | Read the front matter of unmatched/untracked files to guess author/title/series; results land on the Identified Books page. See [Identifying books from content](#identifying-books-from-content) |
 | `assign-authors` | `*/15 * * * *` | File identified untracked books under their author, creating Pending authors from OpenLibrary where needed — the Identified page's "Assign all untracked books to authors" bulk action on a schedule. Capped at 100 rows per run (OpenLibrary rate limits); skips a firing when the Hangfire queue is already backed up |
+| `index-fulltext` | `0 * * * *` (disabled by default) | Extract and index ebook text for [full-text search](#full-text-search). No-op unless the feature is enabled in Settings; indexes up to `FullTextIndexMaxPerRun` books per run. See [Full-text search](#full-text-search) |
 
 Hangfire runs with `WorkerCount=1`, and all background work also passes through
 a single `BackgroundTaskCoordinator`, so a manual UI run and a cron tick can't

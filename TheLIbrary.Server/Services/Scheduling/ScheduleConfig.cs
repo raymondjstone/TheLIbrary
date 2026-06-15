@@ -40,6 +40,7 @@ public static class ScheduleJobIds
     public const string PruneStaleFiles = "prune-stale-files";
     public const string ContentScan = "content-scan";
     public const string AssignAuthors = "assign-authors";
+    public const string IndexFullText = "index-fulltext";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
@@ -48,7 +49,7 @@ public static class ScheduleJobIds
         StarPhysicalAuthors, CacheOpenLibraryMetadata, FlattenUnknown,
         DedupeUnknown, DedupeAuthorFiles, PromoteManualBooks, AdoptUnknownAuthors,
         ArchiveForeign, MergeLinkedAuthors, CheckIntegrity, PruneStaleFiles,
-        ContentScan, AssignAuthors
+        ContentScan, AssignAuthors, IndexFullText
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -107,5 +108,9 @@ public static class ScheduleJobIds
             // from OL" bulk action. Capped per run (OL rate limits), so it runs
             // every 15 minutes to work through the backlog.
             [AssignAuthors] = new() { Cron = "*/15 * * * *", Enabled = true },
+            // Extract and index ebook text for full-text search, capped per run by
+            // FullTextIndexMaxPerRun. Heavy and opt-in (does nothing unless the
+            // feature is enabled in Settings), so it ships disabled; default hourly.
+            [IndexFullText] = new() { Cron = "0 * * * *", Enabled = false },
         };
 }

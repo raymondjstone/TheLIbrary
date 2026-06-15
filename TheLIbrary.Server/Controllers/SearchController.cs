@@ -9,7 +9,11 @@ namespace TheLibrary.Server.Controllers;
 public class SearchController : ControllerBase
 {
     private readonly FullTextSearchService _fts;
-    public SearchController(FullTextSearchService fts) { _fts = fts; }
+    private readonly IHostApplicationLifetime _lifetime;
+    public SearchController(FullTextSearchService fts, IHostApplicationLifetime lifetime)
+    {
+        _fts = fts; _lifetime = lifetime;
+    }
 
     // GET /api/search?q=...
     [HttpGet]
@@ -21,11 +25,15 @@ public class SearchController : ControllerBase
     public Task<FullTextSearchService.IndexStatus> Status(CancellationToken ct)
         => _fts.StatusAsync(ct);
 
-    // POST /api/search/reindex — index one batch of not-yet-indexed books. The
-    // UI calls this repeatedly until Remaining hits 0. No-op when disabled.
-    [HttpPost("reindex")]
-    public Task<FullTextSearchService.IndexResult> Reindex(CancellationToken ct)
-        => _fts.IndexBatchAsync(FullTextSearchService.DefaultBatch, ct);
+    // POST /api/search/run — kick off a background indexing run (one batch of up
+    // to FullTextIndexMaxPerRun books). Returns immediately; poll /status.
+    [HttpPost("run")]
+    public IActionResult Run()
+    {
+        if (!_fts.TryStart(_lifetime.ApplicationStopping, out var error))
+            return Conflict(new { error });
+        return Ok(new { started = true });
+    }
 
     // POST /api/search/clear — drop the whole index (rebuild / reclaim space).
     [HttpPost("clear")]
