@@ -1548,7 +1548,8 @@ extracts and stores book text, which is heavy.
   permission is lacking, it falls back to a built-in **inverted word index**
   (`TextIndexWord`): indexing tokenises each file's text + title + author into
   distinct words (capped per file), and search does an indexed prefix seek per
-  query word, AND-ing the results. This never scans the off-row `nvarchar(max)`
+  query word, AND-ing the results. Indexing processes **starred authors first**
+  (by `Author.Priority`) within the matched and unmatched tiers. This never scans the off-row `nvarchar(max)`
   text, so it's fast on **any** SQL Server edition — no `LIKE '%…%'` table scan,
   no 504/timeout. The Search page shows which engine is active. (Switching engines
   or upgrading from an older build needs one **Clear index → Run indexing** to
@@ -1556,7 +1557,7 @@ extracts and stores book text, which is heavy.
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET    | `/api/search?q=` | Search indexed text (returns hits + snippets; empty when disabled) |
+| GET    | `/api/search?q=&source=` | Search indexed text (returns hits + snippets; empty when disabled). `source` = `matched` / `unmatched` / `unknown` to limit to one type, omitted = all. The Search page has a matching "in …" dropdown |
 | GET    | `/api/search/status` | Enabled flag, indexed/eligible counts, per-run cap, running state + message, last-indexed time |
 | POST   | `/api/search/run` | Start a background indexing run (one batch of up to `FullTextIndexMaxPerRun` books); returns immediately |
 | POST   | `/api/search/clear` | Drop the whole index |

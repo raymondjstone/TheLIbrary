@@ -7,6 +7,7 @@ import { Link } from 'react-router-dom'
 export default function Search() {
     const [status, setStatus] = useState(null)
     const [q, setQ] = useState('')
+    const [source, setSource] = useState('')   // '' = all types
     const [hits, setHits] = useState(null)
     const [searching, setSearching] = useState(false)
     const [error, setError] = useState(null)
@@ -42,12 +43,14 @@ export default function Search() {
         return () => { if (pollRef.current && !status?.running) { clearInterval(pollRef.current); pollRef.current = null } }
     }, [status?.running])
 
-    const run = async (e) => {
+    const run = async (e, sourceOverride) => {
         e?.preventDefault()
         if (q.trim().length < 2) { setHits([]); return }
+        const src = sourceOverride ?? source
         setSearching(true); setError(null)
         try {
-            const r = await fetch(`/api/search?q=${encodeURIComponent(q.trim())}`)
+            const url = `/api/search?q=${encodeURIComponent(q.trim())}${src ? `&source=${src}` : ''}`
+            const r = await fetch(url)
             const body = await readJson(r)
             setHits(body?.hits ?? [])
             setStatus(s => s ? { ...s, enabled: body?.enabled ?? s.enabled } : s)
@@ -123,6 +126,16 @@ export default function Search() {
             <form className="toolbar" onSubmit={run}>
                 <input autoFocus placeholder="Search inside your books…" value={q}
                        onChange={e => setQ(e.target.value)} style={{ minWidth: '22rem' }} />
+                <label className="subtle" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                    in
+                    <select value={source}
+                            onChange={e => { setSource(e.target.value); if (q.trim().length >= 2) run(null, e.target.value) }}>
+                        <option value="">All books</option>
+                        <option value="matched">Matched books</option>
+                        <option value="unmatched">Unmatched books (author folders)</option>
+                        <option value="unknown">Unknown folder books</option>
+                    </select>
+                </label>
                 <button type="submit" disabled={searching || q.trim().length < 2}>
                     {searching ? 'Searching…' : 'Search'}
                 </button>

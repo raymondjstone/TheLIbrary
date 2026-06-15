@@ -199,9 +199,10 @@ public sealed class FullTextSearchService
         var over = opt.MaxPerRun * 4;
         var candidates = new List<Candidate>();
 
-        // 1. Matched books (always).
+        // 1. Matched books (always). Starred authors (higher Priority) first.
         var matched = await db.LocalBookFiles.AsNoTracking()
             .Where(f => f.BookId != null && !db.BookTextIndexes.Any(ix => ix.FullPath == f.FullPath))
+            .OrderByDescending(f => f.Author!.Priority).ThenBy(f => f.Id)
             .Select(f => new { f.FullPath, f.BookId, f.AuthorId, Title = f.Book!.Title, f.SizeBytes, f.ModifiedAt })
             .Take(over).ToListAsync(ct);
         candidates.AddRange(matched
@@ -214,6 +215,7 @@ public sealed class FullTextSearchService
         {
             var unmatched = await db.LocalBookFiles.AsNoTracking()
                 .Where(f => f.AuthorId != null && f.BookId == null && !db.BookTextIndexes.Any(ix => ix.FullPath == f.FullPath))
+                .OrderByDescending(f => f.Author!.Priority).ThenBy(f => f.Id)
                 .Select(f => new { f.FullPath, f.AuthorId, f.TitleFolder, f.SizeBytes, f.ModifiedAt })
                 .Take(over).ToListAsync(ct);
             candidates.AddRange(unmatched
@@ -328,7 +330,8 @@ public sealed class FullTextSearchService
 
     public sealed record SearchResponse(bool Enabled, string Query, IReadOnlyList<SearchHit> Hits);
 
-    public async Task<SearchResponse> SearchAsync(string? query, int limit, CancellationToken ct)
+    // `source` filters results to one TextIndexSource; null = all types.
+    public async Task<SearchResponse> SearchAsync(string? query, int limit, TextIndexSource? source, CancellationToken ct)
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
@@ -368,6 +371,9 @@ public sealed class FullTextSearchService
             var hitIds = await ids!.Take(2000).ToListAsync(ct);
             baseQuery = db.BookTextIndexes.AsNoTracking().Where(ix => hitIds.Contains(ix.Id));
         }
+
+        if (source.HasValue)
+            baseQuery = baseQuery.Where(ix => ix.Source == source.Value);
 
         var rows = await baseQuery
             .OrderBy(ix => ix.Source).ThenBy(ix => ix.Title)

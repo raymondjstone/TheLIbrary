@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Search;
 
 namespace TheLibrary.Server.Controllers;
@@ -15,10 +16,20 @@ public class SearchController : ControllerBase
         _fts = fts; _lifetime = lifetime;
     }
 
-    // GET /api/search?q=...  (errors become JSON via the global ApiExceptionFilter)
+    // GET /api/search?q=…&source=matched|unmatched|unknown  (omit/all = every type)
+    // Errors become JSON via the global ApiExceptionFilter.
     [HttpGet]
-    public Task<FullTextSearchService.SearchResponse> Search([FromQuery] string? q, CancellationToken ct)
-        => _fts.SearchAsync(q, limit: 60, ct);
+    public Task<FullTextSearchService.SearchResponse> Search(
+        [FromQuery] string? q, [FromQuery] string? source, CancellationToken ct)
+        => _fts.SearchAsync(q, limit: 60, ParseSource(source), ct);
+
+    private static TextIndexSource? ParseSource(string? s) => s?.Trim().ToLowerInvariant() switch
+    {
+        "matched" => TextIndexSource.MatchedBook,
+        "unmatched" => TextIndexSource.UnmatchedAuthorFile,
+        "unknown" => TextIndexSource.UnknownFile,
+        _ => null,
+    };
 
     // GET /api/search/status — enabled flag + index progress for the UI.
     [HttpGet("status")]
