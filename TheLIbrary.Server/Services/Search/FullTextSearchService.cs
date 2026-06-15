@@ -6,18 +6,18 @@ using TheLibrary.Server.Services.Scheduling;
 
 namespace TheLibrary.Server.Services.Search;
 
-// Optional full-text search over the readable text of matched ebooks. Strictly
-// opt-in (AppSettings["FullTextSearchEnabled"], default OFF): extracting and
-// storing book text is heavy, so nothing is indexed until the user turns it on.
+// Optional full-text search over the readable text of indexed files. Strictly
+// opt-in (AppSettings["FullTextSearchEnabled"], default OFF). By default only
+// matched books are indexed; two further opt-in settings extend it to unmatched
+// files sitting in author folders and to loose files in the __unknown bucket.
 //
 // Indexing runs as a background job (the recurring "index-fulltext" schedule, or
 // a manual "run now"), processing up to AppSettings["FullTextIndexMaxPerRun"]
-// books per run. It follows the same singleton-coordinator pattern as the other
-// scheduled jobs: TryStart launches a background task, IsRunning reports state.
+// files per run. Same singleton-coordinator pattern as the other scheduled jobs.
 public sealed class FullTextSearchService
 {
-    public const int MaxCharsPerBook = 200_000;   // ~400 KB of text per book, capped
-    public const int DefaultMaxPerRun = 200;      // books indexed per run when unset
+    public const int MaxCharsPerBook = 200_000;   // ~400 KB of text per file, capped
+    public const int DefaultMaxPerRun = 200;
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly BookTextReader _reader;
@@ -37,23 +37,23 @@ public sealed class FullTextSearchService
     public bool IsRunning => _isRunning;
     public string? CurrentMessage => _currentMessage;
 
-    private static async Task<bool> IsEnabledAsync(LibraryDbContext db, CancellationToken ct)
+    private sealed record Options(bool Enabled, int MaxPerRun, bool IncludeUnmatched, bool IncludeUnknown);
+
+    private static async Task<Options> ReadOptionsAsync(LibraryDbContext db, CancellationToken ct)
     {
-        var v = await db.AppSettings.AsNoTracking()
-            .Where(s => s.Key == AppSettingKeys.FullTextSearchEnabled)
-            .Select(s => s.Value).FirstOrDefaultAsync(ct);
-        return string.Equals(v, "true", StringComparison.OrdinalIgnoreCase);
+        var rows = await db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.FullTextSearchEnabled
+                     || s.Key == AppSettingKeys.FullTextIndexMaxPerRun
+                     || s.Key == AppSettingKeys.FullTextIndexUnmatchedAuthorFiles
+                     || s.Key == AppSettingKeys.FullTextIndexUnknownFiles)
+            .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
+        bool Flag(string k) => rows.TryGetValue(k, out var v) && string.Equals(v, "true", StringComparison.OrdinalIgnoreCase);
+        var max = rows.TryGetValue(AppSettingKeys.FullTextIndexMaxPerRun, out var m) && int.TryParse(m, out var n) && n > 0 ? n : DefaultMaxPerRun;
+        return new Options(Flag(AppSettingKeys.FullTextSearchEnabled), max,
+            Flag(AppSettingKeys.FullTextIndexUnmatchedAuthorFiles), Flag(AppSettingKeys.FullTextIndexUnknownFiles));
     }
 
-    private static async Task<int> MaxPerRunAsync(LibraryDbContext db, CancellationToken ct)
-    {
-        var v = await db.AppSettings.AsNoTracking()
-            .Where(s => s.Key == AppSettingKeys.FullTextIndexMaxPerRun)
-            .Select(s => s.Value).FirstOrDefaultAsync(ct);
-        return int.TryParse(v, out var n) && n > 0 ? n : DefaultMaxPerRun;
-    }
-
-    // --- Background job entry point (schedule + manual "run now") ---------------
+    // --- Background job entry point ---------------------------------------------
 
     public bool TryStart(CancellationToken hostCt, out string? error)
     {
@@ -78,93 +78,127 @@ public sealed class FullTextSearchService
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-        if (!await IsEnabledAsync(db, ct)) { _log.LogInformation("Full-text indexing skipped — feature disabled"); return; }
-        var max = await MaxPerRunAsync(db, ct);
-        _currentMessage = $"Indexing up to {max} books";
-        var result = await IndexBatchCoreAsync(db, max, ct);
-        _log.LogInformation("Full-text indexing: indexed {Indexed}, {Remaining} remaining", result.Indexed, result.Remaining);
+        var opt = await ReadOptionsAsync(db, ct);
+        if (!opt.Enabled) { _log.LogInformation("Full-text indexing skipped — feature disabled"); return; }
+        _currentMessage = $"Indexing up to {opt.MaxPerRun} files";
+        var indexed = await IndexBatchCoreAsync(db, opt, ct);
+        _log.LogInformation("Full-text indexing: indexed {Indexed} files", indexed);
     }
 
     // --- Status -----------------------------------------------------------------
 
-    public sealed record IndexStatus(bool Enabled, int Indexed, int Eligible, int MaxPerRun, bool Running, string? Message, DateTime? LastIndexedAt);
+    public sealed record IndexStatus(
+        bool Enabled, bool IncludeUnmatched, bool IncludeUnknown,
+        int Indexed, int Eligible, int MaxPerRun, bool Running, string? Message, DateTime? LastIndexedAt);
 
     public async Task<IndexStatus> StatusAsync(CancellationToken ct)
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-        var enabled = await IsEnabledAsync(db, ct);
-        var max = await MaxPerRunAsync(db, ct);
+        var opt = await ReadOptionsAsync(db, ct);
         var indexed = await db.BookTextIndexes.CountAsync(ct);
-        var eligible = await db.LocalBookFiles.AsNoTracking()
-            .Where(f => f.BookId != null).Select(f => f.BookId).Distinct().CountAsync(ct);
+        var outstanding = await OutstandingAsync(db, opt, ct);
         var last = await db.BookTextIndexes.AsNoTracking()
             .OrderByDescending(x => x.IndexedAt).Select(x => (DateTime?)x.IndexedAt).FirstOrDefaultAsync(ct);
-        return new IndexStatus(enabled, indexed, eligible, max, _isRunning, _currentMessage, last);
+        return new IndexStatus(opt.Enabled, opt.IncludeUnmatched, opt.IncludeUnknown,
+            indexed, indexed + outstanding, opt.MaxPerRun, _isRunning, _currentMessage, last);
+    }
+
+    private static async Task<int> OutstandingAsync(LibraryDbContext db, Options opt, CancellationToken ct)
+    {
+        var n = await db.LocalBookFiles.AsNoTracking()
+            .Where(f => f.BookId != null && !db.BookTextIndexes.Any(ix => ix.FullPath == f.FullPath))
+            .CountAsync(ct);
+        if (opt.IncludeUnmatched)
+            n += await db.LocalBookFiles.AsNoTracking()
+                .Where(f => f.AuthorId != null && f.BookId == null && !db.BookTextIndexes.Any(ix => ix.FullPath == f.FullPath))
+                .CountAsync(ct);
+        if (opt.IncludeUnknown)
+            n += await db.UnknownFiles.AsNoTracking()
+                .Where(u => !db.BookTextIndexes.Any(ix => ix.FullPath == u.FullPath))
+                .CountAsync(ct);
+        return n;
     }
 
     // --- Indexing core ----------------------------------------------------------
 
-    public sealed record IndexResult(int Indexed, int Remaining);
+    private sealed record Candidate(string FullPath, TextIndexSource Source, int? BookId, int? AuthorId, string Title, long SizeBytes, DateTime ModifiedAt);
 
-    private async Task<IndexResult> IndexBatchCoreAsync(LibraryDbContext db, int max, CancellationToken ct)
+    private async Task<int> IndexBatchCoreAsync(LibraryDbContext db, Options opt, CancellationToken ct)
     {
-        var candidates = await db.LocalBookFiles.AsNoTracking()
-            .Where(f => f.BookId != null && !db.BookTextIndexes.Any(ix => ix.BookId == f.BookId))
-            .Select(f => new { BookId = f.BookId!.Value, f.FullPath, f.AuthorId, f.SizeBytes, f.ModifiedAt })
-            .Take(max * 4)
-            .ToListAsync(ct);
+        var over = opt.MaxPerRun * 4;
+        var candidates = new List<Candidate>();
 
-        var byBook = candidates
+        // 1. Matched books (always).
+        var matched = await db.LocalBookFiles.AsNoTracking()
+            .Where(f => f.BookId != null && !db.BookTextIndexes.Any(ix => ix.FullPath == f.FullPath))
+            .Select(f => new { f.FullPath, f.BookId, f.AuthorId, Title = f.Book!.Title, f.SizeBytes, f.ModifiedAt })
+            .Take(over).ToListAsync(ct);
+        candidates.AddRange(matched
             .Where(c => BookIntegrityChecker.IsEbook(c.FullPath) && File.Exists(c.FullPath))
-            .GroupBy(c => c.BookId).Take(max).ToList();
+            .Select(c => new Candidate(c.FullPath, TextIndexSource.MatchedBook, c.BookId, c.AuthorId,
+                c.Title ?? Path.GetFileNameWithoutExtension(c.FullPath), c.SizeBytes, c.ModifiedAt)));
+
+        // 2. Unmatched files in author folders (opt-in).
+        if (opt.IncludeUnmatched && candidates.Count < opt.MaxPerRun)
+        {
+            var unmatched = await db.LocalBookFiles.AsNoTracking()
+                .Where(f => f.AuthorId != null && f.BookId == null && !db.BookTextIndexes.Any(ix => ix.FullPath == f.FullPath))
+                .Select(f => new { f.FullPath, f.AuthorId, f.TitleFolder, f.SizeBytes, f.ModifiedAt })
+                .Take(over).ToListAsync(ct);
+            candidates.AddRange(unmatched
+                .Where(c => BookIntegrityChecker.IsEbook(c.FullPath) && File.Exists(c.FullPath))
+                .Select(c => new Candidate(c.FullPath, TextIndexSource.UnmatchedAuthorFile, null, c.AuthorId,
+                    string.IsNullOrWhiteSpace(c.TitleFolder) ? Path.GetFileNameWithoutExtension(c.FullPath) : c.TitleFolder!,
+                    c.SizeBytes, c.ModifiedAt)));
+        }
+
+        // 3. Loose files in the __unknown quarantine (opt-in).
+        if (opt.IncludeUnknown && candidates.Count < opt.MaxPerRun)
+        {
+            var unknown = await db.UnknownFiles.AsNoTracking()
+                .Where(u => !db.BookTextIndexes.Any(ix => ix.FullPath == u.FullPath))
+                .Select(u => new { u.FullPath, u.NormalizedTitle, u.FileName, u.SizeBytes, u.ModifiedAt })
+                .Take(over).ToListAsync(ct);
+            candidates.AddRange(unknown
+                .Where(c => BookIntegrityChecker.IsEbook(c.FullPath) && File.Exists(c.FullPath))
+                .Select(c => new Candidate(c.FullPath, TextIndexSource.UnknownFile, null, null,
+                    string.IsNullOrWhiteSpace(c.NormalizedTitle) ? Path.GetFileNameWithoutExtension(c.FileName) : c.NormalizedTitle!,
+                    c.SizeBytes, c.ModifiedAt)));
+        }
+
+        var batch = candidates
+            .GroupBy(c => c.FullPath).Select(g => g.First())   // de-dupe by path
+            .Take(opt.MaxPerRun).ToList();
 
         var indexed = 0;
-        foreach (var grp in byBook)
+        foreach (var c in batch)
         {
             ct.ThrowIfCancellationRequested();
-            var c = grp.First();
-            _currentMessage = $"Indexing {Path.GetFileName(c.FullPath)} ({indexed + 1}/{byBook.Count})";
+            _currentMessage = $"Indexing {Path.GetFileName(c.FullPath)} ({indexed + 1}/{batch.Count})";
             string content;
             try { content = await _reader.ReadHeadAsync(c.FullPath, MaxCharsPerBook, ct) ?? ""; }
             catch (Exception ex) { _log.LogDebug(ex, "Full-text index: failed to read {Path}", c.FullPath); content = ""; }
 
-            // Extracted ebook text frequently contains NUL bytes, control chars and
-            // broken UTF-16 surrogate pairs that SQL Server rejects on insert. Clean
-            // it so one bad book can't blow up the batch.
             var entry = new BookTextIndex
             {
-                BookId = c.BookId, AuthorId = c.AuthorId, FullPath = c.FullPath,
-                Content = Sanitize(content),
+                FullPath = c.FullPath, Source = c.Source, BookId = c.BookId, AuthorId = c.AuthorId,
+                Title = c.Title, Content = Sanitize(content),
                 SizeBytes = c.SizeBytes, ModifiedAt = c.ModifiedAt, IndexedAt = DateTime.UtcNow,
             };
             db.BookTextIndexes.Add(entry);
-            try
-            {
-                await db.SaveChangesAsync(ct);
-                indexed++;
-            }
+            try { await db.SaveChangesAsync(ct); indexed++; }
             catch (Exception ex)
             {
-                // Isolate and skip the offending row, then store an empty placeholder
-                // so it isn't retried forever; keep the run going.
                 _log.LogWarning(ex, "Full-text index: could not store text for {Path}; storing empty", c.FullPath);
                 db.Entry(entry).State = EntityState.Detached;
                 entry.Content = "";
                 db.BookTextIndexes.Add(entry);
                 try { await db.SaveChangesAsync(ct); indexed++; }
-                catch (Exception ex2)
-                {
-                    _log.LogError(ex2, "Full-text index: giving up on {Path}", c.FullPath);
-                    db.Entry(entry).State = EntityState.Detached;
-                }
+                catch (Exception ex2) { _log.LogError(ex2, "Full-text index: giving up on {Path}", c.FullPath); db.Entry(entry).State = EntityState.Detached; }
             }
         }
-
-        var remaining = await db.LocalBookFiles.AsNoTracking()
-            .Where(f => f.BookId != null && !db.BookTextIndexes.Any(ix => ix.BookId == f.BookId))
-            .Select(f => f.BookId).Distinct().CountAsync(ct);
-        return new IndexResult(indexed, remaining);
+        return indexed;
     }
 
     public async Task<int> ClearAsync(CancellationToken ct)
@@ -177,8 +211,8 @@ public sealed class FullTextSearchService
     // --- Search -----------------------------------------------------------------
 
     public sealed record SearchHit(
-        int BookId, string Title, int? FirstPublishYear, int? AuthorId, string? AuthorName,
-        int? CoverId, bool Owned, string Snippet);
+        int? BookId, int? AuthorId, string Title, string? AuthorName, int? FirstPublishYear,
+        int? CoverId, bool Owned, string Source, string File, string Snippet);
 
     public sealed record SearchResponse(bool Enabled, string Query, IReadOnlyList<SearchHit> Hits);
 
@@ -186,30 +220,47 @@ public sealed class FullTextSearchService
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        var enabled = (await ReadOptionsAsync(db, ct)).Enabled;
         var q = query?.Trim() ?? "";
-        if (!await IsEnabledAsync(db, ct)) return new SearchResponse(false, q, Array.Empty<SearchHit>());
+        if (!enabled) return new SearchResponse(false, q, Array.Empty<SearchHit>());
         if (q.Length < 2) return new SearchResponse(true, q, Array.Empty<SearchHit>());
+
+        // A %term% scan over the nvarchar(max) text column can be slow on a big
+        // index; give it room rather than letting the default 30s command timeout
+        // surface as a 500.
+        db.Database.SetCommandTimeout(120);
 
         var like = $"%{q}%";
         var rows = await db.BookTextIndexes.AsNoTracking()
             .Where(ix => EF.Functions.Like(ix.Content, like)
-                      || EF.Functions.Like(ix.Book.Title, like)
-                      || (ix.Book.Author != null && EF.Functions.Like(ix.Book.Author.Name, like)))
-            .OrderBy(ix => ix.Book.Title)
+                      || EF.Functions.Like(ix.Title, like)
+                      || (ix.Book != null && ix.Book.Author != null && EF.Functions.Like(ix.Book.Author.Name, like)))
+            .OrderBy(ix => ix.Source).ThenBy(ix => ix.Title)
             .Take(limit)
             .Select(ix => new
             {
-                ix.BookId, ix.Book.Title, ix.Book.FirstPublishYear, ix.AuthorId,
-                AuthorName = ix.Book.Author != null ? ix.Book.Author.Name : null,
-                ix.Book.CoverId,
-                Owned = ix.Book.ManuallyOwned || ix.Book.LocalFiles.Any(),
-                ix.Content,
+                ix.BookId, ix.AuthorId, ix.Source, ix.FullPath, ix.Content,
+                Title = ix.BookId != null ? ix.Book!.Title : ix.Title,
+                BookAuthorName = ix.BookId != null && ix.Book!.Author != null ? ix.Book.Author.Name : null,
+                FirstPublishYear = ix.BookId != null ? ix.Book!.FirstPublishYear : null,
+                CoverId = ix.BookId != null ? ix.Book!.CoverId : null,
+                Owned = ix.BookId != null && (ix.Book!.ManuallyOwned || ix.Book.LocalFiles.Any()),
             })
             .ToListAsync(ct);
 
+        // Fill author names for non-matched rows that carry an AuthorId.
+        var authorIds = rows.Where(r => r.BookAuthorName == null && r.AuthorId != null)
+            .Select(r => r.AuthorId!.Value).Distinct().ToList();
+        var authorNames = authorIds.Count == 0
+            ? new Dictionary<int, string>()
+            : await db.Authors.AsNoTracking().Where(a => authorIds.Contains(a.Id))
+                .ToDictionaryAsync(a => a.Id, a => a.Name, ct);
+
         var hits = rows.Select(r => new SearchHit(
-            r.BookId, r.Title, r.FirstPublishYear, r.AuthorId, r.AuthorName, r.CoverId, r.Owned,
-            Snippet(r.Content, q))).ToList();
+            r.BookId, r.AuthorId, r.Title,
+            r.BookAuthorName ?? (r.AuthorId != null && authorNames.TryGetValue(r.AuthorId.Value, out var an) ? an : null),
+            r.FirstPublishYear, r.CoverId, r.Owned, r.Source.ToString(),
+            Path.GetFileName(r.FullPath), Snippet(r.Content, q))).ToList();
         return new SearchResponse(true, q, hits);
     }
 
@@ -225,13 +276,12 @@ public sealed class FullTextSearchService
             var ch = s[i];
             if (char.IsHighSurrogate(ch))
             {
-                // Keep only a well-formed high+low pair; otherwise drop the high half.
                 if (i + 1 < s.Length && char.IsLowSurrogate(s[i + 1])) { sb.Append(ch); sb.Append(s[++i]); }
                 continue;
             }
-            if (char.IsLowSurrogate(ch)) continue;            // unpaired low surrogate
+            if (char.IsLowSurrogate(ch)) continue;
             if (ch == '\t' || ch == '\n' || ch == '\r') { sb.Append(ch); continue; }
-            if (ch < 0x20 || ch == 0x7F) { sb.Append(' '); continue; }  // other control chars
+            if (ch < 0x20 || ch == 0x7F) { sb.Append(' '); continue; }
             sb.Append(ch);
         }
         return sb.ToString();

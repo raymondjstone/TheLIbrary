@@ -1441,26 +1441,34 @@ export default function Settings() {
 // Toggle for the opt-in full-text search feature (default off). Indexing/search
 // controls live on the Search page; this is just the on/off switch.
 function FullTextSearchSection() {
-    const [cfg, setCfg] = useState(null)   // { enabled, maxPerRun }
+    const [cfg, setCfg] = useState(null)   // { enabled, maxPerRun, includeUnmatchedAuthorFiles, includeUnknownFiles }
+    const [saved, setSaved] = useState(null)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState(null)
+    const [done, setDone] = useState(false)
 
     useEffect(() => {
+        const fallback = { enabled: false, maxPerRun: 200, includeUnmatchedAuthorFiles: false, includeUnknownFiles: false }
         fetch('/api/settings/full-text-search')
             .then(r => r.ok ? r.json() : null)
-            .then(d => setCfg(d ?? { enabled: false, maxPerRun: 200 }))
-            .catch(() => setCfg({ enabled: false, maxPerRun: 200 }))
+            .then(d => { setCfg(d ?? fallback); setSaved(d ?? fallback) })
+            .catch(() => { setCfg(fallback); setSaved(fallback) })
     }, [])
 
-    const save = async (next) => {
-        setBusy(true); setError(null)
+    const patch = (p) => { setCfg(c => ({ ...c, ...p })); setDone(false) }
+
+    const dirty = cfg && saved && JSON.stringify(cfg) !== JSON.stringify(saved)
+
+    const save = async () => {
+        setBusy(true); setError(null); setDone(false)
         try {
             const r = await fetch('/api/settings/full-text-search', {
                 method: 'PUT', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(next),
+                body: JSON.stringify(cfg),
             })
             if (!r.ok) throw new Error(r.statusText)
-            setCfg(await r.json())
+            const body = await r.json()
+            setCfg(body); setSaved(body); setDone(true)
         } catch (e) { setError(String(e.message || e)) }
         finally { setBusy(false) }
     }
@@ -1469,15 +1477,15 @@ function FullTextSearchSection() {
         <>
             <h2 style={{ marginTop: '1.5rem' }}>Full-text search</h2>
             <p className="subtle">
-                Search inside the text of your matched ebooks. Off by default — indexing extracts and
-                stores book text, which is heavy, so it's strictly opt-in. When on, indexing runs as the
-                schedulable <code>index-fulltext</code> background job (a few books per run) — or trigger
-                it from the <a href="/search">Search</a> page.
+                Search inside the text of your books. Off by default — indexing extracts and stores text,
+                which is heavy, so it's strictly opt-in. When on, indexing runs as the schedulable{' '}
+                <code>index-fulltext</code> background job (a batch per run) — or trigger it from the{' '}
+                <a href="/search">Search</a> page.
             </p>
             {error ? <p className="error">{error}</p> : null}
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <input type="checkbox" disabled={cfg === null || busy}
-                       checked={!!cfg?.enabled} onChange={e => save({ ...cfg, enabled: e.target.checked })} />
+                       checked={!!cfg?.enabled} onChange={e => patch({ enabled: e.target.checked })} />
                 Enable full-text search
             </label>
             <label className="subtle" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
@@ -1485,9 +1493,24 @@ function FullTextSearchSection() {
                 <input type="number" min="1" max="5000" style={{ width: '6rem' }}
                        disabled={cfg === null || busy}
                        value={cfg?.maxPerRun ?? 200}
-                       onChange={e => setCfg(c => ({ ...c, maxPerRun: Number(e.target.value) }))}
-                       onBlur={() => cfg && save(cfg)} />
+                       onChange={e => patch({ maxPerRun: Number(e.target.value) })} />
             </label>
+            <label className="subtle" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
+                <input type="checkbox" disabled={cfg === null || busy}
+                       checked={!!cfg?.includeUnmatchedAuthorFiles} onChange={e => patch({ includeUnmatchedAuthorFiles: e.target.checked })} />
+                Also index unmatched files in author folders
+            </label>
+            <label className="subtle" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
+                <input type="checkbox" disabled={cfg === null || busy}
+                       checked={!!cfg?.includeUnknownFiles} onChange={e => patch({ includeUnknownFiles: e.target.checked })} />
+                Also index files in the <code>__unknown</code> folder
+            </label>
+            <div style={{ marginTop: '0.6rem', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <button onClick={save} disabled={cfg === null || busy || !dirty}>
+                    {busy ? 'Saving…' : 'Save'}
+                </button>
+                {done && !dirty ? <span className="subtle">Saved.</span> : null}
+            </div>
         </>
     )
 }

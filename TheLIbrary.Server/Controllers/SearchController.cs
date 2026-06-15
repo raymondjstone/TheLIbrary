@@ -17,8 +17,13 @@ public class SearchController : ControllerBase
 
     // GET /api/search?q=...
     [HttpGet]
-    public Task<FullTextSearchService.SearchResponse> Search([FromQuery] string? q, CancellationToken ct)
-        => _fts.SearchAsync(q, limit: 60, ct);
+    public async Task<IActionResult> Search([FromQuery] string? q, CancellationToken ct)
+    {
+        try { return Ok(await _fts.SearchAsync(q, limit: 60, ct)); }
+        catch (OperationCanceledException) { return Ok(new FullTextSearchService.SearchResponse(true, q ?? "", Array.Empty<FullTextSearchService.SearchHit>())); }
+        // Always return JSON (never an HTML error page) so the client can show a clean message.
+        catch (Exception ex) { return StatusCode(500, new { error = $"Search failed: {ex.Message}" }); }
+    }
 
     // GET /api/search/status — enabled flag + index progress for the UI.
     [HttpGet("status")]

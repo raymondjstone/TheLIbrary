@@ -161,7 +161,8 @@ public class LibraryDbContext : DbContext
 
         b.Entity<BookTextIndex>(e =>
         {
-            e.HasIndex(x => x.BookId).IsUnique();
+            e.HasIndex(x => x.FullPath).IsUnique();
+            e.HasIndex(x => x.BookId);
             e.Property(x => x.Content).HasColumnType("nvarchar(max)");
             e.HasOne(x => x.Book).WithMany()
                 .HasForeignKey(x => x.BookId).OnDelete(DeleteBehavior.Cascade);

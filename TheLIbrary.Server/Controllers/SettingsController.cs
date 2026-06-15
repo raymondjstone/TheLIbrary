@@ -580,18 +580,21 @@ public class SettingsController : ControllerBase
     private static double ClampScale(double scale)
         => double.IsFinite(scale) ? Math.Clamp(scale, 1.0, 4.0) : 1.0;
 
-    public sealed record FullTextSearchDto(bool Enabled, int MaxPerRun);
+    public sealed record FullTextSearchDto(bool Enabled, int MaxPerRun, bool IncludeUnmatchedAuthorFiles, bool IncludeUnknownFiles);
 
     [HttpGet("full-text-search")]
     public async Task<FullTextSearchDto> GetFullTextSearch(CancellationToken ct)
     {
         var rows = await _db.AppSettings.AsNoTracking()
-            .Where(s => s.Key == AppSettingKeys.FullTextSearchEnabled || s.Key == AppSettingKeys.FullTextIndexMaxPerRun)
+            .Where(s => s.Key == AppSettingKeys.FullTextSearchEnabled
+                     || s.Key == AppSettingKeys.FullTextIndexMaxPerRun
+                     || s.Key == AppSettingKeys.FullTextIndexUnmatchedAuthorFiles
+                     || s.Key == AppSettingKeys.FullTextIndexUnknownFiles)
             .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
-        var enabled = rows.TryGetValue(AppSettingKeys.FullTextSearchEnabled, out var e)
-            && string.Equals(e, "true", StringComparison.OrdinalIgnoreCase);
+        bool Flag(string k) => rows.TryGetValue(k, out var v) && string.Equals(v, "true", StringComparison.OrdinalIgnoreCase);
         var max = rows.TryGetValue(AppSettingKeys.FullTextIndexMaxPerRun, out var m) && int.TryParse(m, out var n) && n > 0 ? n : 200;
-        return new FullTextSearchDto(enabled, max);
+        return new FullTextSearchDto(Flag(AppSettingKeys.FullTextSearchEnabled), max,
+            Flag(AppSettingKeys.FullTextIndexUnmatchedAuthorFiles), Flag(AppSettingKeys.FullTextIndexUnknownFiles));
     }
 
     [HttpPut("full-text-search")]
@@ -600,8 +603,10 @@ public class SettingsController : ControllerBase
         var max = body.MaxPerRun > 0 ? Math.Min(body.MaxPerRun, 5000) : 200;
         await UpsertSettingAsync(AppSettingKeys.FullTextSearchEnabled, body.Enabled ? "true" : "false", ct);
         await UpsertSettingAsync(AppSettingKeys.FullTextIndexMaxPerRun, max.ToString(), ct);
+        await UpsertSettingAsync(AppSettingKeys.FullTextIndexUnmatchedAuthorFiles, body.IncludeUnmatchedAuthorFiles ? "true" : "false", ct);
+        await UpsertSettingAsync(AppSettingKeys.FullTextIndexUnknownFiles, body.IncludeUnknownFiles ? "true" : "false", ct);
         await _db.SaveChangesAsync(ct);
-        return new FullTextSearchDto(body.Enabled, max);
+        return new FullTextSearchDto(body.Enabled, max, body.IncludeUnmatchedAuthorFiles, body.IncludeUnknownFiles);
     }
 
     public sealed record CoverCacheFolderDto(string Path, string Default, bool Writable, int BatchSize);

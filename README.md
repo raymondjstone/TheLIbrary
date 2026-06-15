@@ -1523,9 +1523,13 @@ Optional search **inside** the text of your matched ebooks, **off by default**
 (toggle under **Settings → Full-text search**). It's opt-in because indexing
 extracts and stores book text, which is heavy.
 
-- A `BookTextIndex` table holds the head of each matched book's readable text
-  (capped at ~200k chars), keyed by `BookId`. Only books with a local ebook file
-  are indexed — the unmatched `__unknown` quarantine is skipped.
+- A `BookTextIndex` table holds the head of each indexed file's readable text
+  (capped at ~200k chars), keyed by file path with a `Source` tag. By default only
+  **matched books** are indexed. Two opt-in Settings toggles widen the net:
+  **unmatched files in author folders** (`FullTextIndexUnmatchedAuthorFiles`) and
+  **loose files in the `__unknown` quarantine** (`FullTextIndexUnknownFiles`).
+  Search results tag non-book hits as *unmatched file* / *`__unknown` file* and
+  show the filename.
 - Indexing reuses `BookTextReader` (the same extractor the integrity check uses,
   converting MOBI/AZW/etc. to text as needed) and runs as a **background job** —
   the schedulable `index-fulltext` task, or a manual "Run indexing now" on the
@@ -1549,7 +1553,7 @@ extracts and stores book text, which is heavy.
 | GET    | `/api/search/status` | Enabled flag, indexed/eligible counts, per-run cap, running state + message, last-indexed time |
 | POST   | `/api/search/run` | Start a background indexing run (one batch of up to `FullTextIndexMaxPerRun` books); returns immediately |
 | POST   | `/api/search/clear` | Drop the whole index |
-| GET/PUT | `/api/settings/full-text-search` | Read / set the on-off toggle (default off) and the per-run batch size |
+| GET/PUT | `/api/settings/full-text-search` | Read / set the on-off toggle (default off), per-run batch size, and the two "also index unmatched / `__unknown` files" toggles. Saved with a **Save** button (consistent with the other settings) |
 
 ## Backup
 

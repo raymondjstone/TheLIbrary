@@ -12,10 +12,22 @@ export default function Search() {
     const [error, setError] = useState(null)
     const pollRef = useRef(null)
 
+    // Parse a response defensively: a 500 returns an HTML error page, so blindly
+    // calling r.json() throws the cryptic "Unexpected token '<'". Read text first,
+    // try JSON, and surface a clean status-based error instead.
+    const readJson = async (r) => {
+        const text = await r.text().catch(() => '')
+        let body = null
+        try { body = text ? JSON.parse(text) : null } catch { /* non-JSON (HTML error page) */ }
+        if (!r.ok) throw new Error(body?.error || `Request failed (${r.status} ${r.statusText || ''})`.trim())
+        return body
+    }
+
     const loadStatus = async () => {
         try {
             const r = await fetch('/api/search/status')
-            if (r.ok) setStatus(await r.json())
+            const body = await readJson(r)
+            if (body) setStatus(body)
         } catch (e) { setError(String(e.message || e)) }
     }
     useEffect(() => { loadStatus() }, [])
@@ -36,11 +48,10 @@ export default function Search() {
         setSearching(true); setError(null)
         try {
             const r = await fetch(`/api/search?q=${encodeURIComponent(q.trim())}`)
-            const body = await r.json()
-            if (!r.ok) throw new Error(body.error || r.statusText)
-            setHits(body.hits)
-            setStatus(s => s ? { ...s, enabled: body.enabled } : s)
-        } catch (e) { setError(String(e.message || e)) }
+            const body = await readJson(r)
+            setHits(body?.hits ?? [])
+            setStatus(s => s ? { ...s, enabled: body?.enabled ?? s.enabled } : s)
+        } catch (e) { setError(`Search failed: ${e.message || e}`); setHits([]) }
         finally { setSearching(false) }
     }
 
@@ -48,8 +59,7 @@ export default function Search() {
         setError(null)
         try {
             const r = await fetch('/api/search/run', { method: 'POST' })
-            const body = await r.json().catch(() => ({}))
-            if (!r.ok) throw new Error(body.error || r.statusText)
+            await readJson(r)
             await loadStatus()
         } catch (e) { setError(String(e.message || e)) }
     }
@@ -115,16 +125,23 @@ export default function Search() {
                 : hits.length === 0
                     ? <p className="subtle">No matches{q ? ` for “${q}”` : ''}.</p>
                     : <ul className="search-results" style={{ listStyle: 'none', padding: 0 }}>
-                        {hits.map(h => (
-                            <li key={h.bookId} style={{ borderBottom: '1px solid var(--border)', padding: '0.6rem 0' }}>
-                                <div>
-                                    <strong>{h.title}</strong>{h.firstPublishYear ? <span className="subtle"> ({h.firstPublishYear})</span> : null}
-                                    {h.authorId ? <span className="subtle"> — <Link to={`/authors/${h.authorId}`}>{h.authorName}</Link></span> : null}
-                                    {h.owned ? <span className="pill pill-active" style={{ marginLeft: '0.5rem' }}>Owned</span> : null}
-                                </div>
-                                {h.snippet ? <div className="subtle" style={{ marginTop: '0.2rem' }}>{h.snippet}</div> : null}
-                            </li>
-                        ))}
+                        {hits.map((h, i) => {
+                            const tag = h.source === 'UnmatchedAuthorFile' ? 'unmatched file'
+                                : h.source === 'UnknownFile' ? '__unknown file' : null
+                            return (
+                                <li key={`${h.source}-${h.bookId ?? h.file}-${i}`} style={{ borderBottom: '1px solid var(--border)', padding: '0.6rem 0' }}>
+                                    <div>
+                                        <strong>{h.title}</strong>{h.firstPublishYear ? <span className="subtle"> ({h.firstPublishYear})</span> : null}
+                                        {h.authorId ? <span className="subtle"> — <Link to={`/authors/${h.authorId}`}>{h.authorName}</Link></span>
+                                            : h.authorName ? <span className="subtle"> — {h.authorName}</span> : null}
+                                        {h.owned ? <span className="pill pill-active" style={{ marginLeft: '0.5rem' }}>Owned</span> : null}
+                                        {tag ? <span className="filetype-tag" style={{ marginLeft: '0.5rem' }}>{tag}</span> : null}
+                                    </div>
+                                    {tag ? <div className="subtle" style={{ marginTop: '0.1rem' }}><code>{h.file}</code></div> : null}
+                                    {h.snippet ? <div className="subtle" style={{ marginTop: '0.2rem' }}>{h.snippet}</div> : null}
+                                </li>
+                            )
+                        })}
                     </ul>}
         </section>
     )

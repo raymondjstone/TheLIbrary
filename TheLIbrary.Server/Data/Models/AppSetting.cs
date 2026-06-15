@@ -84,6 +84,12 @@ public static class AppSettingKeys
     // Unset/invalid = 200.
     public const string FullTextIndexMaxPerRun = "FullTextIndexMaxPerRun";
 
+    // Extend full-text indexing beyond matched books. Both default OFF ("true"
+    // to enable). UnmatchedAuthorFiles = files in an author folder not linked to
+    // a Book; UnknownFiles = loose files in the __unknown quarantine.
+    public const string FullTextIndexUnmatchedAuthorFiles = "FullTextIndexUnmatchedAuthorFiles";
+    public const string FullTextIndexUnknownFiles = "FullTextIndexUnknownFiles";
+
     // Size multiplier for the cover-hover pop-up. 1 = default, 2 = double all
     // dimensions, etc. Stored invariant-culture; unset/invalid = 1.
     public const string CoverHoverScale = "CoverHoverScale";
