@@ -1514,6 +1514,28 @@ Items cover works first published in the last 5 years (deduped per author/title,
 newest first, up to 200), each linking to its OpenLibrary page. The Recent
 Releases page has a 🔖 **RSS** link in its header.
 
+## Backup
+
+The **Backup** section on the **Settings** page downloads a single ZIP snapshot
+of the data you can't easily regenerate:
+
+- `app_settings.json`, `library_locations.json`, `nzb_sites.json` — configuration
+- `authors.json` — the full author watchlist (status, priority, OL keys, refresh
+  cadence, notes, links/pen-names, notify flags)
+- `author_blacklist.json`, `ignored_folders.json` — your exclusion rules
+- `series.json`, `series_authors.json` — manual series structure
+- `books.json` — every manual book (not on OpenLibrary, so unrecoverable) plus
+  any book carrying user state (wanted / read / owned / suppressed), keyed by
+  author OL key + work key
+- `physical_unmatched.json` — physical-import rows
+- `file_manifest.json` — *(opt-in)* every tracked local file path
+
+Bulk catalogue data (OpenLibrary works, the OL author dump, disk-scan
+`LocalBookFile` rows, the `__unknown` index) is deliberately excluded — a sync or
+seed rebuilds it. `GET /api/backup/export` (add `?manifest=true` for the file
+list) returns the archive. A guarded **restore** that re-applies an archive is a
+separate, explicitly-confirmed step (planned next).
+
 ## reMarkable sync
 
 Pair a reMarkable tablet from the **Settings** page to push EPUB / PDF files

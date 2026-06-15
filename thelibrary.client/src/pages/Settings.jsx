@@ -1428,7 +1428,35 @@ export default function Settings() {
 
             <PhysicalBooksImport />
 
+            <BackupSection />
+
         </section>
+    )
+}
+
+// One-click backup download. Hits /api/backup/export, which streams a ZIP of
+// the curated config + watchlist + user state. The manifest checkbox adds the
+// (large) list of every tracked file path.
+function BackupSection() {
+    const [manifest, setManifest] = useState(false)
+    const href = `/api/backup/export${manifest ? '?manifest=true' : ''}`
+    return (
+        <>
+            <h2 style={{ marginTop: '1.5rem' }}>Backup</h2>
+            <p className="subtle">
+                Download a ZIP snapshot of your configuration, author watchlist, blacklist/ignore
+                rules, series structure, manual books, and per-book state (wanted / read / owned).
+                Bulk catalogue data (OpenLibrary works, the author dump, disk-scan rows) is excluded —
+                it's rebuilt by a sync. Keep this somewhere safe; a guarded restore is coming next.
+            </p>
+            <label className="subtle" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}>
+                <input type="checkbox" checked={manifest} onChange={e => setManifest(e.target.checked)} />
+                Include file manifest (every tracked file path — larger archive)
+            </label>
+            <a href={href} download className="btn-primary" style={{ display: 'inline-block', padding: '0.5rem 1rem', borderRadius: '6px', textDecoration: 'none' }}>
+                ⬇ Download backup
+            </a>
+        </>
     )
 }
 
