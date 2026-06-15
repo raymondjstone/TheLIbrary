@@ -27,6 +27,7 @@ public class JobsController : ControllerBase
     private readonly StaleFileCleanupService _staleFiles;
     private readonly ContentScanService _contentScan;
     private readonly UntrackedAuthorAssignmentService _assignAuthors;
+    private readonly TheLibrary.Server.Services.Search.FullTextSearchService _fullText;
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly OpenLibraryRateLimiter _rateLimiter;
@@ -51,6 +52,7 @@ public class JobsController : ControllerBase
         StaleFileCleanupService staleFiles,
         ContentScanService contentScan,
         UntrackedAuthorAssignmentService assignAuthors,
+        TheLibrary.Server.Services.Search.FullTextSearchService fullText,
         BackgroundTaskCoordinator coordinator,
         IHostApplicationLifetime lifetime,
         OpenLibraryRateLimiter rateLimiter,
@@ -74,6 +76,7 @@ public class JobsController : ControllerBase
         _staleFiles = staleFiles;
         _contentScan = contentScan;
         _assignAuthors = assignAuthors;
+        _fullText = fullText;
         _coordinator = coordinator;
         _lifetime = lifetime;
         _rateLimiter = rateLimiter;
@@ -112,6 +115,7 @@ public class JobsController : ControllerBase
             staleFiles = new { isRunning = _staleFiles.IsRunning, message = _staleFiles.CurrentMessage },
             contentScan = new { isRunning = _contentScan.IsRunning, message = _contentScan.CurrentMessage },
             assignAuthors = new { isRunning = _assignAuthors.IsRunning, message = _assignAuthors.CurrentMessage },
+            fullTextIndex = new { isRunning = _fullText.IsRunning, message = _fullText.CurrentMessage },
         });
     }
 
@@ -255,6 +259,14 @@ public class JobsController : ControllerBase
     public IActionResult StartAssignAuthors()
     {
         if (!_assignAuthors.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("index-fulltext/start")]
+    public IActionResult StartIndexFullText()
+    {
+        if (!_fullText.TryStart(_lifetime.ApplicationStopping, out var err))
             return Conflict(new { error = err });
         return Accepted();
     }
