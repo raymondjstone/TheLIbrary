@@ -1541,11 +1541,15 @@ extracts and stores book text, which is heavy.
 - Extracted text is **sanitised** before storage (NUL bytes, C0 control chars and
   unpaired UTF-16 surrogates are stripped) and each book is saved independently,
   so a single malformed file can't fail the whole run.
-- Search is a substring match over the extracted text plus title/author, returning
-  each hit with a ~160-char snippet around the match. (A SQL Server full-text
-  catalog could be layered over the `Content` column later for ranked CONTAINS
-  queries; the current implementation is a portable `LIKE` index that works on any
-  SQL Server edition without the Full-Text component installed.)
+- **Search engine.** On first index/search the service tries to stand up a SQL
+  Server **full-text catalog + index** over the text column. When that succeeds,
+  search uses fast `CONTAINS` (prefix-matched per word). When the Full-Text
+  component isn't installed (the stock mssql Linux image doesn't include it) or
+  permission is lacking, it logs and **falls back to a `LIKE` substring scan** —
+  correct but slow on a large index, so the fallback caps its command timeout at
+  45s (under the typical 60s reverse-proxy limit) to return a clean error instead
+  of a gateway 504. The Search page shows which engine is active and warns when on
+  the LIKE fallback. Each hit comes back with a ~160-char snippet around the match.
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|

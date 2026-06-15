@@ -27,6 +27,13 @@ public sealed class FullTextSearchService
     private volatile bool _isRunning;
     private volatile string? _currentMessage;
 
+    // null = not yet probed. true = a SQL Server full-text index exists, so
+    // search uses fast CONTAINS. false = not available (FT component not
+    // installed / no permission) → fall back to a bounded LIKE scan.
+    private bool? _ftAvailable;
+    private const string FtCatalog = "TheLibraryFtCatalog";
+    private const string FtTable = "BookTextIndexes";
+
     public FullTextSearchService(
         IServiceScopeFactory scopeFactory, BookTextReader reader,
         BackgroundTaskCoordinator coordinator, ILogger<FullTextSearchService> log)
@@ -51,6 +58,64 @@ public sealed class FullTextSearchService
         var max = rows.TryGetValue(AppSettingKeys.FullTextIndexMaxPerRun, out var m) && int.TryParse(m, out var n) && n > 0 ? n : DefaultMaxPerRun;
         return new Options(Flag(AppSettingKeys.FullTextSearchEnabled), max,
             Flag(AppSettingKeys.FullTextIndexUnmatchedAuthorFiles), Flag(AppSettingKeys.FullTextIndexUnknownFiles));
+    }
+
+    // Tries to stand up a SQL Server full-text catalog + index over the text
+    // column so search can use CONTAINS. Idempotent and best-effort: if the
+    // Full-Text component isn't installed (common on the stock mssql Linux
+    // image) or we lack permission, it logs and falls back to LIKE. Each
+    // CREATE FULLTEXT … must be the only statement in its batch.
+    private async Task<bool> EnsureFtAsync(LibraryDbContext db, CancellationToken ct)
+    {
+        if (_ftAvailable.HasValue) return _ftAvailable.Value;
+        try
+        {
+            var installed = await db.Database
+                .SqlQuery<int>($"SELECT CAST(ISNULL(FULLTEXTSERVICEPROPERTY('IsFullTextInstalled'), 0) AS int) AS [Value]")
+                .FirstOrDefaultAsync(ct);
+            if (installed != 1) { _ftAvailable = false; return false; }
+
+            var hasIdx = await db.Database
+                .SqlQuery<int>($"SELECT COUNT(*) AS [Value] FROM sys.fulltext_indexes WHERE object_id = OBJECT_ID({"dbo." + FtTable})")
+                .FirstOrDefaultAsync(ct);
+            if (hasIdx == 0)
+            {
+                var hasCat = await db.Database
+                    .SqlQuery<int>($"SELECT COUNT(*) AS [Value] FROM sys.fulltext_catalogs WHERE name = {FtCatalog}")
+                    .FirstOrDefaultAsync(ct);
+                if (hasCat == 0)
+                    await db.Database.ExecuteSqlRawAsync($"CREATE FULLTEXT CATALOG {FtCatalog}", ct);
+
+                // Use whatever the primary-key index is actually called.
+                var keyIndex = await db.Database
+                    .SqlQuery<string>($"SELECT TOP 1 name AS [Value] FROM sys.indexes WHERE object_id = OBJECT_ID({"dbo." + FtTable}) AND is_primary_key = 1")
+                    .FirstOrDefaultAsync(ct);
+                if (string.IsNullOrEmpty(keyIndex)) { _ftAvailable = false; return false; }
+
+                await db.Database.ExecuteSqlRawAsync(
+                    $"CREATE FULLTEXT INDEX ON dbo.{FtTable}(Content, Title) KEY INDEX {keyIndex} ON {FtCatalog} WITH CHANGE_TRACKING AUTO", ct);
+            }
+            _ftAvailable = true;
+            _log.LogInformation("Full-text search: SQL Server full-text index ready (CONTAINS enabled)");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Full-text search: SQL Server full-text index unavailable; using LIKE fallback");
+            _ftAvailable = false;
+            return false;
+        }
+    }
+
+    // Turns a user phrase into a safe CONTAINS prefix predicate: each word
+    // becomes "word*", AND-joined. Words are alphanumeric (split on non-word
+    // chars), so they're safe to quote.
+    private static string? BuildContainsTerm(string q)
+    {
+        var words = System.Text.RegularExpressions.Regex.Split(q, @"\W+")
+            .Where(w => w.Length > 0).ToList();
+        if (words.Count == 0) return null;
+        return string.Join(" AND ", words.Select(w => $"\"{w}*\""));
     }
 
     // --- Background job entry point ---------------------------------------------
@@ -80,6 +145,7 @@ public sealed class FullTextSearchService
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
         var opt = await ReadOptionsAsync(db, ct);
         if (!opt.Enabled) { _log.LogInformation("Full-text indexing skipped — feature disabled"); return; }
+        await EnsureFtAsync(db, ct);   // stand up the FT index up front if possible
         _currentMessage = $"Indexing up to {opt.MaxPerRun} files";
         var indexed = await IndexBatchCoreAsync(db, opt, ct);
         _log.LogInformation("Full-text indexing: indexed {Indexed} files", indexed);
@@ -89,7 +155,8 @@ public sealed class FullTextSearchService
 
     public sealed record IndexStatus(
         bool Enabled, bool IncludeUnmatched, bool IncludeUnknown,
-        int Indexed, int Eligible, int MaxPerRun, bool Running, string? Message, DateTime? LastIndexedAt);
+        int Indexed, int Eligible, int MaxPerRun, bool Running, string? Message, DateTime? LastIndexedAt,
+        string Engine);
 
     public async Task<IndexStatus> StatusAsync(CancellationToken ct)
     {
@@ -100,8 +167,10 @@ public sealed class FullTextSearchService
         var outstanding = await OutstandingAsync(db, opt, ct);
         var last = await db.BookTextIndexes.AsNoTracking()
             .OrderByDescending(x => x.IndexedAt).Select(x => (DateTime?)x.IndexedAt).FirstOrDefaultAsync(ct);
+        var engine = !opt.Enabled ? "disabled"
+            : (await EnsureFtAsync(db, ct)) ? "SQL Server full-text (fast)" : "Substring scan (LIKE — slower)";
         return new IndexStatus(opt.Enabled, opt.IncludeUnmatched, opt.IncludeUnknown,
-            indexed, indexed + outstanding, opt.MaxPerRun, _isRunning, _currentMessage, last);
+            indexed, indexed + outstanding, opt.MaxPerRun, _isRunning, _currentMessage, last, engine);
     }
 
     private static async Task<int> OutstandingAsync(LibraryDbContext db, Options opt, CancellationToken ct)
@@ -225,16 +294,32 @@ public sealed class FullTextSearchService
         if (!enabled) return new SearchResponse(false, q, Array.Empty<SearchHit>());
         if (q.Length < 2) return new SearchResponse(true, q, Array.Empty<SearchHit>());
 
-        // A %term% scan over the nvarchar(max) text column can be slow on a big
-        // index; give it room rather than letting the default 30s command timeout
-        // surface as a 500.
-        db.Database.SetCommandTimeout(120);
-
+        var useFt = await EnsureFtAsync(db, ct);
         var like = $"%{q}%";
-        var rows = await db.BookTextIndexes.AsNoTracking()
-            .Where(ix => EF.Functions.Like(ix.Content, like)
-                      || EF.Functions.Like(ix.Title, like)
-                      || (ix.Book != null && ix.Book.Author != null && EF.Functions.Like(ix.Book.Author.Name, like)))
+
+        IQueryable<BookTextIndex> baseQuery;
+        if (useFt && BuildContainsTerm(q) is { } term)
+        {
+            // Fast path: SQL Server full-text CONTAINS over Content + Title. The
+            // author-name match stays a (cheap) LIKE on the small Authors table.
+            baseQuery = db.BookTextIndexes.AsNoTracking()
+                .Where(ix => EF.Functions.Contains(ix.Content, term)
+                          || EF.Functions.Contains(ix.Title, term)
+                          || (ix.Book != null && ix.Book.Author != null && EF.Functions.Like(ix.Book.Author.Name, like)));
+        }
+        else
+        {
+            // Fallback: bounded LIKE scan. Cap the command timeout below the
+            // typical 60s reverse-proxy timeout so a slow scan returns a clean
+            // JSON error (via ApiExceptionFilter) instead of a 504.
+            db.Database.SetCommandTimeout(45);
+            baseQuery = db.BookTextIndexes.AsNoTracking()
+                .Where(ix => EF.Functions.Like(ix.Content, like)
+                          || EF.Functions.Like(ix.Title, like)
+                          || (ix.Book != null && ix.Book.Author != null && EF.Functions.Like(ix.Book.Author.Name, like)));
+        }
+
+        var rows = await baseQuery
             .OrderBy(ix => ix.Source).ThenBy(ix => ix.Title)
             .Take(limit)
             .Select(ix => new

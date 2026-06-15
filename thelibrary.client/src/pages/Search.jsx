@@ -92,8 +92,9 @@ export default function Search() {
                 <div className="callout" style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
                     <span className="subtle">
                         Indexed <strong>{status.indexed.toLocaleString()}</strong> of{' '}
-                        <strong>{status.eligible.toLocaleString()}</strong> matched books
+                        <strong>{status.eligible.toLocaleString()}</strong> files
                         {' '}· {status.maxPerRun}/run
+                        {status.engine ? ` · engine: ${status.engine}` : ''}
                         {status.lastIndexedAt ? ` · last ${new Date(status.lastIndexedAt).toLocaleString()}` : ''}
                     </span>
                     {status.running
@@ -105,9 +106,16 @@ export default function Search() {
                         <button className="btn-ghost btn-danger" onClick={clearIndex}>Clear index</button>}
                 </div>
             )}
+            {status && status.engine && status.engine.includes('LIKE') && (
+                <p className="subtle">
+                    ⚠ Search is using a substring scan, which can be slow (and time out) on a large index.
+                    Install the <strong>SQL Server Full-Text Search</strong> component on your database server
+                    and re-run indexing to switch to the fast engine automatically.
+                </p>
+            )}
             {status && status.indexed < status.eligible && !status.running && (
                 <p className="subtle">
-                    Each run indexes up to {status.maxPerRun} books (set in Settings). Schedule the{' '}
+                    Each run indexes up to {status.maxPerRun} files (set in Settings). Schedule the{' '}
                     <code>index-fulltext</code> job to work through the backlog automatically.
                 </p>
             )}
