@@ -15,7 +15,8 @@ var skipStartupTasks = builder.Configuration.GetValue<bool>("Testing:SkipStartup
 var useInMemoryDatabase = builder.Configuration.GetValue<bool>("Testing:UseInMemoryDatabase");
 var inMemoryDatabaseName = builder.Configuration["Testing:InMemoryDatabaseName"] ?? "thelibrary-tests";
 
-builder.Services.AddControllers()
+builder.Services.AddControllers(o =>
+        o.Filters.Add<TheLibrary.Server.Infrastructure.ApiExceptionFilter>())
     .AddJsonOptions(o =>
         o.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
 builder.Services.AddProblemDetails();
@@ -188,6 +189,13 @@ if (!disableHangfire)
 }
 
 app.MapControllers();
+
+// Unmatched /api routes must 404 as JSON — never fall through to the SPA's
+// index.html, which a fetch() would then try to JSON.parse ("Unexpected token
+// '<'"). This catch-all is lowest-precedence, so real controllers still win.
+app.MapMethods("/api/{**rest}", new[] { "GET", "POST", "PUT", "DELETE", "PATCH" },
+    (string rest) => Results.NotFound(new { error = $"No API endpoint for /api/{rest}" }));
+
 app.MapFallbackToFile("/index.html");
 
 app.Run();

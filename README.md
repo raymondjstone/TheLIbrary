@@ -2047,6 +2047,13 @@ itself lives in the same registry.
 
 ## API surface
 
+Every `/api/*` route always responds with **JSON**, including on error: a global
+MVC exception filter (`ApiExceptionFilter`) turns any unhandled controller
+exception into a `500 { "error": … }`, and unmatched `/api` paths 404 as JSON
+rather than falling through to the SPA's `index.html`. This is what keeps the
+client from ever trying to `JSON.parse` an HTML error page (the
+*"Unexpected token '<'"* class of bug).
+
 ### Authors
 
 | Method | Path | Purpose |
