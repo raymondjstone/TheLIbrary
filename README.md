@@ -54,6 +54,7 @@ and wishlist.
 | Missing Works | `/missing` | Unowned books from starred authors — bulk-own, wanted flag, genre filter, year range filter, CSV export, per-book file-candidate matching panel (fuzzy-matched from author unmatched files + unknown folder) |
 | Wanted | `/wanted` | Wanted books grouped by author — per-book selection, author-level select-all, bulk remove from wanted, NZB search links, author priority stars |
 | Starred Authors | `/starred` | Authors with priority ≥ 1 |
+| Recommendations | `/recommendations` | "Authors you might want to watch" — un-starred authors already in your catalogue ranked by how well their genres overlap the books you own, plus co-authors on series you own; one-click **★ Watch** promotes one onto the watchlist. Backed by `GET /api/recommendations` (local data only, no OpenLibrary calls) |
 | Series | `/series` | Hierarchical series tree with owned/total progress bars; create new series; inline edit of name, primary author, additional authors, parent series, and reading order position; deep-linkable via `?q=SeriesName` |
 | Series Completion | `/series-completion` | Series ranked by how close to complete you are (most-complete-but-unfinished first), each with an owned/total bar and a one-click **"Want N missing"** button that marks every not-owned volume in the series as Wanted. Optional "hide complete series" filter |
 | Stats | `/stats` | KPI cards, books-read-by-year chart, top genres, per-author coverage, file-format breakdown chart, files-acquired-by-month chart |

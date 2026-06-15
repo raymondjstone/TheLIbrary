@@ -10,6 +10,7 @@ import RecentReleases from './pages/RecentReleases.jsx'
 import AllRecentReleases from './pages/AllRecentReleases.jsx'
 import MissingWorks from './pages/MissingWorks.jsx'
 import StarredAuthors from './pages/StarredAuthors.jsx'
+import Recommendations from './pages/Recommendations.jsx'
 import Sync from './pages/Sync.jsx'
 import Schedules from './pages/Schedules.jsx'
 import Settings from './pages/Settings.jsx'
@@ -40,6 +41,7 @@ createRoot(document.getElementById('root')).render(
                     <Route path="all-releases" element={<AllRecentReleases />} />
                     <Route path="missing" element={<MissingWorks />} />
                     <Route path="starred" element={<StarredAuthors />} />
+                    <Route path="recommendations" element={<Recommendations />} />
                     <Route path="stats" element={<Stats />} />
                     <Route path="duplicates" element={<Duplicates />} />
                     <Route path="series" element={<Series />} />

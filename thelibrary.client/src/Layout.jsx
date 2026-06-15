@@ -14,6 +14,7 @@ export default function Layout() {
                     <NavLink to="/recent-releases">Recent Releases</NavLink>
                     <NavLink to="/all-releases">All Releases</NavLink>
                     <NavLink to="/starred">Starred Authors</NavLink>
+                    <NavLink to="/recommendations">Recommendations</NavLink>
                     <NavLink to="/missing">Missing Works</NavLink>
                     <NavLink to="/wanted">Wanted</NavLink>
                     <NavLink to="/series">Series</NavLink>
