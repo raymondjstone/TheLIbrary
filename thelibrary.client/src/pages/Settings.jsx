@@ -1490,7 +1490,7 @@ function FullTextSearchSection() {
             </label>
             <label className="subtle" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
                 Books to index per run
-                <input type="number" min="1" max="5000" style={{ width: '6rem' }}
+                <input type="number" min="1" max="50000" style={{ width: '6rem' }}
                        disabled={cfg === null || busy}
                        value={cfg?.maxPerRun ?? 200}
                        onChange={e => patch({ maxPerRun: Number(e.target.value) })} />

@@ -600,7 +600,7 @@ public class SettingsController : ControllerBase
     [HttpPut("full-text-search")]
     public async Task<ActionResult<FullTextSearchDto>> SetFullTextSearch([FromBody] FullTextSearchDto body, CancellationToken ct)
     {
-        var max = body.MaxPerRun > 0 ? Math.Min(body.MaxPerRun, 5000) : 200;
+        var max = body.MaxPerRun > 0 ? Math.Min(body.MaxPerRun, 50000) : 200;
         await UpsertSettingAsync(AppSettingKeys.FullTextSearchEnabled, body.Enabled ? "true" : "false", ct);
         await UpsertSettingAsync(AppSettingKeys.FullTextIndexMaxPerRun, max.ToString(), ct);
         await UpsertSettingAsync(AppSettingKeys.FullTextIndexUnmatchedAuthorFiles, body.IncludeUnmatchedAuthorFiles ? "true" : "false", ct);
