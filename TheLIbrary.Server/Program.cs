@@ -63,6 +63,7 @@ builder.Services.AddScoped<TheLibrary.Server.Services.AuthorUpdates.AuthorUpdate
 builder.Services.AddScoped<TheLibrary.Server.Services.Sync.AuthorRefresher>();
 builder.Services.AddScoped<TheLibrary.Server.Services.Sync.ManualBookService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.AuthorPruneService>();
+builder.Services.AddScoped<TheLibrary.Server.Services.Download.NzbGrabService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Search.FullTextSearchService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.AuthorRefreshCoordinator>();
 builder.Services.Configure<TheLibrary.Server.Services.Remarkable.RemarkableOptions>(

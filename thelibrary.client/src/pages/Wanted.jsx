@@ -8,13 +8,31 @@ export default function Wanted() {
     const [selected, setSelected] = useState(() => new Set())
     const [bulkBusy, setBulkBusy] = useState(false)
     const [nzbSites, setNzbSites] = useState([])
+    const [grabReady, setGrabReady] = useState(false)
+    const [grabbing, setGrabbing] = useState(() => new Set())
+    const [grabMsg, setGrabMsg] = useState(null)
 
     useEffect(() => {
         fetch('/api/nzb-sites')
             .then(r => r.ok ? r.json() : [])
             .then(sites => setNzbSites(sites.filter(s => s.active)))
             .catch(() => {})
+        fetch('/api/settings/download')
+            .then(r => r.ok ? r.json() : null)
+            .then(d => setGrabReady(!!d?.ready))
+            .catch(() => {})
     }, [])
+
+    const grab = async (bookId) => {
+        setGrabbing(prev => new Set(prev).add(bookId))
+        setGrabMsg(null)
+        try {
+            const r = await fetch(`/api/books/${bookId}/grab`, { method: 'POST' })
+            const body = await r.json().catch(() => ({}))
+            setGrabMsg({ ok: r.ok && body.success, text: body.message || (r.ok ? 'Sent.' : `Failed (${r.status})`) })
+        } catch (e) { setGrabMsg({ ok: false, text: String(e.message || e) }) }
+        finally { setGrabbing(prev => { const n = new Set(prev); n.delete(bookId); return n }) }
+    }
 
     useEffect(() => {
         fetch('/api/books/wanted')
@@ -108,6 +126,7 @@ export default function Wanted() {
         <section>
             <h2>Wanted</h2>
             {error && <p className="error">{error}</p>}
+            {grabMsg && <p className={grabMsg.ok ? 'subtle' : 'error'}>{grabMsg.ok ? '✓ ' : ''}{grabMsg.text}</p>}
             {groups === null && !error && <p>Loading…</p>}
             {groups !== null && groups.length === 0 && (
                 <p className="subtle">No books marked as wanted.</p>
@@ -176,7 +195,17 @@ export default function Wanted() {
                                                     : '—'}
                                             </td>
                                             <td>{b.firstPublishYear ?? '—'}</td>
-                                            <td>
+                                            <td style={{ whiteSpace: 'nowrap' }}>
+                                                {grabReady && (
+                                                    <button
+                                                        className="btn-ghost"
+                                                        style={{ fontSize: '0.8em' }}
+                                                        title="Search the indexer and send the best NZB to SABnzbd"
+                                                        disabled={grabbing.has(b.id)}
+                                                        onClick={() => grab(b.id)}>
+                                                        {grabbing.has(b.id) ? 'Grabbing…' : '⬇ Grab'}
+                                                    </button>
+                                                )}
                                                 <button
                                                     className="btn-ghost"
                                                     style={{ fontSize: '0.8em' }}

@@ -53,7 +53,8 @@ and wishlist.
 | Recent Releases | `/recent-releases` | New works from starred authors (last 5 years) |
 | All Releases | `/all-releases` | New works from all tracked authors |
 | Missing Works | `/missing` | Unowned books from starred authors — bulk-own, wanted flag, genre filter, year range filter, CSV export, per-book file-candidate matching panel (fuzzy-matched from author unmatched files + unknown folder) |
-| Wanted | `/wanted` | Wanted books grouped by author — per-book selection, author-level select-all, bulk remove from wanted, NZB search links, author priority stars |
+| Wanted | `/wanted` | Wanted books grouped by author — per-book selection, author-level select-all, bulk remove from wanted, NZB search links, author priority stars, and (when download automation is configured) a **Grab** button that searches the indexer and sends the best NZB to SABnzbd |
+| Health | `/health` | Operational view: backlogs (unmatched files, untracked scans, `__unknown`), authors by status and **by creation source** (provenance), authors created over the last 14 days, the count `prune-authors` would remove, and current job state |
 | Starred Authors | `/starred` | Authors with priority ≥ 1 |
 | Recommendations | `/recommendations` | "Authors you might want to watch" — un-starred authors already in your catalogue ranked by how well their genres overlap the books you own, plus co-authors on series you own; one-click **★ Watch** promotes one onto the watchlist. Backed by `GET /api/recommendations` (local data only, no OpenLibrary calls) |
 | Series | `/series` | Hierarchical series tree with owned/total progress bars; create new series; inline edit of name, primary author, additional authors, parent series, and reading order position; deep-linkable via `?q=SeriesName` |
@@ -1562,6 +1563,17 @@ extracts and stores book text, which is heavy.
 | POST   | `/api/search/run` | Start a background indexing run (one batch of up to `FullTextIndexMaxPerRun` books); returns immediately |
 | POST   | `/api/search/clear` | Drop the whole index |
 | GET/PUT | `/api/settings/full-text-search` | Read / set the on-off toggle (default off), per-run batch size, and the two "also index unmatched / `__unknown` files" toggles. Saved with a **Save** button (consistent with the other settings) |
+
+## Download automation
+
+Optional, configured under **Settings → Download automation** with two keys: a
+**Newznab indexer** (URL + API key) and a **SABnzbd** instance (URL + API key,
+optional category). When both are set, each book on the **Wanted** page gets a
+**Grab** button — it searches the indexer (`t=search`, book categories) for
+`"<author> <title>"`, takes the top result's NZB URL, and hands it to SABnzbd
+via `addurl`. Keys are write-only in the UI (it shows whether one is set, never
+the value; leaving a key field blank on save keeps the stored key). Endpoints:
+`GET/PUT /api/settings/download` and `POST /api/books/{id}/grab`.
 
 ## Backup
 

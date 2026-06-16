@@ -90,6 +90,16 @@ public static class AppSettingKeys
     public const string FullTextIndexUnmatchedAuthorFiles = "FullTextIndexUnmatchedAuthorFiles";
     public const string FullTextIndexUnknownFiles = "FullTextIndexUnknownFiles";
 
+    // Download automation (optional). A Newznab indexer (URL + API key) is
+    // searched for a wanted book; the best NZB is handed to a SABnzbd instance
+    // (URL + API key, optional category). Both keys are entered on the Settings
+    // page; unset = feature disabled and the Grab button is hidden.
+    public const string NewznabUrl = "NewznabUrl";
+    public const string NewznabApiKey = "NewznabApiKey";
+    public const string SabnzbdUrl = "SabnzbdUrl";
+    public const string SabnzbdApiKey = "SabnzbdApiKey";
+    public const string SabnzbdCategory = "SabnzbdCategory";
+
     // Size multiplier for the cover-hover pop-up. 1 = default, 2 = double all
     // dimensions, etc. Stored invariant-culture; unset/invalid = 1.
     public const string CoverHoverScale = "CoverHoverScale";

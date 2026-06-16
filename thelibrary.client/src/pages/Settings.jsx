@@ -1381,6 +1381,8 @@ export default function Settings() {
 
             <FullTextSearchSection />
 
+            <DownloadAutomationSection />
+
             <BackupSection />
 
             {/* Excluded authors (blacklist) — kept at the very bottom of the page. */}
@@ -1510,6 +1512,78 @@ function FullTextSearchSection() {
                     {busy ? 'Saving…' : 'Save'}
                 </button>
                 {done && !dirty ? <span className="subtle">Saved.</span> : null}
+            </div>
+        </>
+    )
+}
+
+// Download automation: a Newznab indexer + SABnzbd, the two keys entered here.
+// When both are set, the Wanted page shows a Grab button per book. Keys are
+// write-only — the form shows whether one is set, never its value, and a blank
+// key field leaves the stored key untouched on save.
+function DownloadAutomationSection() {
+    const [cfg, setCfg] = useState(null)
+    const [form, setForm] = useState({ newznabUrl: '', newznabApiKey: '', sabnzbdUrl: '', sabnzbdApiKey: '', sabnzbdCategory: '' })
+    const [busy, setBusy] = useState(false)
+    const [error, setError] = useState(null)
+    const [done, setDone] = useState(false)
+
+    useEffect(() => {
+        fetch('/api/settings/download').then(r => r.ok ? r.json() : null).then(d => {
+            if (!d) return
+            setCfg(d)
+            setForm(f => ({ ...f, newznabUrl: d.newznabUrl || '', sabnzbdUrl: d.sabnzbdUrl || '', sabnzbdCategory: d.sabnzbdCategory || '' }))
+        }).catch(() => {})
+    }, [])
+
+    const save = async () => {
+        setBusy(true); setError(null); setDone(false)
+        try {
+            const r = await fetch('/api/settings/download', {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form),
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            const d = await r.json()
+            setCfg(d)
+            setForm(f => ({ ...f, newznabApiKey: '', sabnzbdApiKey: '' }))   // clear key fields after save
+            setDone(true)
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setBusy(false) }
+    }
+
+    const keyPlaceholder = (set) => set ? '•••••••• (set — leave blank to keep)' : 'API key'
+
+    return (
+        <>
+            <h2 style={{ marginTop: '1.5rem' }}>Download automation</h2>
+            <p className="subtle">
+                Optional. Configure a Newznab indexer and a SABnzbd instance, and a <strong>Grab</strong>
+                {' '}button appears on the Wanted page that searches the indexer for a book and sends the
+                best NZB to SABnzbd. {cfg?.ready ? <strong style={{ color: 'var(--ok, #16a34a)' }}>Configured ✓</strong> : 'Not configured yet.'}
+            </p>
+            {error ? <p className="error">{error}</p> : null}
+            <table className="grid" style={{ maxWidth: 720 }}>
+                <tbody>
+                    <tr><td>Newznab URL</td><td><input style={{ width: '100%' }} value={form.newznabUrl}
+                        onChange={e => setForm(f => ({ ...f, newznabUrl: e.target.value }))}
+                        placeholder="https://indexer.example/api or .../" /></td></tr>
+                    <tr><td>Newznab API key</td><td><input type="password" style={{ width: '100%' }} value={form.newznabApiKey}
+                        onChange={e => setForm(f => ({ ...f, newznabApiKey: e.target.value }))}
+                        placeholder={keyPlaceholder(cfg?.newznabKeySet)} /></td></tr>
+                    <tr><td>SABnzbd URL</td><td><input style={{ width: '100%' }} value={form.sabnzbdUrl}
+                        onChange={e => setForm(f => ({ ...f, sabnzbdUrl: e.target.value }))}
+                        placeholder="http://sabnzbd.local:8080" /></td></tr>
+                    <tr><td>SABnzbd API key</td><td><input type="password" style={{ width: '100%' }} value={form.sabnzbdApiKey}
+                        onChange={e => setForm(f => ({ ...f, sabnzbdApiKey: e.target.value }))}
+                        placeholder={keyPlaceholder(cfg?.sabnzbdKeySet)} /></td></tr>
+                    <tr><td>SABnzbd category</td><td><input style={{ width: '12rem' }} value={form.sabnzbdCategory}
+                        onChange={e => setForm(f => ({ ...f, sabnzbdCategory: e.target.value }))}
+                        placeholder="(optional) e.g. books" /></td></tr>
+                </tbody>
+            </table>
+            <div style={{ marginTop: '0.6rem', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <button onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
+                {done ? <span className="subtle">Saved.</span> : null}
             </div>
         </>
     )

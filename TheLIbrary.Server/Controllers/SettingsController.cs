@@ -575,6 +575,48 @@ public class SettingsController : ControllerBase
         return new CoverHoverDto(body.Enabled, scale);
     }
 
+    public sealed record DownloadDto(
+        string? NewznabUrl, bool NewznabKeySet,
+        string? SabnzbdUrl, bool SabnzbdKeySet, string? SabnzbdCategory, bool Ready);
+    // Keys are write-only from the client's perspective: GET reports whether one
+    // is set (never the value); PUT updates a key only when a non-empty value is
+    // supplied, so re-saving the form doesn't wipe an existing key.
+    public sealed record UpdateDownloadDto(
+        string? NewznabUrl, string? NewznabApiKey,
+        string? SabnzbdUrl, string? SabnzbdApiKey, string? SabnzbdCategory);
+
+    [HttpGet("download")]
+    public async Task<DownloadDto> GetDownload(CancellationToken ct)
+    {
+        var s = await _db.AppSettings.AsNoTracking()
+            .Where(x => x.Key == AppSettingKeys.NewznabUrl || x.Key == AppSettingKeys.NewznabApiKey
+                     || x.Key == AppSettingKeys.SabnzbdUrl || x.Key == AppSettingKeys.SabnzbdApiKey
+                     || x.Key == AppSettingKeys.SabnzbdCategory)
+            .ToDictionaryAsync(x => x.Key, x => x.Value, ct);
+        string? V(string k) => s.TryGetValue(k, out var v) && !string.IsNullOrWhiteSpace(v) ? v.Trim() : null;
+        var newznabKeySet = V(AppSettingKeys.NewznabApiKey) is not null;
+        var sabKeySet = V(AppSettingKeys.SabnzbdApiKey) is not null;
+        var ready = V(AppSettingKeys.NewznabUrl) is not null && newznabKeySet
+                 && V(AppSettingKeys.SabnzbdUrl) is not null && sabKeySet;
+        return new DownloadDto(V(AppSettingKeys.NewznabUrl), newznabKeySet,
+            V(AppSettingKeys.SabnzbdUrl), sabKeySet, V(AppSettingKeys.SabnzbdCategory), ready);
+    }
+
+    [HttpPut("download")]
+    public async Task<ActionResult<DownloadDto>> SetDownload([FromBody] UpdateDownloadDto body, CancellationToken ct)
+    {
+        await UpsertSettingAsync(AppSettingKeys.NewznabUrl, body.NewznabUrl?.Trim() ?? "", ct);
+        await UpsertSettingAsync(AppSettingKeys.SabnzbdUrl, body.SabnzbdUrl?.Trim() ?? "", ct);
+        await UpsertSettingAsync(AppSettingKeys.SabnzbdCategory, body.SabnzbdCategory?.Trim() ?? "", ct);
+        // Only overwrite a key when a new non-empty value is provided.
+        if (!string.IsNullOrWhiteSpace(body.NewznabApiKey))
+            await UpsertSettingAsync(AppSettingKeys.NewznabApiKey, body.NewznabApiKey.Trim(), ct);
+        if (!string.IsNullOrWhiteSpace(body.SabnzbdApiKey))
+            await UpsertSettingAsync(AppSettingKeys.SabnzbdApiKey, body.SabnzbdApiKey.Trim(), ct);
+        await _db.SaveChangesAsync(ct);
+        return await GetDownload(ct);
+    }
+
     // 1 = default size, up to 4 = quadruple. Anything out of range (or unset)
     // snaps back to a sane value.
     private static double ClampScale(double scale)
