@@ -1,6 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
+const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// Wrap occurrences of the searched terms in <mark> so matches stand out in the
+// snippet. Splits on a case-insensitive alternation of the query words.
+function highlight(text, query) {
+    if (!text) return text
+    const words = (query || '').trim().split(/\s+/).filter(t => t.length >= 2)
+    if (words.length === 0) return text
+    const re = new RegExp(`(${words.map(escapeRegex).join('|')})`, 'gi')
+    const lower = new Set(words.map(w => w.toLowerCase()))
+    return text.split(re).map((part, i) =>
+        lower.has(part.toLowerCase()) ? <mark key={i}>{part}</mark> : part)
+}
+
 // Full-text search across indexed ebook text. Opt-in: when the feature is off
 // the page points at Settings. When on, it shows index progress plus a control
 // to run the background indexing job (a batch per run) or clear the index.
@@ -9,6 +23,7 @@ export default function Search() {
     const [q, setQ] = useState('')
     const [source, setSource] = useState('')   // '' = all types
     const [hits, setHits] = useState(null)
+    const [hitQuery, setHitQuery] = useState('')   // query that produced `hits`, for highlighting
     const [searching, setSearching] = useState(false)
     const [error, setError] = useState(null)
     const pollRef = useRef(null)
@@ -53,6 +68,7 @@ export default function Search() {
             const r = await fetch(url)
             const body = await readJson(r)
             setHits(body?.hits ?? [])
+            setHitQuery(q.trim())
             setStatus(s => s ? { ...s, enabled: body?.enabled ?? s.enabled } : s)
         } catch (e) { setError(`Search failed: ${e.message || e}`); setHits([]) }
         finally { setSearching(false) }
@@ -159,7 +175,7 @@ export default function Search() {
                                         {tag ? <span className="filetype-tag" style={{ marginLeft: '0.5rem' }}>{tag}</span> : null}
                                     </div>
                                     {tag ? <div className="subtle" style={{ marginTop: '0.1rem' }}><code>{h.file}</code></div> : null}
-                                    {h.snippet ? <div className="subtle" style={{ marginTop: '0.2rem' }}>{h.snippet}</div> : null}
+                                    {h.snippet ? <div className="subtle" style={{ marginTop: '0.2rem' }}>{highlight(h.snippet, hitQuery)}</div> : null}
                                 </li>
                             )
                         })}
