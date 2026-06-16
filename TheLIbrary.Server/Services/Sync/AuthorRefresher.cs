@@ -461,13 +461,23 @@ public sealed class AuthorRefresher
         // second matching name in the system, or filled in the OL key that
         // unlocks disambiguation for an existing collision. Update every
         // group member's CalibreFolderName to its resolved value.
-        var all = await _db.Authors.ToListAsync(ct);
-        var group = AuthorFolderNameResolver.FindCollisionGroup(author, all);
+        //
+        // Only authors who could share this author's normalized name can
+        // collide, so load that small set by display name (indexed) instead of
+        // materialising the entire Authors table on every single refresh — at
+        // 130k+ authors the whole-table load was the dominant cost of this job.
+        // Any normalized-but-differently-spelled straggler is caught by the
+        // daily disambiguate-folders pass, which does the authoritative scan.
+        var nameVariants = CollisionNameVariants(author.Name);
+        var candidates = await _db.Authors
+            .Where(a => nameVariants.Contains(a.Name))
+            .ToListAsync(ct);
+        var group = AuthorFolderNameResolver.FindCollisionGroup(author, candidates);
         if (group.Count >= 2)
         {
             foreach (var member in group)
             {
-                var target = AuthorFolderNameResolver.Resolve(member, all);
+                var target = AuthorFolderNameResolver.Resolve(member, candidates);
                 if (!string.Equals(member.CalibreFolderName, target, StringComparison.Ordinal))
                 {
                     var tracked = member.Id == author.Id
@@ -507,6 +517,29 @@ public sealed class AuthorRefresher
         return new AuthorRefreshOutcome(
             author.Id, false, null, author.Status.ToString(),
             author.ExclusionReason, fetched, bookCount, author.NextFetchAt);
+    }
+
+    // Display-name forms to look up when finding same-name collisions: the name
+    // as-is plus its comma-flip ("James Bradley" ⇄ "Bradley, James"), which
+    // covers the overwhelming majority of real collisions. Used to scope the
+    // collision query to an indexed handful instead of the whole Authors table.
+    private static List<string> CollisionNameVariants(string? name)
+    {
+        var variants = new List<string>();
+        var n = (name ?? "").Trim();
+        if (n.Length == 0) return variants;
+        variants.Add(n);
+        if (n.Contains(','))
+        {
+            var p = n.Split(',', 2, StringSplitOptions.TrimEntries);
+            if (p.Length == 2 && p[1].Length > 0) variants.Add($"{p[1]} {p[0]}".Trim());
+        }
+        else
+        {
+            var sp = n.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (sp.Length >= 2) variants.Add($"{sp[^1]}, {string.Join(' ', sp[..^1])}");
+        }
+        return variants;
     }
 
     // Bucket the author's most-recent publication year into a refresh cadence.

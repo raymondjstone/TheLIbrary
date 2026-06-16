@@ -387,10 +387,26 @@ public sealed class SyncService
                 changedFolderKeys.Add(TitleNormalizer.NormalizeAuthor(ex.AuthorFolder));
         }
 
-        // Load ALL books in one query — eliminates the per-author N+1 round trip.
-        var booksByAuthorId = (await db.Books.AsNoTracking().ToListAsync(ct))
-            .GroupBy(b => b.AuthorId)
-            .ToDictionary(g => g.Key, g => g.ToList());
+        // Books are only needed for authors that actually changed (MatchAuthorFiles
+        // is skipped for the rest) plus their merged-in non-pen-name children. Load
+        // just those instead of the entire Books table — at ~1.8M rows the full
+        // materialisation was a multi-hundred-MB allocation on every sync, almost
+        // all of it discarded since most authors have no file changes.
+        var relevantAuthorIds = new HashSet<int>();
+        foreach (var a in authors)
+            if (AuthorKeys(a).Any(k => changedFolderKeys.Contains(k)))
+                relevantAuthorIds.Add(a.Id);
+        foreach (var a in authors)
+            if (a.LinkedToAuthorId is int canon && !a.IsPenName && relevantAuthorIds.Contains(canon))
+                relevantAuthorIds.Add(a.Id);
+
+        var booksByAuthorId = relevantAuthorIds.Count == 0
+            ? new Dictionary<int, List<Book>>()
+            : (await db.Books.AsNoTracking()
+                    .Where(b => relevantAuthorIds.Contains(b.AuthorId))
+                    .ToListAsync(ct))
+                .GroupBy(b => b.AuthorId)
+                .ToDictionary(g => g.Key, g => g.ToList());
 
         // Map canonical → list of non-pen-name child author ids. Used by
         // MatchAuthorFiles so a file at the canonical's folder can match a book
