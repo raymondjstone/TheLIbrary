@@ -79,7 +79,8 @@ public class AuthorsController : ControllerBase
         int OwnedCount,
         int EbookOwnedCount,
         int PhysicalOwnedCount,
-        DateTime? LastSyncedAt);
+        DateTime? LastSyncedAt,
+        string? CreationSource = null);
 
     // Keyless projection used by the raw SQL book-stats query below.
     private sealed record BookStatRow(int AuthorId, int Total, int Ebook, int Physical);
@@ -103,7 +104,8 @@ public class AuthorsController : ControllerBase
                 a.Status,
                 a.ExclusionReason,
                 a.Priority,
-                a.LastSyncedAt
+                a.LastSyncedAt,
+                a.CreationSource
             })
             .ToListAsync(ct);
 
@@ -155,7 +157,7 @@ public class AuthorsController : ControllerBase
                 r.Status.ToString(), r.ExclusionReason,
                 r.Priority, s?.Total ?? 0,
                 OwnedCount: ebook + physical,
-                ebook, physical, r.LastSyncedAt);
+                ebook, physical, r.LastSyncedAt, r.CreationSource);
         }).ToList();
     }
 

@@ -329,6 +329,9 @@ export default function Authors() {
                                             <Link to={`/authors/${a.id}`}>{a.name}</Link>
                                             {a.calibreFolderName && a.calibreFolderName !== a.name
                                                 ? <span className="subtle"> ({a.calibreFolderName})</span> : null}
+                                            {a.creationSource && a.creationSource !== 'manual'
+                                                ? <span className="filetype-tag" style={{ marginLeft: '0.4rem' }}
+                                                        title={`Auto-created by the "${a.creationSource}" job`}>via {a.creationSource}</span> : null}
                                         </td>
                                         <td>
                                             <StarRating value={a.priority} size="sm" onChange={v => setPriority(a, v)} />
