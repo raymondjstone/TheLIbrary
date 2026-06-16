@@ -1675,6 +1675,7 @@ on every startup.
 | `content-scan` | `0 21 * * *` (disabled by default) | Read the front matter of unmatched/untracked files to guess author/title/series; results land on the Identified Books page. See [Identifying books from content](#identifying-books-from-content) |
 | `assign-authors` | `*/15 * * * *` | File identified untracked books under their author, creating Pending authors from OpenLibrary where needed — the Identified page's "Assign all untracked books to authors" bulk action on a schedule. Capped at 100 rows per run (OpenLibrary rate limits); skips a firing when the Hangfire queue is already backed up |
 | `index-fulltext` | `0 * * * *` (disabled by default) | Extract and index ebook text for [full-text search](#full-text-search). No-op unless the feature is enabled in Settings; indexes up to `FullTextIndexMaxPerRun` books per run. See [Full-text search](#full-text-search) |
+| `prune-authors` | `40 3 * * *` (disabled by default) | Delete **empty auto-created authors** — rows whose `CreationSource` is `same-name`/`assign`/`content-scan`/`adopt`, status Pending/NotFound, priority 0, with no books, no local files, no links and no notes. Never touches manual/restored/pre-existing authors. Capped 5000/run. Destructive, so opt-in |
 
 Hangfire runs with `WorkerCount=1`, and all background work also passes through
 a single `BackgroundTaskCoordinator`, so a manual UI run and a cron tick can't
@@ -2259,7 +2260,10 @@ trusted LAN).
 
 ## Data model
 
-- `Author` — OL key, name, library folder name, status (Pending / Active /
+- `Author` — OL key, name, library folder name, `CreatedAt` (DB-stamped audit
+  time) and `CreationSource` (what created the row: manual / same-name / assign /
+  content-scan / adopt / restore — shown as a "via …" tag on the Authors page),
+  status (Pending / Active /
   Excluded / NotFound), exclusion reason, priority (0–5), bio (from OL),
   last-synced timestamp, next-fetch-due-at, `CalibreScannedAt` (for fair scan
   ordering), `RefreshIntervalDays` (optional fixed cadence override in days),
