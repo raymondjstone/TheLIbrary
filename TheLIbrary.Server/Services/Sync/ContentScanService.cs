@@ -344,10 +344,13 @@ public sealed class ContentScanService
             row.SeriesPosition ??= Cap(fg.SeriesPosition, 50);
         }
 
-        // Pre-provision a Pending Author row for every OL author that matches
-        // the guessed name so it is available for selection on the Identified page
-        // without the user having to trigger an OL lookup manually.
-        if (!string.IsNullOrWhiteSpace(row.Author))
+        // Pre-provision Pending Author rows for the guessed name — but ONLY for
+        // untracked files (those in __unknown, with no author folder to seed the
+        // watchlist). A file inside an author folder already belongs to a tracked
+        // author, and the same-name-authors job covers that author's homonyms, so
+        // fanning out pending homonyms from a content guess here would just add
+        // noise authors that are already (or will be) represented.
+        if (item.Source == "untracked" && !string.IsNullOrWhiteSpace(row.Author))
             await EnsurePendingAuthorsForGuessAsync(db, row.Author, ct);
 
         return det.HasAnything || row.Author is not null;
