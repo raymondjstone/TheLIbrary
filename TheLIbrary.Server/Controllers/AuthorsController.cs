@@ -1480,7 +1480,8 @@ public class AuthorsController : ControllerBase
         {
             Name = name!,
             OpenLibraryKey = key,
-            Status = AuthorStatus.Pending
+            Status = AuthorStatus.Pending,
+            CreationSource = "manual"
         };
 
         // If a library folder name matches, link it now so the user can see that

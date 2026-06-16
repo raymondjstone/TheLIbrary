@@ -25,6 +25,7 @@ const labels = {
     'content-scan': 'Identify books from content (read front matter of unmatched/untracked files)',
     'assign-authors': 'Assign untracked books to authors (created from OL if needed)',
     'index-fulltext': 'Index ebook text for full-text search (opt-in; books per run set in Settings)',
+    'prune-authors': 'Prune empty auto-created authors (same-name/assign/content-scan/adopt with no books or files; off by default)',
 }
 
 const fmtNextRun = (iso) => {

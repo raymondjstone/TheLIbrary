@@ -162,6 +162,7 @@ public sealed class UnknownAuthorAdoptionService
                         Name = name,
                         OpenLibraryKey = olKey,
                         Status = AuthorStatus.Pending,
+                        CreationSource = "adopt",
                     });
                     await db.SaveChangesAsync(ct);
                     trackedKeys.Add(olKey);

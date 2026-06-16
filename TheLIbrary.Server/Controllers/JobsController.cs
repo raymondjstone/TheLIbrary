@@ -28,6 +28,7 @@ public class JobsController : ControllerBase
     private readonly ContentScanService _contentScan;
     private readonly UntrackedAuthorAssignmentService _assignAuthors;
     private readonly TheLibrary.Server.Services.Search.FullTextSearchService _fullText;
+    private readonly AuthorPruneService _pruneAuthors;
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly OpenLibraryRateLimiter _rateLimiter;
@@ -53,6 +54,7 @@ public class JobsController : ControllerBase
         ContentScanService contentScan,
         UntrackedAuthorAssignmentService assignAuthors,
         TheLibrary.Server.Services.Search.FullTextSearchService fullText,
+        AuthorPruneService pruneAuthors,
         BackgroundTaskCoordinator coordinator,
         IHostApplicationLifetime lifetime,
         OpenLibraryRateLimiter rateLimiter,
@@ -77,6 +79,7 @@ public class JobsController : ControllerBase
         _contentScan = contentScan;
         _assignAuthors = assignAuthors;
         _fullText = fullText;
+        _pruneAuthors = pruneAuthors;
         _coordinator = coordinator;
         _lifetime = lifetime;
         _rateLimiter = rateLimiter;
@@ -116,6 +119,7 @@ public class JobsController : ControllerBase
             contentScan = new { isRunning = _contentScan.IsRunning, message = _contentScan.CurrentMessage },
             assignAuthors = new { isRunning = _assignAuthors.IsRunning, message = _assignAuthors.CurrentMessage },
             fullTextIndex = new { isRunning = _fullText.IsRunning, message = _fullText.CurrentMessage },
+            pruneAuthors = new { isRunning = _pruneAuthors.IsRunning, message = _pruneAuthors.CurrentMessage },
         });
     }
 
@@ -267,6 +271,14 @@ public class JobsController : ControllerBase
     public IActionResult StartIndexFullText()
     {
         if (!_fullText.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("prune-authors/start")]
+    public IActionResult StartPruneAuthors()
+    {
+        if (!_pruneAuthors.TryStart(_lifetime.ApplicationStopping, out var err))
             return Conflict(new { error = err });
         return Accepted();
     }

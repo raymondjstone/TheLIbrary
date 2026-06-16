@@ -81,6 +81,12 @@ public class Author
     // time; going forward it's an accurate creation/audit trail.
     public DateTime CreatedAt { get; set; }
 
+    // What created this author: "manual", "same-name", "assign", "content-scan",
+    // "adopt", "restore", … Null on pre-existing rows. Drives provenance in the
+    // UI and lets the prune job spare user-added authors.
+    [MaxLength(40)]
+    public string? CreationSource { get; set; }
+
     public List<Book> Books { get; set; } = new();
     public List<SeriesAuthor> SeriesAuthors { get; set; } = new();
     public List<Author> LinkedFrom { get; set; } = new();

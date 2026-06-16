@@ -190,6 +190,7 @@ public sealed class SameNameAuthorService
                     Name = string.IsNullOrWhiteSpace(o.Name) ? o.OlKey : o.Name.Trim(),
                     OpenLibraryKey = o.OlKey,
                     Status = AuthorStatus.Pending,
+                    CreationSource = "same-name",
                 });
                 added++;
                 addedNames.Add($"{o.Name} ({o.OlKey})");

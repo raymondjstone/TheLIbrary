@@ -269,7 +269,7 @@ public class BackupController : ControllerBase
                 if (a is null) byName.TryGetValue(r.Name, out a);
                 if (a is null)
                 {
-                    a = new Author { Name = r.Name, OpenLibraryKey = r.OpenLibraryKey };
+                    a = new Author { Name = r.Name, OpenLibraryKey = r.OpenLibraryKey, CreationSource = "restore" };
                     _db.Authors.Add(a);
                     if (!string.IsNullOrWhiteSpace(r.OpenLibraryKey)) byKey[r.OpenLibraryKey!] = a;
                     byName[r.Name] = a;

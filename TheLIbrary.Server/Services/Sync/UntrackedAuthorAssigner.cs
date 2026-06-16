@@ -262,7 +262,7 @@ public sealed class UntrackedAuthorAssigner
         var byKey = await _db.Authors.FirstOrDefaultAsync(a => a.OpenLibraryKey == olRow.OlKey, ct);
         if (byKey is not null) return byKey;
 
-        var author = new Author { Name = olRow.Name, OpenLibraryKey = olRow.OlKey, Status = AuthorStatus.Pending };
+        var author = new Author { Name = olRow.Name, OpenLibraryKey = olRow.OlKey, Status = AuthorStatus.Pending, CreationSource = "assign" };
         _db.Authors.Add(author);
         await _db.SaveChangesAsync(ct);
         return author;
@@ -313,6 +313,7 @@ public sealed class UntrackedAuthorAssigner
             Name = name,
             OpenLibraryKey = key,
             Status = AuthorStatus.Pending,
+            CreationSource = "assign",
         };
         _db.Authors.Add(author);
         await _db.SaveChangesAsync(ct);

@@ -41,6 +41,7 @@ public static class ScheduleJobIds
     public const string ContentScan = "content-scan";
     public const string AssignAuthors = "assign-authors";
     public const string IndexFullText = "index-fulltext";
+    public const string PruneAuthors = "prune-authors";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
@@ -49,7 +50,7 @@ public static class ScheduleJobIds
         StarPhysicalAuthors, CacheOpenLibraryMetadata, FlattenUnknown,
         DedupeUnknown, DedupeAuthorFiles, PromoteManualBooks, AdoptUnknownAuthors,
         ArchiveForeign, MergeLinkedAuthors, CheckIntegrity, PruneStaleFiles,
-        ContentScan, AssignAuthors, IndexFullText
+        ContentScan, AssignAuthors, IndexFullText, PruneAuthors
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -112,5 +113,8 @@ public static class ScheduleJobIds
             // FullTextIndexMaxPerRun. Heavy and opt-in (does nothing unless the
             // feature is enabled in Settings), so it ships disabled; default hourly.
             [IndexFullText] = new() { Cron = "0 * * * *", Enabled = false },
+            // Delete empty auto-created authors (homonym/guess noise). Destructive,
+            // so it ships DISABLED — opt in on the Schedules page.
+            [PruneAuthors] = new() { Cron = "40 3 * * *", Enabled = false },
         };
 }

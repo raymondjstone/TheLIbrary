@@ -239,6 +239,9 @@ public sealed class ScheduleService
                 case ScheduleJobIds.IndexFullText:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunIndexFullText(), entry.Cron);
                     break;
+                case ScheduleJobIds.PruneAuthors:
+                    _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunPruneAuthors(), entry.Cron);
+                    break;
             }
             _log.LogInformation("Schedule {Job}: enabled with cron '{Cron}'", jobId, entry.Cron);
         }

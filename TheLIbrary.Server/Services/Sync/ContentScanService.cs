@@ -518,6 +518,7 @@ public sealed class ContentScanService
                 Name = ol.Name,
                 OpenLibraryKey = ol.OlKey,
                 Status = AuthorStatus.Pending,
+                CreationSource = "content-scan",
             });
             existingKeySet.Add(ol.OlKey); // guard against duplicate OL rows in same batch
         }

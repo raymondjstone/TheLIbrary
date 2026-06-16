@@ -225,6 +225,7 @@ export default function Sync() {
                                                 { key: 'contentScan',        label: 'Identify books from content', endpoint: '/api/jobs/content-scan/start' },
                                                 { key: 'assignAuthors',      label: 'Assign untracked books to authors', endpoint: '/api/jobs/assign-authors/start' },
                                                 { key: 'fullTextIndex',      label: 'Index ebook text (full-text search)', endpoint: '/api/jobs/index-fulltext/start' },
+                                                { key: 'pruneAuthors',       label: 'Prune empty auto-created authors', endpoint: '/api/jobs/prune-authors/start' },
                                             ]
                                             const anyJobRunning = !!jobs.activeJob
                                             return (
