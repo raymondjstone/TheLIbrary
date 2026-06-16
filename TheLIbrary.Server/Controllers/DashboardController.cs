@@ -1,20 +1,23 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
 
 namespace TheLibrary.Server.Controllers;
 
-// Lightweight count-only summary for the Home dashboard. Every figure is a
-// COUNT (or a small path-set filter) so the landing page stays fast even on a
-// large library — no per-book scans, no disk I/O.
+// Count summary for the Home dashboard. The book counts scan a ~1.8M-row table,
+// so the whole result is cached for a short TTL — repeated Home loads are then
+// free, and the cards never need to be real-time.
 [ApiController]
 [Route("api/[controller]")]
 public class DashboardController : ControllerBase
 {
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(60);
     private readonly LibraryDbContext _db;
-    public DashboardController(LibraryDbContext db) { _db = db; }
+    private readonly IMemoryCache _cache;
+    public DashboardController(LibraryDbContext db, IMemoryCache cache) { _db = db; _cache = cache; }
 
     public sealed record DashboardSummary(
         int TotalAuthors,
@@ -30,7 +33,14 @@ public class DashboardController : ControllerBase
         int AddedThisWeek);
 
     [HttpGet]
-    public async Task<DashboardSummary> Get(CancellationToken ct)
+    public Task<DashboardSummary> Get(CancellationToken ct)
+        => _cache.GetOrCreateAsync("dashboard:summary", e =>
+        {
+            e.AbsoluteExpirationRelativeToNow = CacheTtl;
+            return ComputeAsync(ct);
+        })!;
+
+    private async Task<DashboardSummary> ComputeAsync(CancellationToken ct)
     {
         var now = DateTime.UtcNow;
         var year = now.Year;
@@ -45,10 +55,19 @@ public class DashboardController : ControllerBase
             a => a.Status == AuthorStatus.Active
               && (a.NextFetchAt == null || a.NextFetchAt <= now), ct);
 
-        var ownedBooks = await _db.Books.CountAsync(b => b.ManuallyOwned || b.LocalFiles.Any(), ct);
-        var missingBooks = await _db.Books.CountAsync(b => !b.ManuallyOwned && !b.LocalFiles.Any(), ct);
-        var wantedBooks = await _db.Books.CountAsync(
-            b => b.Wanted && !b.ManuallyOwned && !b.LocalFiles.Any(), ct);
+        // All four book figures in a single table scan instead of four separate
+        // COUNTs, each with its own owned/EXISTS semi-join over ~1.8M rows.
+        var books = await _db.Books.GroupBy(_ => 1).Select(g => new
+        {
+            Owned = g.Count(b => b.ManuallyOwned || b.LocalFiles.Any()),
+            Missing = g.Count(b => !b.ManuallyOwned && !b.LocalFiles.Any()),
+            Wanted = g.Count(b => b.Wanted && !b.ManuallyOwned && !b.LocalFiles.Any()),
+            ReleasesThisYear = g.Count(b => !b.Suppressed && b.FirstPublishYear == year),
+        }).FirstOrDefaultAsync(ct);
+        var ownedBooks = books?.Owned ?? 0;
+        var missingBooks = books?.Missing ?? 0;
+        var wantedBooks = books?.Wanted ?? 0;
+        var releasesThisYear = books?.ReleasesThisYear ?? 0;
 
         // Damaged: same rule as the Damaged page — IntegrityOk == false, not under
         // the archive folder, real ebook files only. The IsEbook test isn't
@@ -69,11 +88,6 @@ public class DashboardController : ControllerBase
             .Distinct()
             .CountAsync(ct);
         var unknownFiles = await _db.UnknownFiles.CountAsync(ct);
-
-        // New releases: works first published in the current calendar year for any
-        // tracked author (year is the finest publish granularity OpenLibrary gives).
-        var releasesThisYear = await _db.Books.CountAsync(
-            b => !b.Suppressed && b.FirstPublishYear == year, ct);
 
         // Genuinely weekly: local files acquired in the last 7 days.
         var addedThisWeek = await _db.LocalBookFiles.CountAsync(f => f.ModifiedAt >= weekAgo, ct);

@@ -20,6 +20,7 @@ builder.Services.AddControllers(o =>
     .AddJsonOptions(o =>
         o.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
 builder.Services.AddProblemDetails();
+builder.Services.AddMemoryCache();
 builder.Services.AddOpenApi();
 
 var connStr = builder.Configuration.GetConnectionString("Library");
