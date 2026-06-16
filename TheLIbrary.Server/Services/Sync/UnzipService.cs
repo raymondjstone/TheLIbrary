@@ -104,7 +104,12 @@ public sealed class UnzipService
         var quarantineRoots = await Calibre.UnknownFolderResolver.GetSourceRootsAsync(
             db, libraryLocationPaths, ct);
 
-        var files = await db.LocalBookFiles.ToListAsync(ct);
+        // Only archive rows matter here (the loop skips everything else), so
+        // filter in SQL instead of materialising the whole LocalBookFiles table
+        // (~280k rows) to find a handful of .zip/.rar records.
+        var files = await db.LocalBookFiles
+            .Where(f => f.FullPath.EndsWith(".zip") || f.FullPath.EndsWith(".rar"))
+            .ToListAsync(ct);
 
         files.Sort((x, y) =>
         {

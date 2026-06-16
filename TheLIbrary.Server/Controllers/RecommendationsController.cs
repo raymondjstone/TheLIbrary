@@ -50,13 +50,16 @@ public class RecommendationsController : ControllerBase
         // 2. Candidate authors: in the catalogue, not starred (Priority 0), active
         //    or pending, not a linked duplicate. Pull (author, subjects) for their
         //    books and score subject overlap with the taste profile in memory.
+        // Bounded sample — scoring is a heuristic, so a large slice adds cost
+        // (this can sit over a multi-million-row Books table) without improving
+        // the top suggestions.
         var candidateBooks = await _db.Books.AsNoTracking()
             .Where(b => b.Author.Priority == 0
                      && b.Author.LinkedToAuthorId == null
                      && (b.Author.Status == AuthorStatus.Active || b.Author.Status == AuthorStatus.Pending)
                      && b.Subjects != null && b.Subjects != "")
             .Select(b => new { b.AuthorId, b.Author.Name, b.Author.Status, b.Subjects })
-            .Take(200_000)
+            .Take(40_000)
             .ToListAsync(ct);
 
         var byAuthor = new Dictionary<int, (string Name, AuthorStatus Status, int Books, Dictionary<string, int> Hits)>();
