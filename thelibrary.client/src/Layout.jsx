@@ -22,6 +22,7 @@ export default function Layout() {
                     <NavLink to="/series-completion">Series Completion</NavLink>
                     <NavLink to="/collections">Collections</NavLink>
                     <NavLink to="/stats">Stats</NavLink>
+                    <NavLink to="/health">Health</NavLink>
                     <NavLink to="/duplicates">Duplicates</NavLink>
                     <NavLink to="/damaged">Damaged</NavLink>
                     <NavLink to="/identified">Identified</NavLink>
