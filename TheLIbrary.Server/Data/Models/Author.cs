@@ -75,6 +75,12 @@ public class Author
     public Author? LinkedTo { get; set; }
     public bool IsPenName { get; set; }
 
+    // When this author row was first created. DB-defaulted (SYSUTCDATETIME) so
+    // every insert — from any service, job, or migration — is stamped without
+    // each call site having to set it. Existing rows backfill to the migration
+    // time; going forward it's an accurate creation/audit trail.
+    public DateTime CreatedAt { get; set; }
+
     public List<Book> Books { get; set; } = new();
     public List<SeriesAuthor> SeriesAuthors { get; set; } = new();
     public List<Author> LinkedFrom { get; set; } = new();

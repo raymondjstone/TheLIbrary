@@ -32,6 +32,9 @@ public class LibraryDbContext : DbContext
     {
         b.Entity<Author>(e =>
         {
+            // DB-assigned creation timestamp; lets any insert path stamp it
+            // without touching every call site, and backfills existing rows.
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
             e.HasIndex(x => x.OpenLibraryKey).IsUnique().HasFilter("[OpenLibraryKey] IS NOT NULL");
             e.HasIndex(x => x.CalibreFolderName);
             e.HasIndex(x => x.Name);
