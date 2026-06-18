@@ -733,18 +733,26 @@ public class BooksController : ControllerBase
                 continue;
             }
 
-            var libRoot = location.TrimEnd('\\', '/');
-            var relative = file.FullPath[libRoot.Length..].TrimStart('\\', '/');
+            var libRoot = location.Replace('\\', '/').TrimEnd('/');
+            var relative = file.FullPath.Replace('\\', '/')[libRoot.Length..].TrimStart('/');
             // archiveLeaf may be a simple folder name (nested inside each library
             // root) or a full absolute path (one fixed archive location). Either
             // way the file's library-relative subfolders are preserved underneath.
             // A value containing a separator is a full path (forward-slash based,
             // to match the Linux mount regardless of the host OS this runs on).
+            //
+            // CRITICAL: build the destination with forward slashes, NEVER Path.Combine.
+            // Stored paths are always forward-slash (the library lives on the Linux
+            // mount), and the Duplicates list excludes archived rows by matching a
+            // forward-slash archive prefix/segment. On a Windows host Path.Combine
+            // emits '\', so the repointed row would be stored as
+            // ".../TheLibrary_Archive\Author\..." and silently FAIL that exclusion —
+            // the archived copy then keeps showing as a duplicate with no warning.
             var destBase = (archiveLeaf.Contains('/') || archiveLeaf.Contains('\\'))
-                ? archiveLeaf.Replace('\\', '/')
-                : Path.Combine(libRoot, archiveLeaf);
-            var destPath = Path.Combine(destBase, relative);
-            var destDir = Path.GetDirectoryName(destPath);
+                ? archiveLeaf.Replace('\\', '/').TrimEnd('/')
+                : $"{libRoot}/{archiveLeaf}";
+            var destPath = $"{destBase}/{relative}";
+            var destDir = destPath[..destPath.LastIndexOf('/')];
 
             try
             {
@@ -752,7 +760,9 @@ public class BooksController : ControllerBase
                 if (await _fs.FileExistsAsync(file.FullPath, ct))
                 {
                     var src = file.FullPath;
-                    var final = await UniqueFileAsync(destPath, ct);
+                    // Forward-slash the result: UniqueFileAsync uses Path.Combine,
+                    // which re-introduces '\' on a Windows host (see destPath note).
+                    var final = (await UniqueFileAsync(destPath, ct)).Replace('\\', '/');
                     await _fs.MoveFileAsync(src, final, overwrite: false, ct);
 
                     // CRITICAL: when the archive folder is a different mount from the
@@ -779,7 +789,7 @@ public class BooksController : ControllerBase
                 else if (await _fs.DirectoryExistsAsync(file.FullPath, ct))
                 {
                     var src = file.FullPath;
-                    var final = await UniqueDirectoryAsync(Path.GetDirectoryName(destPath)!, Path.GetFileName(destPath), ct);
+                    var final = (await UniqueDirectoryAsync(Path.GetDirectoryName(destPath)!, Path.GetFileName(destPath), ct)).Replace('\\', '/');
                     await _fs.MoveDirectoryAsync(src, final, ct);
                     if (await _fs.DirectoryExistsAsync(src, ct))
                     {

@@ -302,13 +302,19 @@ public class DamagedController : ControllerBase
             file.FullPath.StartsWith(l.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase));
         if (location is null) return (false, "File is outside the enabled library roots.");
 
-        var libRoot = location.TrimEnd('\\', '/');
-        var relative = file.FullPath[libRoot.Length..].TrimStart('\\', '/');
+        // Build the destination with forward slashes, NEVER Path.Combine: stored
+        // paths are always forward-slash and the archive-exclusion filters match a
+        // forward-slash prefix/segment. Path.Combine emits '\' on a Windows host,
+        // which would store the row as ".../archive\Author\..." and make it silently
+        // fail the exclusion (the archived copy then keeps showing). See the matching
+        // note in BooksController.ApplyDuplicateAction.
+        var libRoot = location.Replace('\\', '/').TrimEnd('/');
+        var relative = file.FullPath.Replace('\\', '/')[libRoot.Length..].TrimStart('/');
         var destBase = archiveLeaf.Contains('/') || archiveLeaf.Contains('\\')
-            ? archiveLeaf.Replace('\\', '/')
-            : Path.Combine(libRoot, archiveLeaf);
-        var destPath = Path.Combine(destBase, relative);
-        var destDir = Path.GetDirectoryName(destPath);
+            ? archiveLeaf.Replace('\\', '/').TrimEnd('/')
+            : $"{libRoot}/{archiveLeaf}";
+        var destPath = $"{destBase}/{relative}";
+        var destDir = destPath[..destPath.LastIndexOf('/')];
 
         try
         {
@@ -316,7 +322,8 @@ public class DamagedController : ControllerBase
             if (await _fs.FileExistsAsync(file.FullPath, ct))
             {
                 var src = file.FullPath;
-                var final = await UniqueFileAsync(destPath, ct);
+                // Forward-slash: UniqueFileAsync uses Path.Combine ('\' on Windows).
+                var final = (await UniqueFileAsync(destPath, ct)).Replace('\\', '/');
                 await _fs.MoveFileAsync(src, final, overwrite: false, ct);
                 // Cross-mount File.Move is copy+delete; the source delete can silently
                 // fail and leave the live original, which then reappears. Verify it's
@@ -333,8 +340,8 @@ public class DamagedController : ControllerBase
             else if (await _fs.DirectoryExistsAsync(file.FullPath, ct))
             {
                 var src = file.FullPath;
-                var final = await UniqueDirectoryAsync(
-                    Path.GetDirectoryName(destPath)!, Path.GetFileName(destPath), ct);
+                var final = (await UniqueDirectoryAsync(
+                    Path.GetDirectoryName(destPath)!, Path.GetFileName(destPath), ct)).Replace('\\', '/');
                 await _fs.MoveDirectoryAsync(src, final, ct);
                 if (await _fs.DirectoryExistsAsync(src, ct))
                 {

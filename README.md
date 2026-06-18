@@ -658,6 +658,13 @@ duplicate-author dedupe — skips archived paths through a single shared rule
 quietly dragged back into a live author/series folder and reappearing on the
 Duplicates page every few days.
 
+For that exclusion to work, the archive actions must store the moved row with a
+**forward-slash** path — the whole library lives on a Linux mount and every stored
+path is forward-slash, so the archive prefix/segment is matched on `/`. The archive
+write path therefore builds the destination with explicit `/` joins (never
+`Path.Combine`, which emits `\` on a Windows host); a back-slashed row would silently
+fail the exclusion and the archived copy would keep showing as a duplicate.
+
 Finally, a scheduled **OpenLibrary metadata cache** job can backfill missing
 subjects and locally cache large cover images for existing works. Cached covers
 are written under `wwwroot/cached-covers/` and the corresponding `Book.CoverUrl`
