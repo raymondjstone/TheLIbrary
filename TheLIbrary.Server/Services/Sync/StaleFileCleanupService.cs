@@ -7,7 +7,8 @@ using TheLibrary.Server.Services.Scheduling;
 
 namespace TheLibrary.Server.Services.Sync;
 
-public sealed record StaleFileCleanupSummary(int Scanned, int Pruned, int EmptyFoldersRemoved = 0);
+public sealed record StaleFileCleanupSummary(
+    int Scanned, int Pruned, int EmptyFoldersRemoved = 0, int ReappearedArchivedRemoved = 0);
 
 // Removes leftover "folder pointer" LocalBookFile rows: rows whose FullPath is a
 // directory (classic library layout) that no longer holds a readable ebook —
@@ -153,6 +154,17 @@ public sealed class StaleFileCleanupService
             }
         }
 
+        // Re-appearance sweep: an external sync/mirror keeps re-dropping files into
+        // the live library that the user already archived. Because the archive folder
+        // is a separate tree the scanner never reads, each re-drop looks brand new and
+        // resurfaces on the Duplicates page forever. Remove any LIVE file that is
+        // byte-identical (same library-relative path AND same size) to a file already
+        // in the archive — but only after confirming the archived twin is actually on
+        // disk, so a unique copy is never destroyed.
+        _currentMessage = "Removing live copies already archived";
+        var archiveLeaf = await ArchivePolicy.LoadLeafAsync(db, ct);
+        var reappeared = await RemoveLiveCopiesAlreadyArchivedAsync(db, mountedRoots, archiveLeaf, ct);
+
         // Second pass: empty folders should never linger on disk. After files are
         // moved (organize, dedupe, archive, assign) or deleted, their title and
         // author folders are routinely left behind empty — clutter that also
@@ -170,10 +182,86 @@ public sealed class StaleFileCleanupService
         }
 
         _log.LogInformation(
-            "Stale-file cleanup done — scanned {Scanned}, pruned {Pruned} row(s), removed {Empty} empty folder(s)",
-            scanned, toRemove.Count, emptyRemoved);
-        _currentMessage = $"Done — pruned {toRemove.Count} of {scanned} folder record(s), removed {emptyRemoved} empty folder(s)";
-        return new StaleFileCleanupSummary(scanned, toRemove.Count, emptyRemoved);
+            "Stale-file cleanup done — scanned {Scanned}, pruned {Pruned} row(s), removed {Empty} empty folder(s), swept {Reappeared} re-appeared archived copy(ies)",
+            scanned, toRemove.Count, emptyRemoved, reappeared);
+        _currentMessage = $"Done — pruned {toRemove.Count} of {scanned} folder record(s), removed {emptyRemoved} empty folder(s), swept {reappeared} re-appeared archived copy(ies)";
+        return new StaleFileCleanupSummary(scanned, toRemove.Count, emptyRemoved, reappeared);
+    }
+
+    // Deletes LIVE library files that are byte-identical (same library-relative path
+    // AND same size) to a file already sitting in the archive. The archive is a
+    // separate folder tree the scanner never indexes, so when an external process
+    // re-drops an already-archived file back into the live library it looks new and
+    // shows as a duplicate again. We only delete a live copy once its archived twin
+    // is confirmed present on disk, so no unique content is ever lost. Returns the
+    // number of live copies removed.
+    private async Task<int> RemoveLiveCopiesAlreadyArchivedAsync(
+        LibraryDbContext db, IReadOnlyList<string> mountedRoots, string archiveLeaf, CancellationToken ct)
+    {
+        // Only the absolute-path archive form is a separate tree sitting outside the
+        // library roots. A bare-leaf archive under a root is already kept out of the
+        // scan, so it never produces these phantom live duplicates.
+        if (string.IsNullOrWhiteSpace(archiveLeaf) || !archiveLeaf.Contains('/')) return 0;
+        var archivePrefix = archiveLeaf.Replace('\\', '/').TrimEnd('/') + "/";
+
+        static string Key(string rel, long size) => rel.Replace('\\', '/') + "\0" + size;
+
+        // (relative-path, size) of every archived file — the "already archived" set.
+        var archiveKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var a in await db.LocalBookFiles.AsNoTracking()
+                     .Where(f => f.FullPath.StartsWith(archivePrefix))
+                     .Select(f => new { f.FullPath, f.SizeBytes })
+                     .ToListAsync(ct))
+            archiveKeys.Add(Key(a.FullPath.Substring(archivePrefix.Length), a.SizeBytes));
+        if (archiveKeys.Count == 0) return 0;
+
+        var removed = 0;
+        foreach (var root in mountedRoots)
+        {
+            ct.ThrowIfCancellationRequested();
+            var rootPrefix = root.Replace('\\', '/').TrimEnd('/') + "/";
+
+            var liveRows = await db.LocalBookFiles.AsNoTracking()
+                .Where(f => f.FullPath.StartsWith(rootPrefix))
+                .Select(f => new { f.Id, f.FullPath, f.SizeBytes })
+                .ToListAsync(ct);
+
+            var toDelete = new List<int>();
+            foreach (var l in liveRows)
+            {
+                ct.ThrowIfCancellationRequested();
+                var rel = l.FullPath.Substring(rootPrefix.Length);
+                if (!archiveKeys.Contains(Key(rel, l.SizeBytes))) continue;
+
+                // Confirm the archived twin is really on disk before deleting the live
+                // copy — never destroy a file whose only surviving copy is the live one.
+                var twin = archivePrefix + rel.Replace('\\', '/');
+                if (!_fs.FileExists(twin)) continue;
+
+                try
+                {
+                    if (_fs.FileExists(l.FullPath)) _fs.DeleteFile(l.FullPath);
+                    toDelete.Add(l.Id);
+                    removed++;
+                    if (removed <= 25 || removed % 250 == 0)
+                        _log.LogInformation(
+                            "Re-appearance sweep: removed live copy already archived: {Path}", l.FullPath);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning(ex, "Re-appearance sweep: could not delete {Path}", l.FullPath);
+                }
+            }
+
+            foreach (var chunk in toDelete.Chunk(500))
+            {
+                ct.ThrowIfCancellationRequested();
+                var rows = await db.LocalBookFiles.Where(f => chunk.Contains(f.Id)).ToListAsync(ct);
+                db.LocalBookFiles.RemoveRange(rows);
+                await db.SaveChangesAsync(ct);
+            }
+        }
+        return removed;
     }
 
     // Absolute directory paths that must never be deleted even when empty: the

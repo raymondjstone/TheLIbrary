@@ -96,6 +96,48 @@ public class StaleFileCleanupServiceTests
         Assert.Single(await verify.LocalBookFiles.ToListAsync()); // nothing deleted (mount safety)
     }
 
+    [Fact]
+    public async Task Removes_Live_Copies_That_Are_Already_In_The_Archive()
+    {
+        // The archive is a separate tree the scanner never reads. When something
+        // re-drops an already-archived file back into the live library it looks new
+        // and shows as a duplicate again. The sweep must delete the live copy whose
+        // identical (same relative path + size) twin is confirmed in the archive,
+        // and leave alone a live file that has no archive twin.
+        var fs = new FakeFileSystem();
+        fs.CreateDirectory("/Books/Collection");                 // mounted root
+        // Archived twin (separate tree, outside the root) — present on disk.
+        fs.ExistingFiles.Add("/Books/TheLibrary_Archive/Foster/Call to Arms/x.lit");
+        // Live re-appearance, byte-identical to the archived twin → must be removed.
+        fs.ExistingFiles.Add("/Books/Collection/Foster/Call to Arms/x.lit");
+        fs.FilesByDirectory["/Books/Collection/Foster/Call to Arms"] = new() { "/Books/Collection/Foster/Call to Arms/x.lit" };
+        // Live keeper with no archive twin → must survive.
+        fs.ExistingFiles.Add("/Books/Collection/Foster/Damned/keep.epub");
+        fs.FilesByDirectory["/Books/Collection/Foster/Damned"] = new() { "/Books/Collection/Foster/Damned/keep.epub" };
+
+        var dbName = NewDb();
+        await using (var db = CreateDb(dbName))
+        {
+            db.LibraryLocations.Add(new LibraryLocation { Path = "/Books/Collection", Enabled = true });
+            db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.DedupeArchiveFolder, Value = "/Books/TheLibrary_Archive" });
+            db.LocalBookFiles.AddRange(
+                new LocalBookFile { Id = 1, FullPath = "/Books/TheLibrary_Archive/Foster/Call to Arms/x.lit", SizeBytes = 100 },
+                new LocalBookFile { Id = 2, FullPath = "/Books/Collection/Foster/Call to Arms/x.lit", SizeBytes = 100 }, // re-appearance → delete
+                new LocalBookFile { Id = 3, FullPath = "/Books/Collection/Foster/Damned/keep.epub", SizeBytes = 200 });   // keeper → keep
+            await db.SaveChangesAsync();
+        }
+
+        var summary = await CreateService(fs, dbName).RunForTestsAsync(CancellationToken.None);
+
+        Assert.Equal(1, summary.ReappearedArchivedRemoved);
+        Assert.False(fs.FileExists("/Books/Collection/Foster/Call to Arms/x.lit")); // live re-appearance deleted
+        Assert.True(fs.FileExists("/Books/TheLibrary_Archive/Foster/Call to Arms/x.lit")); // archive twin untouched
+        Assert.True(fs.FileExists("/Books/Collection/Foster/Damned/keep.epub")); // keeper survives
+        await using var verify = CreateDb(dbName);
+        var remaining = await verify.LocalBookFiles.Select(f => f.Id).OrderBy(i => i).ToListAsync();
+        Assert.Equal(new[] { 1, 3 }, remaining); // archive row + keeper row remain; re-appearance row gone
+    }
+
     private static string NewDb() => $"stale-tests-{Guid.NewGuid():N}";
     private static LibraryDbContext CreateDb(string name)
         => new(new DbContextOptionsBuilder<LibraryDbContext>().UseInMemoryDatabase(name).Options);
