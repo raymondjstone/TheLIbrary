@@ -170,7 +170,13 @@ public sealed class LinkedAuthorMergeService
 
         // --- Relocate the source's files on disk into the canonical's folder,
         //     so the move survives the next sync (which keys off the folder). ---
-        var files = await db.LocalBookFiles.Where(f => f.AuthorId == sourceId).ToListAsync(ct);
+        // Archived files are inert (see ArchivePolicy) — leave any archived copy
+        // of the source author where it is instead of dragging it into the
+        // canonical folder (which would resurrect it as a live duplicate).
+        var archiveLeaf = await ArchivePolicy.LoadLeafAsync(db, ct);
+        var files = await db.LocalBookFiles.Where(f => f.AuthorId == sourceId)
+            .Where(ArchivePolicy.NotUnder(archiveLeaf))
+            .ToListAsync(ct);
         var moved = 0;
         foreach (var file in files)
         {

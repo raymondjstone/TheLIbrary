@@ -100,8 +100,12 @@ public sealed class AuthorDuplicateRemovalService
         // Authors that have at least one unmatched file → the folders to dedupe.
         // We locate each author's folder from the file paths themselves (robust
         // to a stale CalibreFolderName), then dedupe the WHOLE folder on disk.
+        // Archived files are inert (see ArchivePolicy) — never feed an archived
+        // folder into the byte-identical dedupe, which would delete archived copies.
+        var archiveLeaf = await ArchivePolicy.LoadLeafAsync(db, ct);
         var unmatchedAuthorIds = await db.LocalBookFiles.AsNoTracking()
             .Where(f => f.AuthorId != null && f.BookId == null)
+            .Where(ArchivePolicy.NotUnder(archiveLeaf))
             .Select(f => f.AuthorId!.Value)
             .Distinct()
             .ToListAsync(ct);
@@ -120,6 +124,7 @@ public sealed class AuthorDuplicateRemovalService
             var ids = chunk.ToList();
             var paths = await db.LocalBookFiles.AsNoTracking()
                 .Where(f => f.AuthorId != null && ids.Contains(f.AuthorId!.Value))
+                .Where(ArchivePolicy.NotUnder(archiveLeaf))
                 .Select(f => f.FullPath)
                 .ToListAsync(ct);
             foreach (var p in paths)

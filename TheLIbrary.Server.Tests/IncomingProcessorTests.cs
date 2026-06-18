@@ -210,6 +210,116 @@ public class IncomingProcessorTests
     }
 
     [Fact]
+    public async Task ProcessAsync_Does_Not_Backfill_OL_Key_Already_Owned_By_Another_Author()
+    {
+        // Regression: a tracked author with no OL key matches a file; the OL
+        // catalogue resolves their name to a key that ANOTHER author row already
+        // owns (an OL-split duplicate — common after seeding). Backfilling that
+        // key blindly violates the unique IX_Authors_OpenLibraryKey index and the
+        // SaveChanges threw DbUpdateException, failing the whole file. The guard
+        // must skip the backfill and still file the book under the author's folder.
+        await using var db = CreateDb();
+        db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.IncomingFolder, Value = "C:\\incoming" });
+        db.LibraryLocations.Add(new LibraryLocation
+        {
+            Id = 1, Path = "C:\\library", IsPrimary = true,
+            Enabled = true, Label = "Default", CreatedAt = DateTime.UtcNow
+        });
+        // The key owner — a different-named duplicate row that already holds the key.
+        db.Authors.Add(new Author
+        {
+            Id = 1, Name = "Marcus Halloway", CalibreFolderName = "Marcus Halloway",
+            OpenLibraryKey = "OL90000001A", Status = AuthorStatus.Active
+        });
+        // The tracked match — no OL key yet; its name resolves to the same key.
+        db.Authors.Add(new Author
+        {
+            Id = 2, Name = "Marcus T. Halloway", CalibreFolderName = "Marcus T. Halloway",
+            OpenLibraryKey = null, Status = AuthorStatus.Active
+        });
+        db.OpenLibraryAuthors.Add(new OpenLibraryAuthor
+        {
+            OlKey = "OL90000001A",
+            Name = "Marcus T. Halloway",
+            NormalizedName = TitleNormalizer.NormalizeAuthor("Marcus T. Halloway"),
+            ImportedAt = DateTime.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        var fs = new FakeFileSystem();
+        fs.CreateDirectory("C:\\incoming");
+        fs.CreateDirectory("C:\\library");
+        fs.AddDirectoryChild("C:\\incoming", "C:\\incoming\\drop");
+        fs.AddFile("C:\\incoming\\drop\\Throne of Embers - Marcus T. Halloway.epub");
+
+        var sut = new IncomingProcessor(db, fs, NullLogger<IncomingProcessor>.Instance);
+        var result = await sut.ProcessAsync(CancellationToken.None);
+
+        Assert.Equal(1, result.Processed);
+        Assert.Equal(1, result.Matched);
+        Assert.Equal(0, result.Errors);
+        Assert.Equal(0, result.UnknownAuthor);
+        // The taken key must NOT have been copied onto the tracked author.
+        var tracked = await db.Authors.FirstAsync(a => a.Id == 2);
+        Assert.Null(tracked.OpenLibraryKey);
+        // The original owner keeps the key; no second row claims it.
+        Assert.Single(db.Authors.Where(a => a.OpenLibraryKey == "OL90000001A"));
+        // File lands under the tracked author's folder, not __unknown.
+        Assert.DoesNotContain(fs.ExistingFiles, f =>
+            f.Contains("__unknown", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(fs.ExistingFiles, f =>
+            f.Contains("Marcus T. Halloway", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task ProcessAsync_Does_Not_Demote_Tracked_Author_When_FolderName_Differs_From_OL_Name()
+    {
+        // Regression: an incoming run must never wipe a tracked author's OL key or
+        // reset their Status to Pending just because the CalibreFolderName and the
+        // OL display name don't share a word token (legitimately common: "Last,
+        // First" folders, transliterations, label folders). The old suspect-key
+        // guard did exactly that, demoting already-synced authors every scheduled
+        // incoming run and oscillating them Active<->Pending against the refresher.
+        await using var db = CreateDb();
+        db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.IncomingFolder, Value = "C:\\incoming" });
+        db.LibraryLocations.Add(new LibraryLocation
+        {
+            Id = 1, Path = "C:\\library", IsPrimary = true,
+            Enabled = true, Label = "Default", CreatedAt = DateTime.UtcNow
+        });
+        var lastSynced = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+        db.Authors.Add(new Author
+        {
+            Id = 1,
+            Name = "Wexford Plume",            // the OL display name
+            CalibreFolderName = "Other Label", // shares no token with the name
+            OpenLibraryKey = "OL90000002A",
+            Status = AuthorStatus.Active,
+            LastSyncedAt = lastSynced,
+        });
+        await db.SaveChangesAsync();
+
+        var fs = new FakeFileSystem();
+        fs.CreateDirectory("C:\\incoming");
+        fs.CreateDirectory("C:\\library");
+        fs.AddDirectoryChild("C:\\incoming", "C:\\incoming\\drop");
+        fs.AddFile("C:\\incoming\\drop\\A Distant Shore - Wexford Plume.epub");
+
+        var sut = new IncomingProcessor(db, fs, NullLogger<IncomingProcessor>.Instance);
+        var result = await sut.ProcessAsync(CancellationToken.None);
+
+        Assert.Equal(1, result.Matched);
+        var author = await db.Authors.FirstAsync(a => a.Id == 1);
+        Assert.Equal(AuthorStatus.Active, author.Status);          // not demoted
+        Assert.Equal("OL90000002A", author.OpenLibraryKey);        // key not wiped
+        Assert.Equal("Wexford Plume", author.Name);                // name not reset
+        Assert.Equal(lastSynced, author.LastSyncedAt);             // refresher state untouched
+        // File delivered under the author's folder, not __unknown.
+        Assert.DoesNotContain(fs.ExistingFiles, f =>
+            f.Contains("__unknown", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task ProcessAsync_Active_Author_Wins_When_Excluded_Duplicate_Exists()
     {
         // Regression: if an Excluded Author row shares the same normalized name

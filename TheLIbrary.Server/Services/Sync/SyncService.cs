@@ -95,7 +95,15 @@ public sealed class SyncService
                 ? "No library locations configured"
                 : $"Scanning {roots.Count} location(s)";
         });
-        var entries = scanner.Scan(roots);
+        // Archived files are inert (see ArchivePolicy): the index scan must not
+        // descend into the archive folder, and the cleanup passes below must not
+        // delete archived rows. The archive lives at <root>/__archive by default,
+        // so excluding it by folder name keeps its files out of `entries`.
+        var archiveLeaf = await ArchivePolicy.LoadLeafAsync(db, ct);
+        var entries = scanner.Scan(
+            roots,
+            ignoredFolders: new[] { ArchivePolicy.FolderName(archiveLeaf) },
+            ignoredPaths: ArchivePolicy.AbsoluteDirs(archiveLeaf, roots));
         MutateState(s => s.LocalFilesSeen = entries.Count);
 
         foreach (var loc in locations) loc.LastScanAt = syncStartedUtc;
@@ -333,6 +341,9 @@ public sealed class SyncService
         static string Canon(string p) =>
             p.Normalize(System.Text.NormalizationForm.FormC).ToUpperInvariant();
 
+        // Archived rows are inert — the cleanup passes below must never delete them.
+        var archiveLeaf = await ArchivePolicy.LoadLeafAsync(db, ct);
+
         var deduped = new Dictionary<string, CalibreBookEntry>(StringComparer.Ordinal);
         foreach (var e in entries) deduped[Canon(e.FullPath)] = e;
 
@@ -489,8 +500,11 @@ public sealed class SyncService
         // the record is live under its new file-path key. Deleting it would undo the
         // migration. Also de-duplicate since secondary keys can produce the same Id twice.
         var updatedIds = new HashSet<int>(toUpdate.Select(f => f.Id));
+        // Archived rows are intentionally absent from `deduped` (the scan skips the
+        // archive folder) — exclude them so they are preserved, not deleted.
         var removedIds = existingByPath
-            .Where(kvp => !deduped.ContainsKey(kvp.Key) && !updatedIds.Contains(kvp.Value.Id))
+            .Where(kvp => !deduped.ContainsKey(kvp.Key) && !updatedIds.Contains(kvp.Value.Id)
+                          && !ArchivePolicy.IsUnder(kvp.Value.FullPath, archiveLeaf))
             .Select(kvp => kvp.Value.Id)
             .Distinct()
             .ToList();
@@ -525,7 +539,8 @@ public sealed class SyncService
         // as garbage in the unclaimed view indefinitely.
         var staleOrphanIds = existingList
             .Where(f => f.AuthorId == null &&
-                        !trackedFolderKeys.Contains(TitleNormalizer.NormalizeAuthor(f.AuthorFolder)))
+                        !trackedFolderKeys.Contains(TitleNormalizer.NormalizeAuthor(f.AuthorFolder)) &&
+                        !ArchivePolicy.IsUnder(f.FullPath, archiveLeaf))
             .Select(f => f.Id)
             .ToList();
         if (staleOrphanIds.Count > 0)
@@ -551,6 +566,7 @@ public sealed class SyncService
         {
             var definitelyStaleIds = existingList
                 .Where(f => !deduped.ContainsKey(Canon(f.FullPath)))
+                .Where(f => !ArchivePolicy.IsUnder(f.FullPath, archiveLeaf)) // archived rows are inert
                 .Where(f => string.IsNullOrEmpty(Path.GetExtension(f.FullPath))
                              ? true                     // directory-path: always stale if not in deduped
                              : !File.Exists(f.FullPath)) // file-path: only if file is gone from disk
@@ -748,25 +764,29 @@ public sealed class SyncService
             IReadOnlyDictionary<string, CalibreBookEntry> deduped,
             IReadOnlyCollection<int> updatedIds,
             IReadOnlyCollection<string> trackedFolderKeys,
-            Func<string, bool> fileExists)
+            Func<string, bool> fileExists,
+            string archiveLeaf = ArchivePolicy.DefaultLeaf)
     {
         static string Canon(string p) =>
             p.Normalize(System.Text.NormalizationForm.FormC).ToUpperInvariant();
 
         var removedIds = existingByPath
-            .Where(kvp => !deduped.ContainsKey(kvp.Key) && !updatedIds.Contains(kvp.Value.Id))
+            .Where(kvp => !deduped.ContainsKey(kvp.Key) && !updatedIds.Contains(kvp.Value.Id)
+                          && !ArchivePolicy.IsUnder(kvp.Value.FullPath, archiveLeaf))
             .Select(kvp => kvp.Value.Id)
             .Distinct()
             .ToList();
 
         var staleOrphanIds = existingList
             .Where(f => f.AuthorId == null &&
-                        !trackedFolderKeys.Contains(TitleNormalizer.NormalizeAuthor(f.AuthorFolder)))
+                        !trackedFolderKeys.Contains(TitleNormalizer.NormalizeAuthor(f.AuthorFolder)) &&
+                        !ArchivePolicy.IsUnder(f.FullPath, archiveLeaf))
             .Select(f => f.Id)
             .ToList();
 
         var definitelyStaleIds = existingList
             .Where(f => !deduped.ContainsKey(Canon(f.FullPath)))
+            .Where(f => !ArchivePolicy.IsUnder(f.FullPath, archiveLeaf))
             .Where(f => string.IsNullOrEmpty(Path.GetExtension(f.FullPath))
                          ? true
                          : !fileExists(f.FullPath))

@@ -112,6 +112,14 @@ public class FilesController : ControllerBase
 
         if (conversionSource is not null)
         {
+            // Containment guard MUST run before we read/convert/serve the file —
+            // a tampered LocalBookFile.FullPath could otherwise point the converter
+            // at any file on disk. The non-conversion path below enforces this via
+            // FilePreviewResolver; the conversion path has to do it explicitly.
+            var convertRoots = await GetPreviewRootsAsync(ct);
+            if (!FilePreviewResolver.IsInsideAnyRoot(conversionSource, convertRoots))
+                return StatusCode(403, new { error = "Refusing to serve a file outside enabled library locations" });
+
             try
             {
                 var convertedPath = await _converter.ConvertToEpubAsync(conversionSource, ct);

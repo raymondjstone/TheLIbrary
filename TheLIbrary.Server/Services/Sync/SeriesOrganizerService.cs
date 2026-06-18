@@ -147,9 +147,14 @@ public sealed class SeriesOrganizerService
         // ExecuteDelete, so change-tracking snapshots for 100k+ entities would be
         // pure overhead (and would let an unrelated SaveChanges flush half-mutated
         // records). We mutate the in-memory copies only to keep pathIndex current.
+        // Archived files are inert (see ArchivePolicy): never re-organise a copy
+        // the user has archived, or it gets dragged back out of the archive folder
+        // into a live author/series folder and reappears as a duplicate.
+        var archiveLeaf = await ArchivePolicy.LoadLeafAsync(db, ct);
         var files = await db.LocalBookFiles
             .AsNoTracking()
             .Where(f => f.BookId != null)
+            .Where(ArchivePolicy.NotUnder(archiveLeaf))
             .Include(f => f.Book).ThenInclude(b => b!.Series)
             .ToListAsync(ct);
 

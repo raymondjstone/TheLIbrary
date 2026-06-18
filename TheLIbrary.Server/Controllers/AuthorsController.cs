@@ -395,7 +395,10 @@ public class AuthorsController : ControllerBase
         // Other, not-yet-linked authors whose name is SIMILAR to this one
         // (spelling/initials variants and exact homonyms) — candidates to link
         // under this author as canonical. Highest similarity first.
-        IReadOnlyList<SimilarAuthor>? SimilarAuthors = null);
+        IReadOnlyList<SimilarAuthor>? SimilarAuthors = null,
+        // True when the user dismissed this author from the Recommendations page.
+        // The author detail page surfaces an "undo" so a rejection is recoverable.
+        bool RecommendationRejected = false);
 
     // A link suggestion: another author whose name resembles this one.
     public sealed record SimilarAuthor(int Id, string Name, string? OpenLibraryKey, string Status, double Score);
@@ -719,7 +722,8 @@ public class AuthorsController : ControllerBase
             a.Status.ToString(), a.ExclusionReason, a.Priority, a.LastSyncedAt, a.NextFetchAt, a.RefreshIntervalDays,
             a.Bio, a.Notes, a.NotifyOnNewBooks,
             books, unmatched, associatedSeries,
-            linkedTo, alternates, penNames, a.CalibreScannedAt, sameNameGroups, similarAuthors);
+            linkedTo, alternates, penNames, a.CalibreScannedAt, sameNameGroups, similarAuthors,
+            a.RecommendationRejected);
     }
 
     // Confidence floor for offering an author as a "similar name" link suggestion.

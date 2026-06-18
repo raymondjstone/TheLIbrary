@@ -436,8 +436,12 @@ public sealed class AuthorFolderDisambiguatorService
 
         _currentMessage = $"Preview: loaded {memberBooks.Count} book(s), loading files…";
 
+        // Archived files are inert (see ArchivePolicy) — never relocate a copy the
+        // user has archived, or it gets pulled back into a live author folder.
+        var archiveLeaf = await ArchivePolicy.LoadLeafAsync(db, ct);
         var allFilesRaw = await db.LocalBookFiles.AsNoTracking()
             .Where(f => f.AuthorId != null)
+            .Where(ArchivePolicy.NotUnder(archiveLeaf))
             .ToListAsync(ct);
 
         var allFiles = allFilesRaw.Where(f => allMemberIds.Contains(f.AuthorId!.Value)).ToList();
@@ -451,6 +455,7 @@ public sealed class AuthorFolderDisambiguatorService
         // tens-of-thousands of folder names that would cripple SQLite.
         var allOrphansRaw = await db.LocalBookFiles.AsNoTracking()
             .Where(f => f.AuthorId == null && f.AuthorFolder != null)
+            .Where(ArchivePolicy.NotUnder(archiveLeaf))
             .ToListAsync(ct);
         var orphansByFolder = allOrphansRaw
             .GroupBy(f => f.AuthorFolder!, StringComparer.OrdinalIgnoreCase)

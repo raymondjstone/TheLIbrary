@@ -107,8 +107,12 @@ public sealed class UnzipService
         // Only archive rows matter here (the loop skips everything else), so
         // filter in SQL instead of materialising the whole LocalBookFiles table
         // (~280k rows) to find a handful of .zip/.rar records.
+        // Archived files are inert (see ArchivePolicy): never extract+delete a
+        // .zip/.rar the user has archived, or it gets pulled back into incoming.
+        var archiveLeaf = await ArchivePolicy.LoadLeafAsync(db, ct);
         var files = await db.LocalBookFiles
             .Where(f => f.FullPath.EndsWith(".zip") || f.FullPath.EndsWith(".rar"))
+            .Where(ArchivePolicy.NotUnder(archiveLeaf))
             .ToListAsync(ct);
 
         files.Sort((x, y) =>

@@ -56,6 +56,7 @@ public class RecommendationsController : ControllerBase
         var candidateBooks = await _db.Books.AsNoTracking()
             .Where(b => b.Author.Priority == 0
                      && b.Author.LinkedToAuthorId == null
+                     && !b.Author.RecommendationRejected
                      && (b.Author.Status == AuthorStatus.Active || b.Author.Status == AuthorStatus.Pending)
                      && b.Subjects != null && b.Subjects != "")
             .Select(b => new { b.AuthorId, b.Author.Name, b.Author.Status, b.Subjects })
@@ -78,6 +79,7 @@ public class RecommendationsController : ControllerBase
         var coAuthorIds = await _db.SeriesAuthors.AsNoTracking()
             .Where(sa => sa.Author.Priority == 0
                       && sa.Author.LinkedToAuthorId == null
+                      && !sa.Author.RecommendationRejected
                       && sa.Series.Books.Any(b => b.ManuallyOwned || b.LocalFiles.Any()))
             .Select(sa => sa.AuthorId)
             .Distinct()
@@ -104,5 +106,34 @@ public class RecommendationsController : ControllerBase
             .ToList();
 
         return suggestions;
+    }
+
+    // Dismiss an author from recommendations for good. Independent of starring —
+    // a declined suggestion must not return when the taste profile is recomputed.
+    [HttpPost("{id:int}/reject")]
+    public async Task<IActionResult> Reject(int id, CancellationToken ct)
+    {
+        var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (author is null) return NotFound(new { error = "Author not found." });
+        if (!author.RecommendationRejected)
+        {
+            author.RecommendationRejected = true;
+            await _db.SaveChangesAsync(ct);
+        }
+        return NoContent();
+    }
+
+    // Undo a rejection (e.g. a mis-click) so the author can be suggested again.
+    [HttpDelete("{id:int}/reject")]
+    public async Task<IActionResult> UnReject(int id, CancellationToken ct)
+    {
+        var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (author is null) return NotFound(new { error = "Author not found." });
+        if (author.RecommendationRejected)
+        {
+            author.RecommendationRejected = false;
+            await _db.SaveChangesAsync(ct);
+        }
+        return NoContent();
     }
 }

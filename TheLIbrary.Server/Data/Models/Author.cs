@@ -87,6 +87,12 @@ public class Author
     [MaxLength(40)]
     public string? CreationSource { get; set; }
 
+    // User dismissed this author from the Recommendations page ("not interested").
+    // Rejected authors are excluded from suggestions for good (until un-rejected),
+    // independent of starring — a recommendation you decline shouldn't keep coming
+    // back every time your taste profile is recomputed.
+    public bool RecommendationRejected { get; set; }
+
     public List<Book> Books { get; set; } = new();
     public List<SeriesAuthor> SeriesAuthors { get; set; } = new();
     public List<Author> LinkedFrom { get; set; } = new();

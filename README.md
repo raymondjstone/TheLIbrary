@@ -56,7 +56,7 @@ and wishlist.
 | Wanted | `/wanted` | Wanted books grouped by author — per-book selection, author-level select-all, bulk remove from wanted, NZB search links, author priority stars, and (when download automation is configured) a **Grab** button that searches the indexer and sends the best NZB to SABnzbd |
 | Health | `/health` | Operational view: backlogs (unmatched files, untracked scans, `__unknown`), authors by status and **by creation source** (provenance), authors created over the last 14 days, the count `prune-authors` would remove, and current job state |
 | Starred Authors | `/starred` | Authors with priority ≥ 1 |
-| Recommendations | `/recommendations` | "Authors you might want to watch" — un-starred authors already in your catalogue ranked by how well their genres overlap the books you own, plus co-authors on series you own; one-click **★ Watch** promotes one onto the watchlist. Backed by `GET /api/recommendations` (local data only, no OpenLibrary calls) |
+| Recommendations | `/recommendations` | "Authors you might want to watch" — un-starred authors already in your catalogue ranked by how well their genres overlap the books you own, plus co-authors on series you own; one-click **★ Watch** promotes one onto the watchlist, or **✕ Not interested** dismisses one for good so it's never suggested again — a dismissed author shows an **Undo** banner on its author-detail page so the rejection is reversible. Backed by `GET /api/recommendations` (local data only, no OpenLibrary calls); reject/un-reject via `POST`/`DELETE /api/recommendations/{id}/reject` |
 | Series | `/series` | Hierarchical series tree with owned/total progress bars; create new series; inline edit of name, primary author, additional authors, parent series, and reading order position; deep-linkable via `?q=SeriesName` |
 | Series Completion | `/series-completion` | Series ranked by how close to complete you are (most-complete-but-unfinished first), each with an owned/total bar and a one-click **"Want N missing"** button that marks every not-owned volume in the series as Wanted. Optional "hide complete series" filter |
 | Collections | `/collections` | User-defined shelves (e.g. "To read 2026", "Favorites") that cut across authors/series — create / rename / delete, view a shelf's books. Books are added from the **shelf** button on any book row (author detail). Also shows **auto genre tags** derived from OpenLibrary subjects; clicking one opens `/genre/:genre`, a browse-by-genre book list (owned / missing filter) |
@@ -644,6 +644,19 @@ in step:
   files anywhere beneath it, so no book or cover is ever at risk; the library
   roots and the configured quarantine / archive / incoming folders are protected
   even when momentarily empty.
+
+**Archived files are inert.** Once a copy is moved to the archive folder
+(`DedupeArchiveFolder`, default `__archive`) — via the Duplicates page, the
+Damaged page, or the integrity job — **no** background job may touch it again
+until you explicitly restore it from the Archived Files page. The library scan
+does not descend into the archive folder (so archived files are never
+re-indexed), and the cleanup passes never delete an archived row (so the Archived
+Files page always has its records). Every job that moves or deletes files — the
+series organiser, the author-folder disambiguator, linked-author merges, the
+duplicate-author dedupe — skips archived paths through a single shared rule
+(`ArchivePolicy`). This is what stopped previously-archived duplicates from being
+quietly dragged back into a live author/series folder and reappearing on the
+Duplicates page every few days.
 
 Finally, a scheduled **OpenLibrary metadata cache** job can backfill missing
 subjects and locally cache large cover images for existing works. Cached covers

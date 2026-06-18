@@ -59,4 +59,36 @@ public class SyncServiceCleanupTests
 
         Assert.DoesNotContain(5, result.RemovedIds);
     }
+
+    [Fact]
+    public void ComputeCleanupSetsForTests_Preserves_Archived_Rows()
+    {
+        // An archived copy keeps its LocalBookFile row but the scan no longer
+        // descends into the archive folder, so its path is absent from `deduped`.
+        // It must NOT be deleted by any cleanup pass — archived files are inert and
+        // the Archived Files page reads these very rows.
+        var existing = new List<LocalBookFile>
+        {
+            new() { Id = 1, FullPath = "/Books/__archive/Gregor Vance Mallory/A Tide of Ashes.epub", AuthorFolder = "Gregor Vance Mallory", AuthorId = 1 },
+            new() { Id = 2, FullPath = "/Books/__archive/Loose/orphan.epub", AuthorFolder = "Loose", AuthorId = null },
+            new() { Id = 3, FullPath = "/Books/__archive/Gregor Vance Mallory/folder", AuthorFolder = "Gregor Vance Mallory", AuthorId = 1 },
+        };
+        var existingByPath = existing.ToDictionary(
+            x => x.FullPath.Normalize(System.Text.NormalizationForm.FormC).ToUpperInvariant(),
+            x => x,
+            StringComparer.Ordinal);
+
+        var result = SyncService.ComputeCleanupSetsForTests(
+            existing,
+            existingByPath,
+            new Dictionary<string, CalibreBookEntry>(StringComparer.Ordinal), // scan skipped the archive
+            updatedIds: [],
+            trackedFolderKeys: [],
+            fileExists: _ => false,
+            archiveLeaf: "__archive");
+
+        Assert.Empty(result.RemovedIds);
+        Assert.Empty(result.StaleOrphanIds);
+        Assert.Empty(result.DefinitelyStaleIds);
+    }
 }

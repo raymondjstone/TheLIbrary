@@ -78,12 +78,18 @@ public static class UnknownFileIndexer
         var prior = await db.UnknownFiles.CountAsync(ct);
 
         // Full rebuild via bulk copy, in one transaction so readers never see a
-        // half-built (or empty) index.
-        var conn = (SqlConnection)db.Database.GetDbConnection();
-        var wasOpen = conn.State == ConnectionState.Open;
-        if (!wasOpen) await conn.OpenAsync(ct);
-        try
+        // half-built (or empty) index. Use a DEDICATED connection (not EF's shared
+        // one) driven through the provider's execution strategy: a transient SQL
+        // failure retries the whole rebuild from a clean connection, and we never
+        // hand-roll a transaction on the context's own connection (which clashes
+        // with EnableRetryOnFailure).
+        var connectionString = db.Database.GetConnectionString()
+            ?? throw new InvalidOperationException("No connection string configured for the library database.");
+        var strategy = db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
         {
+            await using var conn = new SqlConnection(connectionString);
+            await conn.OpenAsync(ct);
             await using var tx = (SqlTransaction)await conn.BeginTransactionAsync(ct);
 
             await using (var del = new SqlCommand("DELETE FROM UnknownFiles", conn, tx) { CommandTimeout = 600 })
@@ -113,11 +119,7 @@ public static class UnknownFileIndexer
             }
 
             await tx.CommitAsync(ct);
-        }
-        finally
-        {
-            if (!wasOpen) await conn.CloseAsync();
-        }
+        });
 
         return new RescanResult(roots, missing, seen, seen, prior, seen);
     }

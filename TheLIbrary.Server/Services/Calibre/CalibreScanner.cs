@@ -61,12 +61,35 @@ public sealed class CalibreScanner
     // In the flat-file layout each ebook file is its own CalibreBookEntry with
     // FullPath pointing to the file (not a folder). In the classic layout FullPath
     // points to the title folder.
-    public IReadOnlyList<CalibreBookEntry> Scan(IEnumerable<string> roots, IEnumerable<string>? ignoredFolders = null)
+    public IReadOnlyList<CalibreBookEntry> Scan(
+        IEnumerable<string> roots,
+        IEnumerable<string>? ignoredFolders = null,
+        IEnumerable<string>? ignoredPaths = null)
     {
         var ignored = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { UnknownAuthorFolder };
         if (ignoredFolders is not null)
             foreach (var name in ignoredFolders)
                 if (!string.IsNullOrWhiteSpace(name)) ignored.Add(name.Trim());
+
+        // Absolute subtrees to skip entirely (e.g. the archive folder), matched by
+        // full path rather than folder name so a nested or relocated archive is
+        // excluded at whatever depth it sits. Normalised to forward-slash so the
+        // comparison holds on both the Linux mount and the Windows dev box.
+        static string NormPath(string p) => Path.GetFullPath(p).Replace('\\', '/').TrimEnd('/');
+        var ignoredFull = (ignoredPaths ?? Array.Empty<string>())
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(NormPath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        bool UnderIgnoredPath(string dir)
+        {
+            if (ignoredFull.Count == 0) return false;
+            var d = NormPath(dir);
+            foreach (var ig in ignoredFull)
+                if (d.Equals(ig, StringComparison.OrdinalIgnoreCase)
+                    || d.StartsWith(ig + "/", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            return false;
+        }
 
         var results = new List<CalibreBookEntry>();
         foreach (var root in roots)
@@ -81,7 +104,7 @@ public sealed class CalibreScanner
             foreach (var authorDir in EnumerateDirsSafe(root))
             {
                 var authorFolder = Path.GetFileName(authorDir)!;
-                if (ignored.Contains(authorFolder)) continue;
+                if (ignored.Contains(authorFolder) || UnderIgnoredPath(authorDir)) continue;
 
                 bool addedAnyEntry = false;
 
@@ -110,6 +133,10 @@ public sealed class CalibreScanner
 
                 foreach (var bookDir in bookDirs)
                 {
+                    // Skip a nested archive subtree (e.g. <root>/<author>/__archive
+                    // or an absolute archive that lands at this depth).
+                    if (UnderIgnoredPath(bookDir)) continue;
+
                     var ebookFiles = EnumerateEbookFilesSafe(bookDir).ToList();
                     if (ebookFiles.Count > 0)
                     {
@@ -130,6 +157,7 @@ public sealed class CalibreScanner
                             // Classic library: series folder whose children are title folders.
                             foreach (var titleDir in subDirs)
                             {
+                                if (UnderIgnoredPath(titleDir)) continue;
                                 var titleFolder = Path.GetFileName(titleDir)!;
                                 var (size, mtime) = Fingerprint(titleDir);
                                 results.Add(new CalibreBookEntry(root, authorFolder, titleFolder, titleDir, size, mtime));

@@ -33,6 +33,18 @@ export default function Recommendations() {
         finally { setBusyId(null) }
     }
 
+    // Permanently dismiss an author from recommendations. They won't be suggested
+    // again (the server records the rejection) — reversible from the author page.
+    const reject = async (a) => {
+        setBusyId(a.id)
+        try {
+            const r = await fetch(`/api/recommendations/${a.id}/reject`, { method: 'POST' })
+            if (!r.ok) throw new Error(r.statusText)
+            setRows(list => list.filter(x => x.id !== a.id))
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setBusyId(null) }
+    }
+
     return (
         <section>
             <h2>Recommended authors</h2>
@@ -70,6 +82,11 @@ export default function Recommendations() {
                                         <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'flex-end' }}>
                                             <button className="btn-ghost" disabled={busyId === a.id} onClick={() => watch(a, 3)}>
                                                 {busyId === a.id ? 'Adding…' : '★ Watch'}
+                                            </button>
+                                            <button className="btn-ghost" disabled={busyId === a.id}
+                                                title="Never suggest this author again"
+                                                onClick={() => reject(a)}>
+                                                ✕ Not interested
                                             </button>
                                         </div>
                                     </td>

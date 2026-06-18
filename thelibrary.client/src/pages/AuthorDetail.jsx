@@ -1264,6 +1264,16 @@ export default function AuthorDetail() {
         }
     }
 
+    const undoRecommendationReject = async () => {
+        try {
+            const r = await fetch(`/api/recommendations/${id}/reject`, { method: 'DELETE' })
+            if (!r.ok) throw new Error(r.statusText)
+            setData(prev => prev ? { ...prev, recommendationRejected: false } : prev)
+        } catch (e) {
+            alert(`Failed to undo: ${e.message}`)
+        }
+    }
+
     const sendAllUnread = async () => {
         const files = (data?.books ?? [])
             .filter(b => b.readStatus === 'Unread' || b.readStatus === 'Reading')
@@ -1376,6 +1386,20 @@ export default function AuthorDetail() {
                 <span className={`pill pill-${data.status.toLowerCase()}`}>{data.status}</span>
                 {data.exclusionReason ? <> — {data.exclusionReason}</> : null}
             </p>
+
+            {data.recommendationRejected && (
+                <div className="notice" style={{
+                    border: '1px solid var(--border)', borderRadius: 4,
+                    padding: '0.5rem 0.75rem', marginBottom: '0.75rem',
+                    background: 'var(--card)'
+                }}>
+                    Dismissed from recommendations — this author won't be suggested again.
+                    {' '}
+                    <button className="btn-ghost" onClick={undoRecommendationReject}>
+                        Undo
+                    </button>
+                </div>
+            )}
 
             {data.linkedTo && (
                 <div className="notice" style={{

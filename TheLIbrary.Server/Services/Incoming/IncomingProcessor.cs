@@ -485,7 +485,10 @@ public sealed class IncomingProcessor
                 {
                     errors++;
                     allMoved = false;
-                    Report(null, $"error: {file} — {ex.Message}");
+                    // ex.Message on a DbUpdateException is the useless generic
+                    // "see the inner exception" string — flatten the chain so the
+                    // UI log shows the real cause (unique-key clash, FK, etc.).
+                    Report(null, $"error: {file} — {ExceptionFormatter.Flatten(ex)}");
                     _log.LogWarning(ex, "Failed to process incoming file {File}", file);
                 }
             }
@@ -505,7 +508,7 @@ public sealed class IncomingProcessor
             {
                 errors++;
                 _log.LogWarning(ex, "Folder processing failed for {Dir}", dir);
-                Report(null, $"error processing folder {dir}: {ex.Message}");
+                Report(null, $"error processing folder {dir}: {ExceptionFormatter.Flatten(ex)}");
             }
         }
 
@@ -678,36 +681,15 @@ public sealed class IncomingProcessor
                 await RemoveFromBlacklistIfPresentAsync(trackedAuthor.Name, blacklistSet, ct);
             }
 
-            if (!string.IsNullOrEmpty(entry.OpenLibraryKey))
-            {
-                // Guard against OL keys that were planted by the old work-count
-                // fallback in AuthorRefresher for a completely wrong person.
-                // If the folder name and the stored OL display name share no
-                // meaningful word token (length > 1, contains a letter), the
-                // key almost certainly belongs to someone else — reset it so
-                // the next sync re-evaluates with exact-match-only semantics.
-                var folderTokens = TitleNormalizer.NormalizeAuthor(entry.FolderName)
-                    .Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                var nameTokens = TitleNormalizer.NormalizeAuthor(entry.DisplayName)
-                    .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                    .ToHashSet(StringComparer.Ordinal);
-                static bool Meaningful(string t) => t.Length > 1 && t.Any(char.IsLetter);
-                if (folderTokens.Where(Meaningful).Any(t => nameTokens.Contains(t)))
-                    return entry;
-
-                // Mismatch — wipe the suspect key and restore the original name
-                // so AuthorRefresher searches with the correct string next sync.
-                if (trackedAuthor is not null)
-                {
-                    trackedAuthor.OpenLibraryKey = null;
-                    trackedAuthor.Name = entry.FolderName;
-                    trackedAuthor.Status = AuthorStatus.Pending;
-                    trackedAuthor.NextFetchAt = null;
-                    await _db.SaveChangesAsync(ct);
-                }
-                // Fall through to backfill; garbage names won't be in the
-                // OL catalog → returns null → file routed to __unknown.
-            }
+            // NOTE: the incoming processor must NOT second-guess or wipe a tracked
+            // author's OpenLibraryKey. The AuthorRefresher is the sole authority on
+            // OL keys and now assigns them name-exact only (PickBestAuthor matches on
+            // the normalized name), so a key it planted is never "a wrong person".
+            // The old guard here compared the OL display name against the (often
+            // legitimately different) CalibreFolderName, and on a token mismatch it
+            // wiped the key + reset the name + set Status=Pending. That demoted
+            // already-synced authors every scheduled incoming run, oscillating them
+            // Active↔Pending against the refresher. Just route to the author's folder.
 
             var author = trackedAuthor;
             if (author is null) return null;
@@ -729,6 +711,22 @@ public sealed class IncomingProcessor
                     .FirstOrDefaultAsync(ct);
                 if (hit is not null)
                 {
+                    // OpenLibraryKey carries a unique index, so we can only adopt
+                    // this key if no other author row already owns it. A clash
+                    // means this tracked author is an OL-split duplicate of that
+                    // owner; assigning the key anyway throws a unique-violation
+                    // DbUpdateException that fails the whole file. Skip the
+                    // backfill in that case and fall through to routing the file
+                    // to the author's folder by name (as for any keyless author).
+                    var keyTaken = await _db.Authors
+                        .AnyAsync(a => a.Id != author.Id && a.OpenLibraryKey == hit.OlKey, ct);
+                    if (keyTaken)
+                    {
+                        _log.LogDebug(
+                            "OL key {OlKey} for '{Name}' is already owned by another author — skipping backfill",
+                            hit.OlKey, author.Name);
+                        break;
+                    }
                     author.OpenLibraryKey = hit.OlKey;
                     await _db.SaveChangesAsync(ct);
                     return entry with { OpenLibraryKey = hit.OlKey };
