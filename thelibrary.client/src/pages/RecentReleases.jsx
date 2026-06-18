@@ -312,6 +312,7 @@ export default function RecentReleases() {
                                 <th style={{ width: '1%' }}></th>
                                 <th>Title</th>
                                 <th>Author</th>
+                                <th>Released</th>
                                 <th>Owned</th>
                             </tr>
                         </thead>
@@ -341,7 +342,6 @@ export default function RecentReleases() {
                                             target="_blank" rel="noreferrer">
                                             {b.title}
                                         </a>
-                                        {b.firstPublishYear ? <span style={{ color: 'var(--subtle)', fontSize: '0.85em', marginLeft: '0.4rem' }}>({b.firstPublishYear})</span> : null}
                                         {b.series && (
                                             <div style={{ marginTop: '0.1rem', fontSize: '0.8em', color: 'var(--subtle)' }}>
                                                 {b.series}{b.seriesPosition ? ` #${b.seriesPosition}` : ''}
@@ -367,11 +367,12 @@ export default function RecentReleases() {
                                     <td>
                                         <Link to={`/authors/${b.authorId}`}>{b.authorName}</Link>
                                     </td>
+                                    <td style={{ whiteSpace: 'nowrap' }}>{b.firstPublishYear || '—'}</td>
                                     <td>{b.owned ? '✓' : ''}</td>
                                 </tr>
                                 {expandedCandidates.has(b.id) && (
                                     <tr>
-                                        <td colSpan={5} style={{ padding: 0 }}>
+                                        <td colSpan={6} style={{ padding: 0 }}>
                                             <FileCandidatesPanel
                                                 bookId={b.id}
                                                 onLink={(candidate, move) => linkFile(b, candidate, move)}
