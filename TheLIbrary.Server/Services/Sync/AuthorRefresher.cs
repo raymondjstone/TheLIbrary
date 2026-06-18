@@ -280,7 +280,7 @@ public sealed class AuthorRefresher
                 manual.OpenLibraryWorkKey = workKey;
                 manual.Title = doc.Title!;
                 manual.NormalizedTitle = normTitle;
-                if (doc.FirstPublishYear is not null) manual.FirstPublishYear = doc.FirstPublishYear;
+                if (doc.FirstPublishYear is not null) manual.FirstPublishYear = ClampPublishYear(doc.FirstPublishYear);
                 if (doc.CoverId is not null) manual.CoverId = doc.CoverId;
                 if (string.IsNullOrEmpty(manual.Subjects)) manual.Subjects = BuildSubjects(doc.Subject);
                 if (manual.SeriesId is null && seriesName is not null)
@@ -321,7 +321,7 @@ public sealed class AuthorRefresher
                 OpenLibraryWorkKey = workKey,
                 Title = doc.Title!,
                 NormalizedTitle = normTitle,
-                FirstPublishYear = doc.FirstPublishYear,
+                FirstPublishYear = ClampPublishYear(doc.FirstPublishYear),
                 CoverId = doc.CoverId,
                 AuthorId = author.Id,
                 Subjects = BuildSubjects(doc.Subject), // "" when OL has none
@@ -545,6 +545,12 @@ public sealed class AuthorRefresher
     // Bucket the author's most-recent publication year into a refresh cadence.
     // Active-today authors get checked daily; long-dormant authors only every
     // four weeks. No years on file behaves like "anything else" (4 weeks).
+    // Implausible future publish years (OpenLibrary data errors like 2098/2207)
+    // get clamped to the current year — anything more than 3 years out can't be a
+    // real publication date.
+    internal static int? ClampPublishYear(int? year)
+        => year is int y && y > DateTime.UtcNow.Year + 3 ? DateTime.UtcNow.Year : year;
+
     public static TimeSpan NextFetchInterval(IReadOnlyList<int> years)
         => NextFetchInterval(years, RefreshCadenceSettings.Defaults);
 
