@@ -86,6 +86,13 @@ public class Book
     [MaxLength(20)]
     public string? Isbn { get; set; }
 
+    // When this book row was first added to the library. DB-defaulted
+    // (SYSUTCDATETIME) so every insert is stamped without each call site setting
+    // it. Nullable: rows that predate this column stay null ("added before
+    // tracking"); only genuinely-new books get a date, which is what the Recent
+    // Releases "by month" grouping uses to surface what's actually new.
+    public DateTime? CreatedAt { get; set; }
+
     public int AuthorId { get; set; }
     public Author Author { get; set; } = null!;
 

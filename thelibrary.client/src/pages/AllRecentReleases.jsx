@@ -197,16 +197,36 @@ export default function AllRecentReleases() {
         return rows
     }, [releases, searchQuery, genreFilter, minYear, maxYear])
 
-    const byYear = filtered
+    // Group by the month a book was ADDED to the library (not its publish year) so
+    // it's obvious what is genuinely new each month — and equally obvious when
+    // nothing new has come in. Books that predate added-date tracking fall into a
+    // single "before tracking" bucket shown last.
+    const monthKey = (b) => {
+        if (!b.createdAt) return 'unknown'
+        const d = new Date(b.createdAt)
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    }
+    const monthLabel = (key) => {
+        if (key === 'unknown') return 'Added before tracking'
+        const [y, m] = key.split('-')
+        return new Date(Number(y), Number(m) - 1, 1)
+            .toLocaleString(undefined, { month: 'long', year: 'numeric' })
+    }
+    const byMonth = filtered
         ? filtered.reduce((acc, b) => {
-            const y = b.firstPublishYear
-            if (!acc[y]) acc[y] = []
-            acc[y].push(b)
+            const k = monthKey(b)
+            ;(acc[k] ||= []).push(b)
             return acc
         }, {})
         : null
 
-    const years = byYear ? Object.keys(byYear).map(Number).sort((a, b) => b - a) : []
+    const months = byMonth
+        ? Object.keys(byMonth).sort((a, b) => {
+            if (a === 'unknown') return 1
+            if (b === 'unknown') return -1
+            return a < b ? 1 : -1 // newest month first
+        })
+        : []
 
     const toggleCandidates = (bookId) => {
         setExpandedCandidates(prev => {
@@ -278,10 +298,10 @@ export default function AllRecentReleases() {
                 </p>
             )}
 
-            {years.map(year => (
-                <div key={year} style={{ marginBottom: '2rem' }}>
+            {months.map(key => (
+                <div key={key} style={{ marginBottom: '2rem' }}>
                     <h3 style={{ margin: '0 0 0.5rem', fontWeight: 600, fontSize: '1.05rem', color: 'var(--subtle)' }}>
-                        {year}
+                        {monthLabel(key)} <span style={{ fontWeight: 400 }}>({byMonth[key].length})</span>
                     </h3>
                     <table className="grid">
                         <thead>
@@ -294,7 +314,7 @@ export default function AllRecentReleases() {
                             </tr>
                         </thead>
                         <tbody>
-                            {byYear[year].map(b => (
+                            {byMonth[key].map(b => (
                                 <React.Fragment key={b.id}>
                                 <tr className={b.owned ? '' : 'missing'}>
                                     <td>
@@ -319,6 +339,7 @@ export default function AllRecentReleases() {
                                             target="_blank" rel="noreferrer">
                                             {b.title}
                                         </a>
+                                        {b.firstPublishYear ? <span style={{ color: 'var(--subtle)', fontSize: '0.85em', marginLeft: '0.4rem' }}>({b.firstPublishYear})</span> : null}
                                         {b.series && (
                                             <div style={{ marginTop: '0.1rem', fontSize: '0.8em', color: 'var(--subtle)' }}>
                                                 {b.series}{b.seriesPosition ? ` #${b.seriesPosition}` : ''}

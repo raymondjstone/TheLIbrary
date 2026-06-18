@@ -55,6 +55,10 @@ public class LibraryDbContext : DbContext
             e.HasIndex(x => x.OpenLibraryWorkKey);
             e.HasIndex(x => new { x.AuthorId, x.NormalizedTitle });
             e.HasIndex(x => x.Isbn).HasFilter("[Isbn] IS NOT NULL");
+            // DB-assigned creation timestamp for new rows; existing rows stay null
+            // (so the Recent Releases "by month" view shows only genuinely-new books).
+            e.Property(x => x.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+            e.HasIndex(x => x.CreatedAt);
             e.HasOne(x => x.Author)
                 .WithMany(a => a.Books)
                 .HasForeignKey(x => x.AuthorId)

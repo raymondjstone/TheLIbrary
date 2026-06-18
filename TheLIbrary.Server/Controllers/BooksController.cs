@@ -1040,7 +1040,10 @@ public class BooksController : ControllerBase
         bool Owned,
         string? ReadStatus,
         string? Series,
-        string? Subjects);
+        string? Subjects,
+        // When the kept record was first added to the library; null for books that
+        // predate added-date tracking. Drives the "by month" grouping on the page.
+        DateTime? CreatedAt);
 
     // Books from starred authors (Priority >= 1) published in the last 5 years,
     // sorted by year descending then title. Excludes books whose normalized title
@@ -1069,7 +1072,7 @@ public class BooksController : ControllerBase
             .Select(b => new
             {
                 b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId,
-                b.OpenLibraryWorkKey, b.AuthorId, b.Subjects,
+                b.OpenLibraryWorkKey, b.AuthorId, b.Subjects, b.CreatedAt,
                 SeriesName = b.Series != null ? b.Series.Name : null,
                 AuthorName = b.Author.Name, AuthorPriority = b.Author.Priority,
                 Owned = b.ManuallyOwned || b.LocalFiles.Any(),
@@ -1077,17 +1080,26 @@ public class BooksController : ControllerBase
             })
             .ToListAsync(ct);
 
+        // Collapse every edition of the same title (same author) to ONE row so a
+        // book that OpenLibrary lists as 17 separate works/editions doesn't appear
+        // 17 times. Keep the EARLIEST record — earliest added (CreatedAt; nulls
+        // count as "earliest", i.e. predating tracking), then earliest published —
+        // so a title we already had never resurfaces as new in a later month.
+        // Fall back to the raw title when NormalizedTitle is null so untitled-norm
+        // rows still de-duplicate instead of each standing alone.
         return rows
-            .GroupBy(r => r.NormalizedTitle is null
-                ? $"\0{r.Id}"
-                : $"{r.AuthorId}\0{r.NormalizedTitle}")
-            .Select(g => g.MinBy(r => r.FirstPublishYear)!)
-            .OrderByDescending(r => r.FirstPublishYear)
+            .GroupBy(r => $"{r.AuthorId}\0{r.NormalizedTitle ?? r.Title.Trim().ToLowerInvariant()}")
+            .Select(g => g
+                .OrderBy(r => r.CreatedAt ?? DateTime.MinValue)
+                .ThenBy(r => r.FirstPublishYear ?? int.MaxValue)
+                .First())
+            .OrderByDescending(r => r.CreatedAt ?? DateTime.MinValue)
+            .ThenByDescending(r => r.FirstPublishYear)
             .ThenBy(r => r.Title)
             .Select(r => new RecentReleaseRow(
                 r.Id, r.Title, r.FirstPublishYear!.Value, r.CoverId,
                 r.OpenLibraryWorkKey, r.AuthorId, r.AuthorName, r.AuthorPriority,
-                r.Owned, r.ReadStatusStr, r.SeriesName, r.Subjects))
+                r.Owned, r.ReadStatusStr, r.SeriesName, r.Subjects, r.CreatedAt))
             .ToList();
     }
 
