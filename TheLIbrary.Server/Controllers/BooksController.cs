@@ -751,15 +751,46 @@ public class BooksController : ControllerBase
                 if (destDir is not null) await _fs.CreateDirectoryAsync(destDir, ct);
                 if (await _fs.FileExistsAsync(file.FullPath, ct))
                 {
+                    var src = file.FullPath;
                     var final = await UniqueFileAsync(destPath, ct);
-                    await _fs.MoveFileAsync(file.FullPath, final, overwrite: false, ct);
+                    await _fs.MoveFileAsync(src, final, overwrite: false, ct);
+
+                    // CRITICAL: when the archive folder is a different mount from the
+                    // library, File.Move is copy+delete and the source delete can
+                    // silently fail — leaving the live original in place. If we then
+                    // repoint the row to the archive, the surviving original gets a
+                    // fresh row on the next scan and reappears as a duplicate forever
+                    // (this is the root cause of the recurring archived duplicates).
+                    // Verify the source is gone; force-remove it once the archived
+                    // copy is confirmed present; never repoint while the original lives.
+                    if (await _fs.FileExistsAsync(src, ct) && await _fs.FileExistsAsync(final, ct))
+                    {
+                        try { await _fs.DeleteFileAsync(src, ct); }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                    }
+                    if (await _fs.FileExistsAsync(src, ct))
+                    {
+                        warnings.Add($"#{file.Id}: archived a copy but could not remove the live original at {src} — left as-is.");
+                        continue;
+                    }
                     file.FullPath = final;
                     archived++;
                 }
                 else if (await _fs.DirectoryExistsAsync(file.FullPath, ct))
                 {
+                    var src = file.FullPath;
                     var final = await UniqueDirectoryAsync(Path.GetDirectoryName(destPath)!, Path.GetFileName(destPath), ct);
-                    await _fs.MoveDirectoryAsync(file.FullPath, final, ct);
+                    await _fs.MoveDirectoryAsync(src, final, ct);
+                    if (await _fs.DirectoryExistsAsync(src, ct))
+                    {
+                        try { await _fs.DeleteDirectoryAsync(src, recursive: true, ct); }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                    }
+                    if (await _fs.DirectoryExistsAsync(src, ct))
+                    {
+                        warnings.Add($"#{file.Id}: archived a copy but could not remove the live original folder at {src} — left as-is.");
+                        continue;
+                    }
                     file.FullPath = final;
                     archived++;
                 }

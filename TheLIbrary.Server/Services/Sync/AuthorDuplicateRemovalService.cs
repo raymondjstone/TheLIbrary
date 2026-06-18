@@ -11,7 +11,8 @@ public sealed record AuthorDuplicateRemovalSummary(
     int FilesDeleted,
     int EmptyFilesDeleted,
     long BytesFreed,
-    int DbRowsRemoved);
+    int DbRowsRemoved,
+    int ArchiveFilesDeleted = 0);
 
 // Scheduled job (daily): for every author that has unmatched files, deletes
 // byte-identical duplicate copies WITHIN that author's own folder, keeping one.
@@ -111,8 +112,11 @@ public sealed class AuthorDuplicateRemovalService
             .ToListAsync(ct);
         if (unmatchedAuthorIds.Count == 0)
         {
-            _currentMessage = "Done — no authors with unmatched files";
-            return new AuthorDuplicateRemovalSummary(0, 0, 0, 0, 0, 0, 0);
+            // No live authors to dedupe, but the archive may still hold piled-up
+            // duplicates — clean those before finishing.
+            var archiveOnly = await DedupeArchiveByAuthorFolderAsync(db, archiveLeaf, mountedRoots, ct);
+            _currentMessage = $"Done — no authors with unmatched files; {archiveOnly} archive duplicate(s) collapsed";
+            return new AuthorDuplicateRemovalSummary(0, 0, 0, 0, 0, 0, 0, archiveOnly);
         }
 
         // Every author-folder directory belonging to those authors (derived from
@@ -174,13 +178,85 @@ public sealed class AuthorDuplicateRemovalService
             dbRows += await PruneDbRowsAsync(db, scan.DeletedPaths, ct);
         }
 
+        // Archive pass: collapse byte-identical duplicates that have piled up in the
+        // archive folder (the `_1`, `_2`, … copies created when the same file was
+        // archived repeatedly). Same scope as the author pass above — each ARCHIVE
+        // author folder is de-duplicated in isolation (across its sub-folders),
+        // keeping one copy; nothing ever crosses an author boundary.
+        _currentMessage = "Dedupe archive folder";
+        var archiveDeleted = await DedupeArchiveByAuthorFolderAsync(db, archiveLeaf, mountedRoots, ct);
+
         var summary = new AuthorDuplicateRemovalSummary(
-            foldersScanned, filesScanned, groups, deleted, emptyDeleted, bytesFreed, dbRows);
+            foldersScanned, filesScanned, groups, deleted, emptyDeleted, bytesFreed, dbRows, archiveDeleted);
         _log.LogInformation(
-            "Dedupe author files job done. Folders={Folders} Scanned={Scanned} Groups={Groups} Deleted={Deleted} EmptyDeleted={Empty} BytesFreed={Bytes} DbRows={Rows}",
-            foldersScanned, filesScanned, groups, deleted, emptyDeleted, bytesFreed, dbRows);
-        _currentMessage = $"Done — {deleted} duplicate(s) removed across {foldersScanned} author folder(s), {emptyDeleted} empty file(s) deleted";
+            "Dedupe author files job done. Folders={Folders} Scanned={Scanned} Groups={Groups} Deleted={Deleted} EmptyDeleted={Empty} BytesFreed={Bytes} DbRows={Rows} ArchiveDeleted={Arch}",
+            foldersScanned, filesScanned, groups, deleted, emptyDeleted, bytesFreed, dbRows, archiveDeleted);
+        _currentMessage = $"Done — {deleted} duplicate(s) removed across {foldersScanned} author folder(s), {emptyDeleted} empty file(s) deleted, {archiveDeleted} archive duplicate(s) collapsed";
         return summary;
+    }
+
+    // Byte-identical dedupe over the archive tree, scoped per ARCHIVE author folder
+    // (the same isolation the live author pass uses). The archive mirrors the
+    // library layout — <archive>/<AuthorFolder>/<sub…>/files — so each author folder
+    // is de-duplicated across its sub-folders, keeping the shortest-named copy (the
+    // un-suffixed original beats its `_N` collision copies). Two different authors
+    // are never compared. Returns the number of files deleted.
+    private async Task<int> DedupeArchiveByAuthorFolderAsync(
+        LibraryDbContext db, string archiveLeaf, IReadOnlyList<string> mountedRoots, CancellationToken ct)
+    {
+        // Resolve the archive directory roots: an absolute path is itself; a bare
+        // leaf lives at <root>/<leaf> for each mounted library root.
+        var archiveRoots = new List<string>();
+        if (archiveLeaf.Contains('/') || archiveLeaf.Contains('\\'))
+        {
+            var abs = archiveLeaf.Replace('\\', '/').TrimEnd('/');
+            if (Directory.Exists(abs)) archiveRoots.Add(abs);
+        }
+        else
+        {
+            foreach (var root in mountedRoots)
+            {
+                var d = Path.Combine(root, archiveLeaf);
+                if (Directory.Exists(d)) archiveRoots.Add(d);
+            }
+        }
+        if (archiveRoots.Count == 0) return 0;
+
+        var walkOpts = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+            AttributesToSkip = FileAttributes.ReparsePoint
+        };
+
+        var totalDeleted = 0;
+        foreach (var archiveRoot in archiveRoots)
+        {
+            // The archive's top-level entries are author folders (mirroring the
+            // library). De-dupe each one in isolation, across its sub-folders.
+            List<string> authorDirs;
+            try { authorDirs = Directory.EnumerateDirectories(archiveRoot).ToList(); }
+            catch (Exception ex) { _log.LogWarning(ex, "Archive dedupe: could not enumerate {Root}", archiveRoot); continue; }
+
+            foreach (var authorDir in authorDirs)
+            {
+                ct.ThrowIfCancellationRequested();
+                List<string> files;
+                try { files = Directory.EnumerateFiles(authorDir, "*", walkOpts).ToList(); }
+                catch (Exception ex) { _log.LogWarning(ex, "Archive dedupe: could not list {Dir}", authorDir); continue; }
+                if (files.Count < 2) continue;
+
+                _currentMessage = $"Archive {Path.GetFileName(authorDir)}";
+                var scan = await ContentDuplicateScanner.ScanAndDeleteAsync(
+                    files, _log, msg => _currentMessage = $"Archive {Path.GetFileName(authorDir)}: {msg}", ct);
+                if (scan.FilesDeleted > 0)
+                {
+                    totalDeleted += scan.FilesDeleted;
+                    await PruneDbRowsAsync(db, scan.DeletedPaths, ct);
+                }
+            }
+        }
+        return totalDeleted;
     }
 
     // The top-level author folder a file lives in: <root>/<firstSegment>. Returns

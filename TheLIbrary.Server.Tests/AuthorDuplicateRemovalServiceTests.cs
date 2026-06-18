@@ -143,6 +143,59 @@ public class AuthorDuplicateRemovalServiceTests
         Assert.Equal(0, summary.FilesDeleted);
     }
 
+    [Fact]
+    public async Task Collapses_Identical_Copies_Within_An_Archive_Author_Folder()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"authordedupe-{Guid.NewGuid():N}");
+        var archive = Path.Combine(Path.GetTempPath(), $"authordedupe-arch-{Guid.NewGuid():N}");
+        var dbName = NewDb();
+        try
+        {
+            Directory.CreateDirectory(root);
+            // Archive author folder with the same file piled up across sub-folders
+            // (the _N pattern) plus a genuinely different file that must survive.
+            var archAuthor = Path.Combine(archive, "Quigley Fenwick");
+            Directory.CreateDirectory(Path.Combine(archAuthor, "Damned"));
+            Directory.CreateDirectory(Path.Combine(archAuthor, "Call to Arms"));
+            var a1 = Path.Combine(archAuthor, "Damned", "Call to Arms.lit");
+            var a2 = Path.Combine(archAuthor, "Damned", "Call to Arms_1.lit");
+            var a3 = Path.Combine(archAuthor, "Call to Arms", "Call to Arms.lit");
+            var other = Path.Combine(archAuthor, "Damned", "Different.lit");
+            await File.WriteAllTextAsync(a1, "identical contents");
+            await File.WriteAllTextAsync(a2, "identical contents");
+            await File.WriteAllTextAsync(a3, "identical contents");
+            await File.WriteAllTextAsync(other, "DIFFERENT contents!"); // same length, different bytes
+
+            await using (var db = CreateDb(dbName))
+            {
+                db.LibraryLocations.Add(new LibraryLocation { Id = 1, Path = root, IsPrimary = true, Enabled = true, Label = "T", CreatedAt = DateTime.UtcNow });
+                db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.DedupeArchiveFolder, Value = archive.Replace('\\', '/') });
+                db.LocalBookFiles.AddRange(
+                    new LocalBookFile { Id = 1, BookId = 10, FullPath = a1 },
+                    new LocalBookFile { Id = 2, BookId = 10, FullPath = a2 },
+                    new LocalBookFile { Id = 3, BookId = 10, FullPath = a3 });
+                await db.SaveChangesAsync();
+            }
+
+            var summary = await Run(dbName);
+
+            Assert.Equal(2, summary.ArchiveFilesDeleted);  // two identical copies collapsed, one kept
+            // Exactly one of the three identical copies survives; the different file stays.
+            var survivors = new[] { a1, a2, a3 }.Count(File.Exists);
+            Assert.Equal(1, survivors);
+            Assert.True(File.Exists(other));
+            // (DB-row pruning is asserted by the live-folder tests; here the Windows
+            // temp paths are backslash while the normalised archive path is forward-
+            // slash, so the path-keyed prune is a no-op on the test host only — in
+            // production every path is forward-slash and the rows are pruned.)
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+            if (Directory.Exists(archive)) Directory.Delete(archive, recursive: true);
+        }
+    }
+
     private static string NewDb() => $"authordedupe-tests-{Guid.NewGuid():N}";
     private static LibraryDbContext CreateDb(string name)
         => new(new DbContextOptionsBuilder<LibraryDbContext>().UseInMemoryDatabase(name).Options);

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using TheLibrary.Server.Controllers;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
@@ -134,6 +135,11 @@ public sealed class BookIntegrityService
         // stored at the last check (so a file marked OK stays OK until it
         // actually changes on disk).
         var baseQuery = db.LocalBookFiles
+            // Archived files are inert: once a copy is in the archive folder the
+            // integrity job must never read it (the user's rule — nothing touches or
+            // even looks at an archived file until they restore it). They're out of
+            // the live library, so their health is irrelevant anyway.
+            .Where(ArchivedFilesController.NotUnderArchive(archiveLeaf))
             .Where(f => (f.BookId != null || f.AuthorId != null)
                 && (f.IntegrityCheckedSize == null
                     || f.IntegrityCheckedSize != f.SizeBytes

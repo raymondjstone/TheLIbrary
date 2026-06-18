@@ -56,12 +56,19 @@ internal sealed class FakeFileSystem : IFileSystem
         DeleteDirectory(path, recursive);
         return Task.CompletedTask;
     }
+    // Opt-in: source paths whose move copies to the destination but LEAVES the
+    // source behind — simulating a cross-mount File.Move (copy+delete) whose source
+    // delete silently fails on a NAS share. Default empty → normal move semantics.
+    public HashSet<string> MoveLeavesSource { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public void MoveFile(string sourcePath, string destinationPath, bool overwrite)
     {
+        var leaveSource = MoveLeavesSource.Contains(sourcePath);
         if (!ExistingFiles.Remove(sourcePath)) throw new FileNotFoundException(sourcePath);
         if (!overwrite && ExistingFiles.Contains(destinationPath)) throw new IOException("exists");
         DeleteFile(destinationPath);
         ExistingFiles.Add(destinationPath);
+        if (leaveSource) ExistingFiles.Add(sourcePath); // cross-mount: source not actually removed
         if (FileContents.Remove(sourcePath, out var bytes)) FileContents[destinationPath] = bytes;
         var sourceParent = Path.GetDirectoryName(sourcePath);
         if (!string.IsNullOrWhiteSpace(sourceParent) && FilesByDirectory.TryGetValue(sourceParent, out var sourceFiles))

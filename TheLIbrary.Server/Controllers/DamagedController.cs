@@ -315,15 +315,34 @@ public class DamagedController : ControllerBase
             if (destDir is not null) await _fs.CreateDirectoryAsync(destDir, ct);
             if (await _fs.FileExistsAsync(file.FullPath, ct))
             {
+                var src = file.FullPath;
                 var final = await UniqueFileAsync(destPath, ct);
-                await _fs.MoveFileAsync(file.FullPath, final, overwrite: false, ct);
+                await _fs.MoveFileAsync(src, final, overwrite: false, ct);
+                // Cross-mount File.Move is copy+delete; the source delete can silently
+                // fail and leave the live original, which then reappears. Verify it's
+                // gone, force-remove it, and never repoint the row while it survives.
+                if (await _fs.FileExistsAsync(src, ct) && await _fs.FileExistsAsync(final, ct))
+                {
+                    try { await _fs.DeleteFileAsync(src, ct); }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                }
+                if (await _fs.FileExistsAsync(src, ct))
+                    return (false, $"Archived a copy but could not remove the live original at {src}.");
                 file.FullPath = final;
             }
             else if (await _fs.DirectoryExistsAsync(file.FullPath, ct))
             {
+                var src = file.FullPath;
                 var final = await UniqueDirectoryAsync(
                     Path.GetDirectoryName(destPath)!, Path.GetFileName(destPath), ct);
-                await _fs.MoveDirectoryAsync(file.FullPath, final, ct);
+                await _fs.MoveDirectoryAsync(src, final, ct);
+                if (await _fs.DirectoryExistsAsync(src, ct))
+                {
+                    try { await _fs.DeleteDirectoryAsync(src, recursive: true, ct); }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                }
+                if (await _fs.DirectoryExistsAsync(src, ct))
+                    return (false, $"Archived a copy but could not remove the live original folder at {src}.");
                 file.FullPath = final;
             }
             else return (false, "Path no longer exists on disk.");
