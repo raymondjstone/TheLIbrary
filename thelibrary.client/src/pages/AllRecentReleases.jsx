@@ -109,8 +109,11 @@ export default function AllRecentReleases() {
     const [nzbSites, setNzbSites] = useState([])
     const [searchQuery, setSearchQuery] = useState('')
     const [genreFilter, setGenreFilter] = useState('')
-    const [minYear, setMinYear] = useState('')
-    const [maxYear, setMaxYear] = useState('')
+    // Default the year filter to the current year only, so the page opens showing
+    // just this year's releases; clear either box to widen the range.
+    const currentYear = String(new Date().getFullYear())
+    const [minYear, setMinYear] = useState(currentYear)
+    const [maxYear, setMaxYear] = useState(currentYear)
     const [expandedCandidates, setExpandedCandidates] = useState(new Set())
 
     useEffect(() => {
