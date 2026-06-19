@@ -51,10 +51,32 @@ public sealed class SeriesOrganizerService
         _fs.CreateDirectory(targetDir);
         var destPath = DestinationPath(targetDir, file.FullPath);
         if (!FsPath.SameLocation(file.FullPath, destPath))
-            _fs.MoveFile(file.FullPath, destPath, overwrite: false);
+            MoveFileEnsuringSourceGone(file.FullPath, destPath);
         file.FullPath = destPath;
         file.TitleFolder = Path.GetFileNameWithoutExtension(destPath);
         return destPath;
+    }
+
+    // Move a file and GUARANTEE the source is gone afterwards. On the CIFS/NFS
+    // mounts this library lives on, the source unlink that File.Move performs can
+    // be deferred or silently fail, leaving the original on disk — which the next
+    // sync scan then re-imports as a fresh LocalBookFile and the book reappears as
+    // a duplicate with no new files added. Once the destination is confirmed
+    // present, force-remove any lingering source so a moved file can never
+    // resurrect. Throws only if the move itself fails (caller handles).
+    private void MoveFileEnsuringSourceGone(string src, string dest)
+    {
+        _fs.MoveFile(src, dest, overwrite: false);
+        if (_fs.FileExists(src) && _fs.FileExists(dest))
+        {
+            try { _fs.DeleteFile(src); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _log.LogWarning(ex,
+                    "Series organizer: moved {Src} but could not remove the lingering source — "
+                    + "it may be re-imported as a duplicate", src);
+            }
+        }
     }
 
     internal void PruneEmptyDirsForTests(string dir) => PruneEmptyDirs(dir);
@@ -555,7 +577,7 @@ public sealed class SeriesOrganizerService
 
                     var destPath = DestinationPath(targetDir, src);
                     if (!FsPath.SameLocation(src, destPath))
-                        File.Move(src, destPath);
+                        MoveFileEnsuringSourceGone(src, destPath);
 
                     if (FsPath.SameLocation(src, primaryEbook))
                         newPrimary = destPath;

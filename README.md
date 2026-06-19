@@ -883,6 +883,13 @@ Name conflicts at the destination are resolved by appending `_N` to the file
 stem. Stale directory-pointer records (where another record already tracks the
 target file path) are removed rather than producing a unique-index violation.
 
+Every move **verifies the source is gone and force-deletes any lingering
+original**. On the CIFS/NFS mounts this library lives on, `File.Move` can copy to
+the destination but leave the source behind (a deferred or silently-failed
+unlink); left unchecked, the next sync scan re-imports that orphan as a fresh
+`LocalBookFile` and the book reappears as a duplicate with no new files added.
+Confirming removal after each move closes that resurrection path.
+
 The organizer also handles libraries recorded under Windows UNC paths
 (`\\server\share\…`) when the server runs in a Docker container with the share
 mounted at a different path — the `\\server\share` prefix is stripped to recover

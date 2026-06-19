@@ -26,6 +26,26 @@ public class SeriesOrganizerServiceTests
         Assert.False(fs.FileExists("C:\\lib\\Author\\old.epub"));
     }
 
+    // CIFS/NFS regression: File.Move can copy to the destination but leave the
+    // source on disk (deferred/failed unlink). The organizer must force-remove the
+    // lingering source, otherwise the next sync scan re-imports it and the book
+    // reappears as a duplicate with no new files added.
+    [Fact]
+    public void MoveSingleFileForTests_Force_Removes_Source_When_Move_Leaves_It_Behind()
+    {
+        var fs = new FakeFileSystem();
+        fs.AddFile("C:\\lib\\Author\\old.epub", [1, 2, 3]);
+        fs.MoveLeavesSource.Add("C:\\lib\\Author\\old.epub"); // simulate the deferred-delete mount
+        var sut = new SeriesOrganizerService(CreateScopeFactory(), new BackgroundTaskCoordinator(), fs, NullLogger<SeriesOrganizerService>.Instance);
+        var file = new LocalBookFile { FullPath = "C:\\lib\\Author\\old.epub", TitleFolder = "old" };
+
+        var path = sut.MoveSingleFileForTests(file, "C:\\lib\\Author\\Series");
+
+        Assert.True(fs.FileExists(path));
+        // The lingering source must be gone — nothing for the scanner to re-import.
+        Assert.False(fs.FileExists("C:\\lib\\Author\\old.epub"));
+    }
+
     [Fact]
     public void DeleteEmptyAncestorsForTests_Removes_Empty_Intermediate_Folders()
     {
