@@ -547,6 +547,22 @@ public class SettingsController : ControllerBase
         return new ArchiveFolderDto(name);
     }
 
+    public sealed record ResetAssignAttemptsResult(int Cleared);
+
+    // Clears the durable "assign attempted" marker on every content-scan row, so
+    // the "assign untracked books to authors" job re-evaluates the whole backlog
+    // from scratch on its next run. The job otherwise permanently skips rows it
+    // previously couldn't resolve — reset this after adding authors (or fixing
+    // metadata) that might now let those rows match.
+    [HttpPost("reset-assign-attempts")]
+    public async Task<ResetAssignAttemptsResult> ResetAssignAttempts(CancellationToken ct)
+    {
+        var cleared = await _db.BookContentScans
+            .Where(c => c.AssignAttemptedAt != null)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.AssignAttemptedAt, _ => (DateTime?)null), ct);
+        return new ResetAssignAttemptsResult(cleared);
+    }
+
     public sealed record CoverHoverDto(bool Enabled, double Scale);
 
     [HttpGet("cover-hover")]

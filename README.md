@@ -1397,9 +1397,14 @@ its new author) so its series can then be built with the same **Build series** /
 as a **scheduled job** (`assign-authors`, default `*/15 * * * *`, enabled by
 default — capped at 100 rows per run so each firing stays within OpenLibrary's
 rate limit and the 15-minute schedule works through the backlog). Rows it
-couldn't resolve (an unverifiable author name, a vanished file) are remembered
-in-process and only retried with leftover capacity, so a wall of unresolvable
-rows can't stall progress on fresh ones. A header **Apply all N ISBN
+couldn't resolve (an unverifiable author name, a vanished file) are **durably
+marked attempted** (`BookContentScan.AssignAttemptedAt`) and skipped on every
+later run, so the job stops re-querying OpenLibrary for the same wall of
+unresolvable files every 15 minutes — and, unlike the previous in-memory skip
+list, the marker survives a restart instead of replaying the whole backlog from
+scratch. To re-evaluate everything (e.g. after adding authors that might now
+match), clear the marker with **Reset assign-attempt flags** on the Settings page
+(`POST /api/settings/reset-assign-attempts`). A header **Apply all N ISBN
 matches** button bulk-applies every
 ISBN-backed guess in one go (capped per call so it can't time out against
 OpenLibrary's rate limit — repeat until none remain); title-only guesses are

@@ -43,4 +43,13 @@ public class BookContentScan
     // Reviewed rows drop off that list but keep the row (so the file isn't
     // re-scanned).
     public bool Reviewed { get; set; }
+
+    // When the "assign untracked books to authors" job last TRIED to file this row
+    // and could not resolve an author (no usable ISBN/title/author, author not on
+    // OpenLibrary, …). Such rows rarely fix themselves, so once attempted they are
+    // skipped on later runs instead of re-querying OpenLibrary every 15 minutes
+    // forever. Null = never attempted (still eligible). Cleared in bulk from the
+    // Settings page ("reset assign-attempt flags") to force a full re-run — e.g.
+    // after new authors have been added that might now match.
+    public DateTime? AssignAttemptedAt { get; set; }
 }

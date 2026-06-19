@@ -831,7 +831,19 @@ public class AuthorsControllerIntegrationTests
             Assert.Null(file.IntegrityPages);
             Assert.Null(file.IntegrityCheckedAt);
             Assert.True((await db.BookContentScans.FindAsync(1))!.Reviewed);
-            Assert.False((await db.BookContentScans.FindAsync(2))!.Reviewed);
+            var unresolved = (await db.BookContentScans.FindAsync(2))!;
+            Assert.False(unresolved.Reviewed);
+            // The unresolvable row is durably marked attempted so later runs skip it
+            // (no more re-querying OpenLibrary for it every run). It only comes back
+            // into scope when the user resets the flag from Settings.
+            Assert.NotNull(unresolved.AssignAttemptedAt);
+
+            // Second run: the marked row is no longer a candidate, so nothing is
+            // attempted and OpenLibrary is not hit again.
+            var rerun = await factory.Services.GetRequiredService<UntrackedAuthorAssignmentService>()
+                .RunForTestsAsync(CancellationToken.None);
+            Assert.Equal(0, rerun.Assigned);
+            Assert.Equal(0, rerun.Skipped);
         }
         finally
         {

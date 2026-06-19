@@ -67,6 +67,8 @@ export default function Settings() {
     const [contentScanUntrackedFirst, setContentScanUntrackedFirst] = useState(false)
     const [contentScanSaved, setContentScanSaved] = useState(null)
     const [contentScanSaving, setContentScanSaving] = useState(false)
+    const [resetAssignBusy, setResetAssignBusy] = useState(false)
+    const [resetAssignResult, setResetAssignResult] = useState(null)
     const [olSearchLimit, setOlSearchLimit] = useState(20)
     const [olSearchLimitSaved, setOlSearchLimitSaved] = useState(null)
     const [olSearchLimitSaving, setOlSearchLimitSaving] = useState(false)
@@ -249,6 +251,25 @@ export default function Settings() {
             setError(String(e.message ?? e))
         } finally {
             setContentScanSaving(false)
+        }
+    }
+
+    const resetAssignAttempts = async () => {
+        if (!window.confirm('Clear the "assign attempted" flag on every content-scan row? '
+            + 'The assign-untracked-books-to-authors job will then re-evaluate the entire '
+            + 'backlog against OpenLibrary on its next run.')) return
+        setResetAssignBusy(true)
+        setResetAssignResult(null)
+        setError(null)
+        try {
+            const r = await fetch('/api/settings/reset-assign-attempts', { method: 'POST' })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setResetAssignResult(body.cleared)
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setResetAssignBusy(false)
         }
     }
 
@@ -1014,6 +1035,23 @@ export default function Settings() {
                 <span className="subtle">
                     Default 50.{contentScanSaved != null && <> Saved: <code>{contentScanSaved}</code>.</>}
                 </span>
+            </div>
+            <p className="subtle" style={{ marginTop: '0.75rem' }}>
+                The <strong>assign untracked books to authors</strong> job files each guessed file
+                under its author. A row it can't resolve (no confirmable author on OpenLibrary) is
+                marked <em>attempted</em> and skipped on later runs, so the job stops re-checking the
+                same unresolvable files every time. Reset the flag to re-evaluate the whole backlog —
+                e.g. after adding authors that might now match.
+            </p>
+            <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+                <button onClick={resetAssignAttempts} disabled={resetAssignBusy}>
+                    {resetAssignBusy ? 'Resetting…' : 'Reset assign-attempt flags'}
+                </button>
+                {resetAssignResult != null && (
+                    <span className="subtle">
+                        Cleared <code>{resetAssignResult}</code> row{resetAssignResult === 1 ? '' : 's'} — they'll be retried on the next run.
+                    </span>
+                )}
             </div>
 
             <h2 style={{ marginTop: '1.5rem' }}>OpenLibrary search results</h2>

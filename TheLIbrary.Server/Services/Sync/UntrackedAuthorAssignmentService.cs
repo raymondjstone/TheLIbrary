@@ -25,15 +25,6 @@ public sealed class UntrackedAuthorAssignmentService
     private volatile string? _currentMessage;
     private UntrackedAuthorAssignmentSummary? _lastResult;
 
-    // Scan ids that were attempted and could NOT be assigned (author not
-    // confirmable, file gone, …). Those conditions rarely fix themselves, so a
-    // 15-minute schedule must not burn its whole cap re-querying OpenLibrary for
-    // the same wall of unresolvable rows every run. Kept in memory only: fresh
-    // rows are always preferred, the skipped ones are retried with whatever
-    // capacity is left over (and from scratch after a restart).
-    private readonly object _skipLock = new();
-    private readonly HashSet<int> _skippedScanIds = new();
-
     public UntrackedAuthorAssignmentService(
         IServiceScopeFactory scopeFactory,
         BackgroundTaskCoordinator coordinator,
@@ -77,21 +68,21 @@ public sealed class UntrackedAuthorAssignmentService
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
         var assigner = scope.ServiceProvider.GetRequiredService<UntrackedAuthorAssigner>();
 
-        // Same candidate set as POST /api/identified/assign-authors-all.
+        // Candidate set: untracked guesses not yet filed AND not already attempted.
+        // AssignAttemptedAt is the durable "we tried and couldn't resolve this"
+        // marker — without it the job re-queried OpenLibrary for the same wall of
+        // unresolvable rows every 15 minutes (worse: the old skip-list was
+        // in-memory, so a restart wiped it and the whole backlog was retried from
+        // scratch). Attempted rows stay skipped until the user resets the flag from
+        // the Settings page (e.g. after adding authors that might now match).
         var candidateIds = await db.BookContentScans
-            .Where(c => !c.Reviewed && c.AuthorId == null
+            .Where(c => !c.Reviewed && c.AuthorId == null && c.AssignAttemptedAt == null
                 && (c.Isbn != null || c.Author != null || c.Title != null))
             .OrderBy(c => c.Id)
             .Select(c => c.Id)
             .ToListAsync(ct);
 
-        // Fresh rows first; previously-unresolvable ones only fill leftover
-        // capacity (an author created meanwhile can make an old skip succeed).
-        List<int> previouslySkipped;
-        lock (_skipLock) previouslySkipped = candidateIds.Where(_skippedScanIds.Contains).ToList();
-        var toAttempt = candidateIds.Except(previouslySkipped).Take(MaxPerRun).ToList();
-        if (toAttempt.Count < MaxPerRun)
-            toAttempt.AddRange(previouslySkipped.Take(MaxPerRun - toAttempt.Count));
+        var toAttempt = candidateIds.Take(MaxPerRun).ToList();
 
         int assigned = 0, skipped = 0, failed = 0;
         for (var i = 0; i < toAttempt.Count; i++)
@@ -107,12 +98,16 @@ public sealed class UntrackedAuthorAssignmentService
                 if (r.Assigned)
                 {
                     assigned++;
-                    lock (_skipLock) _skippedScanIds.Remove(scan.Id);
                 }
                 else
                 {
                     skipped++;
-                    lock (_skipLock) _skippedScanIds.Add(scan.Id);
+                    // Durably mark it attempted so later runs skip it instead of
+                    // re-querying OpenLibrary for the same unresolvable row. The scan
+                    // is tracked and the skip paths add no other pending changes, so
+                    // a plain SaveChanges persists just this flag.
+                    scan.AssignAttemptedAt = DateTime.UtcNow;
+                    await db.SaveChangesAsync(ct);
                     _log.LogDebug("Assign-authors: skipped {Path}: {Reason}", scan.FullPath, r.Reason);
                 }
             }
