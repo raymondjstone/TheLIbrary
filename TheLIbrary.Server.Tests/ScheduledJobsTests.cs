@@ -170,6 +170,23 @@ public class ScheduledJobsTests
     }
 
     [Fact]
+    public void WaitCeiling_For_Cron_Firing_Is_Short_To_Not_Pin_The_Single_Worker()
+    {
+        var cron = ScheduledJobs.WaitCeilingFor(manualTrigger: false);
+        var manual = ScheduledJobs.WaitCeilingFor(manualTrigger: true);
+
+        // A cron firing pins the single Hangfire worker while it waits, so its
+        // ceiling must be short — the old 2h value let one stuck coordinator
+        // holder starve every other scheduled job.
+        Assert.True(cron <= TimeSpan.FromMinutes(2), $"cron ceiling too long: {cron}");
+        // Manual triggers may wait longer (the user asked for it) but still bounded.
+        Assert.True(manual > cron);
+        Assert.True(manual <= TimeSpan.FromMinutes(10), $"manual ceiling too long: {manual}");
+        // Both must be far under the old 2-hour footgun.
+        Assert.True(manual < TimeSpan.FromHours(1));
+    }
+
+    [Fact]
     public async Task RunWithPolling_Gives_Up_After_Wait_Ceiling()
     {
         var lifetime = new FakeHostLifetime();

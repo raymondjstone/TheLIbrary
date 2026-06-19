@@ -1723,8 +1723,14 @@ on every startup.
 
 Hangfire runs with `WorkerCount=1`, and all background work also passes through
 a single `BackgroundTaskCoordinator`, so a manual UI run and a cron tick can't
-clash — scheduled jobs wait up to two hours for the coordinator rather than
-failing fast on contention. The dashboard is exposed at `/hangfire`.
+clash. A firing that can't immediately take the coordinator waits for it — but
+because that wait **holds the single worker**, the ceiling is short for cron
+firings (2 minutes) and only longer for explicit manual triggers (10 minutes).
+This avoids the starvation footgun where one long-running or stuck coordinator
+holder let a single waiting job pin the only worker for up to two hours and
+silently freeze every other scheduled job; a cron firing now gives up quickly,
+frees the worker, and retries on its next tick. The dashboard is exposed at
+`/hangfire`.
 
 The same-name author folder disambiguator also supports a **dry run**. Calling
 `POST /api/authors/disambiguate-folders?dryRun=true` returns the proposed file

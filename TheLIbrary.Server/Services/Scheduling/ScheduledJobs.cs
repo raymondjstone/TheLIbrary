@@ -279,10 +279,25 @@ public sealed class ScheduledJobs
             manualTrigger,
             start,
             isRunning,
-            TimeSpan.FromHours(2),
+            WaitCeilingFor(manualTrigger),
             TimeSpan.FromSeconds(10),
             ct);
     }
+
+    // How long a firing will sit waiting for the coordinator before giving up —
+    // and, crucially, how long it pins the SINGLE Hangfire worker while it waits.
+    // The old flat 2-hour ceiling was a starvation footgun: when one task held the
+    // coordinator (a long sync, or a stuck/never-released UI-triggered run), the
+    // next cron firing would occupy the only worker for up to 2 hours polling for
+    // the lock, and every other scheduled job queued behind it did nothing.
+    //
+    // A cron firing now waits only briefly (a brief race against a UI trigger
+    // resolves; a genuinely busy/stuck holder makes it give up fast and free the
+    // worker — the next cron tick retries once the coordinator is free). A manual
+    // trigger, which the user explicitly asked to run, gets a longer but still
+    // bounded window so it can queue behind a short in-flight task.
+    internal static TimeSpan WaitCeilingFor(bool manualTrigger)
+        => manualTrigger ? TimeSpan.FromMinutes(10) : TimeSpan.FromMinutes(2);
 
     private async Task RunWithPollingCore(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,
@@ -310,10 +325,13 @@ public sealed class ScheduledJobs
 
         _log.LogInformation("Scheduled job {Job} starting", jobId);
 
-        // Wait for the coordinator to free up rather than failing fast. A
-        // manual UI trigger can race a cron firing; the scheduled job should
-        // just queue behind it. Ceiling prevents an indefinite stuck-hold
-        // from silently blocking the Hangfire worker forever.
+        // Wait briefly for the coordinator to free up. This loop holds the SINGLE
+        // Hangfire worker the whole time it polls, so the ceiling is deliberately
+        // short for cron firings (see WaitCeilingFor): a long/stuck coordinator
+        // holder must not let one waiting job pin the only worker and starve every
+        // other scheduled job. Giving up frees the worker; the next cron tick
+        // retries. Manual triggers get a longer window so they can queue behind a
+        // short in-flight task.
         var waited = TimeSpan.Zero;
         (bool started, string? error) outcome;
         while (true)
