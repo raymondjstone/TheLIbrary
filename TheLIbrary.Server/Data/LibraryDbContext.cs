@@ -34,7 +34,8 @@ public class LibraryDbContext : DbContext
         {
             // DB-assigned creation timestamp; lets any insert path stamp it
             // without touching every call site, and backfills existing rows.
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql(
+                Database.IsSqlServer() ? "SYSUTCDATETIME()" : "CURRENT_TIMESTAMP");
             e.HasIndex(x => x.OpenLibraryKey).IsUnique().HasFilter("[OpenLibraryKey] IS NOT NULL");
             e.HasIndex(x => x.CalibreFolderName);
             e.HasIndex(x => x.Name);
@@ -57,7 +58,8 @@ public class LibraryDbContext : DbContext
             e.HasIndex(x => x.Isbn).HasFilter("[Isbn] IS NOT NULL");
             // DB-assigned creation timestamp for new rows; existing rows stay null
             // (so the Recent Releases "by month" view shows only genuinely-new books).
-            e.Property(x => x.CreatedAt).HasDefaultValueSql("SYSUTCDATETIME()");
+            e.Property(x => x.CreatedAt).HasDefaultValueSql(
+                Database.IsSqlServer() ? "SYSUTCDATETIME()" : "CURRENT_TIMESTAMP");
             e.HasIndex(x => x.CreatedAt);
             e.HasOne(x => x.Author)
                 .WithMany(a => a.Books)
@@ -171,7 +173,11 @@ public class LibraryDbContext : DbContext
         {
             e.HasIndex(x => x.FullPath).IsUnique();
             e.HasIndex(x => x.BookId);
-            e.Property(x => x.Content).HasColumnType("nvarchar(max)");
+            // Off-row unbounded text on SQL Server; left as the provider default
+            // (TEXT) elsewhere so the model stays provider-agnostic (e.g. SQLite
+            // in relational tests) instead of emitting SQL-Server-only syntax.
+            if (Database.IsSqlServer())
+                e.Property(x => x.Content).HasColumnType("nvarchar(max)");
             e.HasOne(x => x.Book).WithMany()
                 .HasForeignKey(x => x.BookId).OnDelete(DeleteBehavior.Cascade);
         });
@@ -190,7 +196,8 @@ public class LibraryDbContext : DbContext
             e.Property(x => x.Name).HasMaxLength(300);
             e.Property(x => x.NormalizedName).HasMaxLength(300);
             e.Property(x => x.PersonalName).HasMaxLength(300);
-            e.Property(x => x.AlternateNames).HasColumnType("nvarchar(max)");
+            if (Database.IsSqlServer())
+                e.Property(x => x.AlternateNames).HasColumnType("nvarchar(max)");
             e.Property(x => x.BirthDate).HasMaxLength(100);
             e.Property(x => x.DeathDate).HasMaxLength(100);
             e.HasIndex(x => x.OlKey).IsUnique();
