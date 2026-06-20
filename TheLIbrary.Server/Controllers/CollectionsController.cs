@@ -122,7 +122,7 @@ public class CollectionsController : ControllerBase
     {
         var rows = await _db.Books.AsNoTracking()
             .Where(b => b.Subjects != null && b.Subjects != "" && !b.Suppressed)
-            .Select(b => new { b.Subjects, Owned = b.ManuallyOwned || b.LocalFiles.Any() })
+            .Select(b => new { b.Subjects, Owned = b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any() })
             .ToListAsync(ct);
 
         var total = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -149,7 +149,7 @@ public class CollectionsController : ControllerBase
         var like = $"%{genre.Trim()}%";
         var rows = await _db.Books.AsNoTracking()
             .Where(b => !b.Suppressed && b.Subjects != null && EF.Functions.Like(b.Subjects, like))
-            .OrderByDescending(b => b.ManuallyOwned || b.LocalFiles.Any())
+            .OrderByDescending(b => b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any())
             .ThenByDescending(b => b.FirstPublishYear)
             .ThenBy(b => b.Title)
             .Take(500)
@@ -165,6 +165,6 @@ public class CollectionsController : ControllerBase
 
     private static System.Linq.Expressions.Expression<Func<Book, BookRow>> Project => b => new BookRow(
         b.Id, b.Title, b.FirstPublishYear, b.AuthorId, b.Author.Name, b.CoverId,
-        b.ManuallyOwned || b.LocalFiles.Any(), b.Wanted, b.ReadStatus.ToString(),
+        b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any(), b.Wanted, b.ReadStatus.ToString(),
         b.Series != null ? b.Series.Name : null, b.Subjects);
 }

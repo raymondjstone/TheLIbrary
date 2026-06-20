@@ -248,7 +248,7 @@ public class SeriesController : ControllerBase
                 s.Id, s.Name, s.PrimaryAuthorId,
                 PrimaryAuthorName = s.PrimaryAuthor != null ? s.PrimaryAuthor.Name : null,
                 Total = s.Books.Count(b => !b.Suppressed),
-                Owned = s.Books.Count(b => !b.Suppressed && (b.ManuallyOwned || b.LocalFiles.Any())),
+                Owned = s.Books.Count(b => !b.Suppressed && (b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any())),
             })
             .Where(x => x.Total > 0)
             .ToListAsync(ct);
@@ -280,7 +280,7 @@ public class SeriesController : ControllerBase
 
         var missing = await _db.Books
             .Where(b => b.SeriesId == id && !b.Suppressed && !b.Wanted
-                     && !b.ManuallyOwned && !b.LocalFiles.Any())
+                     && !b.ManuallyOwned && !b.OwnedDifferentEdition && !b.LocalFiles.Any())
             .ToListAsync(ct);
         foreach (var b in missing) b.Wanted = true;
         await _db.SaveChangesAsync(ct);

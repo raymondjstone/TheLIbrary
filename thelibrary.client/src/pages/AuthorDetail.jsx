@@ -9,6 +9,17 @@ import OpenLibraryWorkSearch from '../components/OpenLibraryWorkSearch.jsx'
 import CollectionMenu from '../components/CollectionMenu.jsx'
 import { bookCoverSrc } from '../bookCover.js'
 
+// Human-readable ownership status for a book row. Generalises the old
+// files/manual ladder and adds the "other edition" state (owned, no file here).
+function ownedLabel(b) {
+    if (!b.owned) return 'No'
+    const parts = []
+    if (b.hasLocalFiles) parts.push('files')
+    if (b.manuallyOwned) parts.push('manual')
+    if (b.ownedDifferentEdition) parts.push('other edition')
+    return parts.length ? `Yes (${parts.join(' + ')})` : 'Yes'
+}
+
 // Compact per-book edit / delete controls shown next to the title.
 // Collapsed bucket rendered at the very bottom of an author page for books
 // the user has hidden via the "suppress" action. Kept lightweight on purpose
@@ -975,6 +986,40 @@ export default function AuthorDetail() {
         }
     }
 
+    // "Got but in a different edition" — owned, no file here. Counts as owned and
+    // clears any Wanted flag (the server does the same), so the book leaves the
+    // missing/wanted lists but is shown distinctly from a real ebook copy.
+    const toggleDifferentEdition = async (book) => {
+        const next = !book.ownedDifferentEdition
+        setBusyIds(prev => new Set(prev).add(book.id))
+        try {
+            const r = await fetch(`/api/books/${book.id}/owned-different-edition`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ owned: next })
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            setData(prev => ({
+                ...prev,
+                books: prev.books.map(b =>
+                    b.id === book.id
+                        ? {
+                            ...b,
+                            ownedDifferentEdition: next,
+                            owned: next || b.manuallyOwned || b.hasLocalFiles,
+                            wanted: next ? false : b.wanted,
+                        }
+                        : b)
+            }))
+        } catch (e) {
+            alert(`Failed to update edition status: ${e.message}`)
+        } finally {
+            setBusyIds(prev => {
+                const n = new Set(prev); n.delete(book.id); return n
+            })
+        }
+    }
+
     const unmatchFile = async (fileId) => {
         const r = await fetch(`/api/authors/${id}/unmatched/${fileId}/match`, { method: 'DELETE' })
         if (r.ok) setData(await r.json())
@@ -1637,7 +1682,7 @@ export default function AuthorDetail() {
                         <th>Owned</th>
                         <th>Read</th>
                         <th>Wanted</th>
-                        <th>Manually owned</th>
+                        <th>Owned (no file)</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1710,11 +1755,7 @@ export default function AuthorDetail() {
                                 </td>
                                 <td>{b.firstPublishYear ?? '—'}</td>
                                 <td>
-                                    {b.owned
-                                        ? (b.hasLocalFiles && b.manuallyOwned
-                                            ? 'Yes (files + manual)'
-                                            : b.hasLocalFiles ? 'Yes (files)' : 'Yes (manual)')
-                                        : 'No'}
+                                    {ownedLabel(b)}
                                 </td>
                                 <td>
                                     <span title={b.readStatus} style={{ marginRight: '0.3rem' }}>{readStatusIcon(b.readStatus)}</span>
@@ -1738,15 +1779,24 @@ export default function AuthorDetail() {
                                     )}
                                 </td>
                                 <td>
-                                    <label>
+                                    <label title="I physically own this (print copy)" style={{ display: 'block' }}>
                                         <input
                                             type="checkbox"
                                             checked={b.manuallyOwned}
                                             disabled={busyIds.has(b.id)}
                                             onChange={() => toggleManual(b)} />
+                                        {' '}Physical
                                         {b.hasLocalFiles
                                             ? <span className="subtle"> (scan already matched)</span>
                                             : null}
+                                    </label>
+                                    <label title="Got, but in a different edition than catalogued (no file here)" style={{ display: 'block' }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={b.ownedDifferentEdition ?? false}
+                                            disabled={busyIds.has(b.id)}
+                                            onChange={() => toggleDifferentEdition(b)} />
+                                        {' '}Other edition
                                     </label>
                                 </td>
                             </tr>
@@ -1776,11 +1826,7 @@ export default function AuthorDetail() {
                                     </td>
                                     <td>{ed.firstPublishYear ?? '—'}</td>
                                     <td>
-                                        {ed.owned
-                                            ? (ed.hasLocalFiles && ed.manuallyOwned
-                                                ? 'Yes (files + manual)'
-                                                : ed.hasLocalFiles ? 'Yes (files)' : 'Yes (manual)')
-                                            : 'No'}
+                                        {ownedLabel(ed)}
                                     </td>
                                     <td>
                                         <select value={ed.readStatus ?? 'Unread'} onChange={e => setReadStatus(ed, e.target.value)} style={{ fontSize: '0.8em' }}>
@@ -1792,15 +1838,24 @@ export default function AuthorDetail() {
                                     </td>
                                     <td></td>
                                     <td>
-                                        <label>
+                                        <label title="I physically own this (print copy)" style={{ display: 'block' }}>
                                             <input
                                                 type="checkbox"
                                                 checked={ed.manuallyOwned}
                                                 disabled={busyIds.has(ed.id)}
                                                 onChange={() => toggleManual(ed)} />
+                                            {' '}Physical
                                             {ed.hasLocalFiles
                                                 ? <span className="subtle"> (scan already matched)</span>
                                                 : null}
+                                        </label>
+                                        <label title="Got, but in a different edition than catalogued (no file here)" style={{ display: 'block' }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={ed.ownedDifferentEdition ?? false}
+                                                disabled={busyIds.has(ed.id)}
+                                                onChange={() => toggleDifferentEdition(ed)} />
+                                            {' '}Other edition
                                         </label>
                                     </td>
                                 </tr>
@@ -1857,7 +1912,7 @@ export default function AuthorDetail() {
                                         : null}
                                 </td>
                                 <td>{b.firstPublishYear ?? '—'}</td>
-                                <td>{b.owned ? (b.hasLocalFiles && b.manuallyOwned ? 'Yes (files + manual)' : b.hasLocalFiles ? 'Yes (files)' : 'Yes (manual)') : 'No'}</td>
+                                <td>{ownedLabel(b)}</td>
                                 <td>
                                     <span title={b.readStatus} style={{ marginRight: '0.3rem' }}>{readStatusIcon(b.readStatus)}</span>
                                     <select value={b.readStatus ?? 'Unread'} onChange={e => setReadStatus(b, e.target.value)} style={{ fontSize: '0.8em' }}>
@@ -1869,7 +1924,10 @@ export default function AuthorDetail() {
                                     {b.readAt && <span className="subtle" style={{ marginLeft: '0.3rem', fontSize: '0.75em' }}>{new Date(b.readAt).toLocaleDateString()}</span>}
                                 </td>
                                 <td>{!b.owned && <label title="Mark as wanted"><input type="checkbox" checked={b.wanted ?? false} onChange={() => toggleWanted(b)} />{' '}★</label>}</td>
-                                <td><label><input type="checkbox" checked={b.manuallyOwned} disabled={busyIds.has(b.id)} onChange={() => toggleManual(b)} />{b.hasLocalFiles ? <span className="subtle"> (scan already matched)</span> : null}</label></td>
+                                <td>
+                                    <label title="I physically own this (print copy)" style={{ display: 'block' }}><input type="checkbox" checked={b.manuallyOwned} disabled={busyIds.has(b.id)} onChange={() => toggleManual(b)} />{' '}Physical{b.hasLocalFiles ? <span className="subtle"> (scan already matched)</span> : null}</label>
+                                    <label title="Got, but in a different edition than catalogued (no file here)" style={{ display: 'block' }}><input type="checkbox" checked={b.ownedDifferentEdition ?? false} disabled={busyIds.has(b.id)} onChange={() => toggleDifferentEdition(b)} />{' '}Other edition</label>
+                                </td>
                             </tr>
                             {editions.map(ed => (
                                 <tr key={ed.id} className={ed.owned ? 'edition' : 'edition missing'}>
@@ -1892,7 +1950,7 @@ export default function AuthorDetail() {
                                             : null}
                                     </td>
                                     <td>{ed.firstPublishYear ?? '—'}</td>
-                                    <td>{ed.owned ? (ed.hasLocalFiles && ed.manuallyOwned ? 'Yes (files + manual)' : ed.hasLocalFiles ? 'Yes (files)' : 'Yes (manual)') : 'No'}</td>
+                                    <td>{ownedLabel(ed)}</td>
                                     <td><select value={ed.readStatus ?? 'Unread'} onChange={e => setReadStatus(ed, e.target.value)} style={{ fontSize: '0.8em' }}>
                                         <option value="Unread">Unread</option>
                                         <option value="Reading">Reading</option>
@@ -1900,7 +1958,10 @@ export default function AuthorDetail() {
                                         <option value="Dnf">DNF</option>
                                     </select></td>
                                     <td></td>
-                                    <td><label><input type="checkbox" checked={ed.manuallyOwned} disabled={busyIds.has(ed.id)} onChange={() => toggleManual(ed)} />{ed.hasLocalFiles ? <span className="subtle"> (scan already matched)</span> : null}</label></td>
+                                    <td>
+                                        <label title="I physically own this (print copy)" style={{ display: 'block' }}><input type="checkbox" checked={ed.manuallyOwned} disabled={busyIds.has(ed.id)} onChange={() => toggleManual(ed)} />{' '}Physical{ed.hasLocalFiles ? <span className="subtle"> (scan already matched)</span> : null}</label>
+                                        <label title="Got, but in a different edition than catalogued (no file here)" style={{ display: 'block' }}><input type="checkbox" checked={ed.ownedDifferentEdition ?? false} disabled={busyIds.has(ed.id)} onChange={() => toggleDifferentEdition(ed)} />{' '}Other edition</label>
+                                    </td>
                                 </tr>
                             ))}
                         </React.Fragment>

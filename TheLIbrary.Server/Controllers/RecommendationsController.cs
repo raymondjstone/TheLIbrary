@@ -30,7 +30,7 @@ public class RecommendationsController : ControllerBase
     {
         // 1. Taste profile: top genres weighted by how many OWNED books carry them.
         var ownedSubjects = await _db.Books.AsNoTracking()
-            .Where(b => (b.ManuallyOwned || b.LocalFiles.Any()) && b.Subjects != null && b.Subjects != "")
+            .Where(b => (b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any()) && b.Subjects != null && b.Subjects != "")
             .Select(b => b.Subjects!)
             .ToListAsync(ct);
 
@@ -80,7 +80,7 @@ public class RecommendationsController : ControllerBase
             .Where(sa => sa.Author.Priority == 0
                       && sa.Author.LinkedToAuthorId == null
                       && !sa.Author.RecommendationRejected
-                      && sa.Series.Books.Any(b => b.ManuallyOwned || b.LocalFiles.Any()))
+                      && sa.Series.Books.Any(b => b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any()))
             .Select(sa => sa.AuthorId)
             .Distinct()
             .ToListAsync(ct);

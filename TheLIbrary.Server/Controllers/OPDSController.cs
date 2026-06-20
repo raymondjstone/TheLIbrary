@@ -78,7 +78,7 @@ public class OPDSController : ControllerBase
             {
                 b.Id, b.Title, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
                 b.Subjects, b.Series, b.SeriesPosition,
-                Owned = b.ManuallyOwned || b.LocalFiles.Any()
+                Owned = b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any()
             })
             .ToListAsync(ct);
 
@@ -132,7 +132,7 @@ public class OPDSController : ControllerBase
     public async Task<ContentResult> Missing(CancellationToken ct)
     {
         var books = await _db.Books.AsNoTracking()
-            .Where(b => b.Author.Priority >= 1 && !b.ManuallyOwned && !b.LocalFiles.Any())
+            .Where(b => b.Author.Priority >= 1 && !b.ManuallyOwned && !b.OwnedDifferentEdition && !b.LocalFiles.Any())
             .OrderByDescending(b => b.Wanted)
             .ThenByDescending(b => b.Author.Priority)
             .ThenBy(b => b.Author.Name)
@@ -192,7 +192,7 @@ public class OPDSController : ControllerBase
             {
                 b.Id, b.Title, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
                 AuthorName = b.Author.Name,
-                Owned = b.ManuallyOwned || b.LocalFiles.Any()
+                Owned = b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any()
             })
             .ToListAsync(ct);
 

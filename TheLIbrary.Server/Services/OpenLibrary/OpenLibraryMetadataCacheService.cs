@@ -86,7 +86,7 @@ public sealed class OpenLibraryMetadataCacheService
             .Where(b => !string.IsNullOrWhiteSpace(b.OpenLibraryWorkKey)
                      && !b.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix)
                      && (b.Subjects == null || b.CoverUrl == null)
-                     && (b.ManuallyOwned || b.LocalFiles.Any()))
+                     && (b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any()))
             .OrderByDescending(b => b.Author.Priority)
             .ThenBy(b => b.Author.Name)
             .ThenBy(b => b.Title)

@@ -17,12 +17,12 @@ public class StatsController : ControllerBase
     {
         var totalBooks = await _db.Books.CountAsync(ct);
         var ownedBooks = await _db.Books.CountAsync(
-            b => b.ManuallyOwned || b.LocalFiles.Any(), ct);
+            b => b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any(), ct);
         var missingBooks = totalBooks - ownedBooks;
 
         var readCount = await _db.Books.CountAsync(b => b.ReadStatus == ReadStatus.Read, ct);
         var readingCount = await _db.Books.CountAsync(b => b.ReadStatus == ReadStatus.Reading, ct);
-        var wantedCount = await _db.Books.CountAsync(b => b.Wanted && !b.ManuallyOwned && !b.LocalFiles.Any(), ct);
+        var wantedCount = await _db.Books.CountAsync(b => b.Wanted && !b.ManuallyOwned && !b.OwnedDifferentEdition && !b.LocalFiles.Any(), ct);
 
         var totalAuthors = await _db.Authors.CountAsync(ct);
         var activeAuthors = await _db.Authors.CountAsync(a => a.Status == AuthorStatus.Active, ct);
@@ -39,7 +39,7 @@ public class StatsController : ControllerBase
 
         // Top 20 genres by book count (owned books only).
         var subjectRows = await _db.Books.AsNoTracking()
-            .Where(b => b.Subjects != null && b.Subjects != "" && (b.ManuallyOwned || b.LocalFiles.Any()))
+            .Where(b => b.Subjects != null && b.Subjects != "" && (b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any()))
             .Select(b => b.Subjects!)
             .ToListAsync(ct);
 
@@ -61,7 +61,7 @@ public class StatsController : ControllerBase
             {
                 a.Id, a.Name, a.Priority,
                 Total = a.Books.Count(),
-                Owned = a.Books.Count(b => b.ManuallyOwned || b.LocalFiles.Any())
+                Owned = a.Books.Count(b => b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any())
             })
             .OrderByDescending(a => a.Priority)
             .ThenBy(a => a.Name)

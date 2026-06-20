@@ -385,7 +385,7 @@ public sealed class FullTextSearchService
                 BookAuthorName = ix.BookId != null && ix.Book!.Author != null ? ix.Book.Author.Name : null,
                 FirstPublishYear = ix.BookId != null ? ix.Book!.FirstPublishYear : null,
                 CoverId = ix.BookId != null ? ix.Book!.CoverId : null,
-                Owned = ix.BookId != null && (ix.Book!.ManuallyOwned || ix.Book.LocalFiles.Any()),
+                Owned = ix.BookId != null && (ix.Book!.ManuallyOwned || ix.Book.OwnedDifferentEdition || ix.Book.LocalFiles.Any()),
             })
             .ToListAsync(ct);
 

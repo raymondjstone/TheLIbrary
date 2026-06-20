@@ -59,9 +59,9 @@ public class DashboardController : ControllerBase
         // COUNTs, each with its own owned/EXISTS semi-join over ~1.8M rows.
         var books = await _db.Books.GroupBy(_ => 1).Select(g => new
         {
-            Owned = g.Count(b => b.ManuallyOwned || b.LocalFiles.Any()),
-            Missing = g.Count(b => !b.ManuallyOwned && !b.LocalFiles.Any()),
-            Wanted = g.Count(b => b.Wanted && !b.ManuallyOwned && !b.LocalFiles.Any()),
+            Owned = g.Count(b => b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any()),
+            Missing = g.Count(b => !b.ManuallyOwned && !b.OwnedDifferentEdition && !b.LocalFiles.Any()),
+            Wanted = g.Count(b => b.Wanted && !b.ManuallyOwned && !b.OwnedDifferentEdition && !b.LocalFiles.Any()),
             ReleasesThisYear = g.Count(b => !b.Suppressed && b.FirstPublishYear == year),
         }).FirstOrDefaultAsync(ct);
         var ownedBooks = books?.Owned ?? 0;

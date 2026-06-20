@@ -139,7 +139,7 @@ public class ImportController : ControllerBase
                 .ExecuteUpdateAsync(s => s.SetProperty(b => b.ReadStatus, _ => ReadStatus.Reading), ct);
 
         if (wantedIds.Count > 0)
-            await _db.Books.Where(b => wantedIds.Contains(b.Id) && !b.ManuallyOwned && !b.LocalFiles.Any())
+            await _db.Books.Where(b => wantedIds.Contains(b.Id) && !b.ManuallyOwned && !b.OwnedDifferentEdition && !b.LocalFiles.Any())
                 .ExecuteUpdateAsync(s => s.SetProperty(b => b.Wanted, _ => true), ct);
 
         await _db.SaveChangesAsync(ct);
@@ -416,7 +416,7 @@ public class ImportController : ControllerBase
                 b.Title,
                 SeriesName = b.Series != null ? b.Series.Name : null,
                 b.SeriesPosition,
-                Owned = b.ManuallyOwned || b.LocalFiles.Any(),
+                Owned = b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any(),
             })
             .ToListAsync(ct);
 
@@ -635,7 +635,7 @@ public class ImportController : ControllerBase
                 b.Id,
                 b.Title,
                 AuthorName = b.Author.Name,
-                Owned = b.ManuallyOwned || b.LocalFiles.Any(),
+                Owned = b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any(),
             })
             .ToDictionaryAsync(b => b.Id, ct);
 

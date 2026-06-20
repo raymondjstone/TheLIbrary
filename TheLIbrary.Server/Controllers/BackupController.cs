@@ -66,11 +66,12 @@ public class BackupController : ControllerBase
                 b.OpenLibraryWorkKey, b.Title, b.NormalizedTitle, b.FirstPublishYear,
                 b.Subjects, b.SeriesId, b.SeriesPosition, b.Isbn, b.CoverId,
                 b.Wanted, b.ReadStatus, b.ReadAt, b.ManuallyOwned, b.ManuallyOwnedAt, b.Suppressed,
+                b.OwnedDifferentEdition, b.OwnedDifferentEditionAt,
             })
             .ToListAsync(ct);
         var bookRows = allBookRows
             .Where(b => ManualWorkKey.IsManual(b.OpenLibraryWorkKey)
-                     || b.Wanted || b.ManuallyOwned || b.Suppressed
+                     || b.Wanted || b.ManuallyOwned || b.OwnedDifferentEdition || b.Suppressed
                      || b.ReadStatus != Data.Models.ReadStatus.Unread)
             .ToList();
 
@@ -144,7 +145,8 @@ public class BackupController : ControllerBase
         int Id, int AuthorId, string? AuthorOpenLibraryKey, string? OpenLibraryWorkKey, string Title,
         string? NormalizedTitle, int? FirstPublishYear, string? Subjects, int? SeriesId, string? SeriesPosition,
         string? Isbn, int? CoverId, bool Wanted, int ReadStatus, DateTime? ReadAt, bool ManuallyOwned,
-        DateTime? ManuallyOwnedAt, bool Suppressed);
+        DateTime? ManuallyOwnedAt, bool Suppressed,
+        bool OwnedDifferentEdition = false, DateTime? OwnedDifferentEditionAt = null);
     private sealed record PhysicalRow(string Author, string Title, string SeriesPos, string? Isbn, DateTime AddedAt);
 
     public sealed record ImportSummary(
@@ -353,6 +355,7 @@ public class BackupController : ControllerBase
                 {
                     b.Wanted = r.Wanted; b.ReadStatus = (ReadStatus)r.ReadStatus; b.ReadAt = r.ReadAt;
                     b.ManuallyOwned = r.ManuallyOwned; b.ManuallyOwnedAt = r.ManuallyOwnedAt; b.Suppressed = r.Suppressed;
+                    b.OwnedDifferentEdition = r.OwnedDifferentEdition; b.OwnedDifferentEditionAt = r.OwnedDifferentEditionAt;
                     if (seriesId.HasValue) { b.SeriesId = seriesId; b.SeriesPosition = r.SeriesPosition; }
                     counts[10]++;
                 }
@@ -366,6 +369,7 @@ public class BackupController : ControllerBase
                         SeriesPosition = r.SeriesPosition, Isbn = r.Isbn, CoverId = r.CoverId,
                         Wanted = r.Wanted, ReadStatus = (ReadStatus)r.ReadStatus, ReadAt = r.ReadAt,
                         ManuallyOwned = r.ManuallyOwned, ManuallyOwnedAt = r.ManuallyOwnedAt, Suppressed = r.Suppressed,
+                        OwnedDifferentEdition = r.OwnedDifferentEdition, OwnedDifferentEditionAt = r.OwnedDifferentEditionAt,
                         // Backups don't carry CreatedAt; date a restored book with a
                         // past publish year to 1 Jan of that year (not "now") so it
                         // doesn't resurface as a new release after a restore.

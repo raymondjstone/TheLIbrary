@@ -50,6 +50,16 @@ public class Book
 
     public DateTime? ManuallyOwnedAt { get; set; }
 
+    // "Got but in a different edition" — the user already has this work as some
+    // other edition than what's catalogued here (no local file matched). A third
+    // ownership state alongside ebook (has LocalBookFile) and physical
+    // (ManuallyOwned): it counts as owned everywhere, so the book drops off the
+    // Missing / Wanted / unowned views, but it's shown with a distinct label
+    // because there's no actual file to open here.
+    public bool OwnedDifferentEdition { get; set; }
+
+    public DateTime? OwnedDifferentEditionAt { get; set; }
+
     // Semicolon-separated OL subject tags (e.g. "Science fiction;Fiction;Space opera (Fiction)")
     public string? Subjects { get; set; }
 

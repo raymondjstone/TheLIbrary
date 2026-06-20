@@ -34,7 +34,7 @@ public class FeedsController : ControllerBase
                 b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear,
                 b.OpenLibraryWorkKey, b.AuthorId,
                 AuthorName = b.Author.Name,
-                Owned = b.ManuallyOwned || b.LocalFiles.Any(),
+                Owned = b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any(),
             })
             .ToListAsync(ct);
 

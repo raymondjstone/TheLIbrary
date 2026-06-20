@@ -119,7 +119,7 @@ public class AuthorsController : ControllerBase
                 SELECT b.AuthorId,
                        COUNT(*)                                                               AS Total,
                        COUNT(lf.BookId)                                                      AS Ebook,
-                       SUM(CASE WHEN lf.BookId IS NULL AND b.ManuallyOwned = 1 THEN 1 ELSE 0 END) AS Physical
+                       SUM(CASE WHEN lf.BookId IS NULL AND (b.ManuallyOwned = 1 OR b.OwnedDifferentEdition = 1) THEN 1 ELSE 0 END) AS Physical
                 FROM   Books b
                 LEFT JOIN (
                     SELECT DISTINCT BookId
@@ -434,7 +434,8 @@ public class AuthorsController : ControllerBase
         string? CoverUrl = null,
         int AuthorId = 0,
         bool Suppressed = false,
-        bool Foreign = false);
+        bool Foreign = false,
+        bool OwnedDifferentEdition = false);
 
     public sealed record LocalFileRow(int Id, string FullPath, IReadOnlyList<string> Formats, bool Archived);
 
@@ -619,7 +620,7 @@ public class AuthorsController : ControllerBase
                 .Select(b => new
                 {
                     b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.CoverUrl, b.OpenLibraryWorkKey,
-                    b.AuthorId, b.ManuallyOwned, b.ReadStatus, b.ReadAt, b.Wanted, b.Subjects, b.Suppressed, b.Foreign,
+                    b.AuthorId, b.ManuallyOwned, b.OwnedDifferentEdition, b.ReadStatus, b.ReadAt, b.Wanted, b.Subjects, b.Suppressed, b.Foreign,
                     SeriesName = b.Series != null ? b.Series.Name : null,
                     b.SeriesId,
                     SeriesPrimaryAuthorName = b.Series != null && b.Series.PrimaryAuthor != null ? b.Series.PrimaryAuthor.Name : null,
@@ -648,7 +649,7 @@ public class AuthorsController : ControllerBase
                 .ToList();
             return new BookRow(
                 b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
-                b.ManuallyOwned || realFiles.Count > 0,
+                b.ManuallyOwned || b.OwnedDifferentEdition || realFiles.Count > 0,
                 b.ManuallyOwned,
                 realFiles.Count > 0,
                 b.ReadStatus.ToString(),
@@ -663,7 +664,8 @@ public class AuthorsController : ControllerBase
                 b.CoverUrl,
                 b.AuthorId,
                 b.Suppressed,
-                b.Foreign
+                b.Foreign,
+                b.OwnedDifferentEdition
             );
         }).ToList();
 

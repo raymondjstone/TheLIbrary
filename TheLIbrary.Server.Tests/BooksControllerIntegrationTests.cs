@@ -238,6 +238,68 @@ public class BooksControllerIntegrationTests
         Assert.Equal("3", row.SeriesPosition);
     }
 
+    [Fact]
+    public async Task OwnedDifferentEdition_Counts_As_Owned_Clears_Wanted_And_Leaves_Missing()
+    {
+        var year = DateTime.UtcNow.Year;
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Author", Priority = 1 });
+            db.Books.Add(new Book
+            {
+                Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL1W", Title = "Wanted Book",
+                NormalizedTitle = "wanted book", FirstPublishYear = year, Wanted = true,
+            });
+        });
+
+        using var client = factory.CreateClient();
+
+        // Before: unowned, so it's on the Missing list and not owned on releases.
+        var missingBefore = await client.GetFromJsonAsync<List<BooksController.MissingWorkRow>>("/api/books/missing");
+        Assert.Contains(missingBefore!, r => r.Id == 10);
+
+        var resp = await client.PostAsJsonAsync("/api/books/10/owned-different-edition",
+            new BooksController.OwnershipRequest(true));
+        resp.EnsureSuccessStatusCode();
+
+        // After: gone from Missing, owned on Recent Releases, Wanted cleared.
+        var missingAfter = await client.GetFromJsonAsync<List<BooksController.MissingWorkRow>>("/api/books/missing");
+        Assert.DoesNotContain(missingAfter!, r => r.Id == 10);
+
+        var releases = await client.GetFromJsonAsync<List<BooksController.RecentReleaseRow>>("/api/books/recent-releases");
+        Assert.Contains(releases!, r => r.Id == 10 && r.Owned);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        var book = await db.Books.FindAsync(10);
+        Assert.True(book!.OwnedDifferentEdition);
+        Assert.False(book.Wanted);
+    }
+
+    [Fact]
+    public async Task PhysicalOnly_Lists_Physical_Books_Without_File_Or_Different_Edition()
+    {
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Author", Priority = 1 });
+            db.Books.AddRange(
+                // Physical only → listed.
+                new Book { Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL1W", Title = "Print Copy", NormalizedTitle = "print copy", ManuallyOwned = true },
+                // Physical AND different-edition → excluded (has a digital edition somewhere).
+                new Book { Id = 11, AuthorId = 1, OpenLibraryWorkKey = "OL2W", Title = "Also Digital", NormalizedTitle = "also digital", ManuallyOwned = true, OwnedDifferentEdition = true },
+                // Not owned at all → excluded.
+                new Book { Id = 12, AuthorId = 1, OpenLibraryWorkKey = "OL3W", Title = "Unowned", NormalizedTitle = "unowned" });
+        });
+
+        using var client = factory.CreateClient();
+        var rows = await client.GetFromJsonAsync<List<BooksController.PhysicalOnlyRow>>("/api/books/physical-only");
+        Assert.Contains(rows!, r => r.Id == 10);
+        Assert.DoesNotContain(rows!, r => r.Id == 11);
+        Assert.DoesNotContain(rows!, r => r.Id == 12);
+    }
+
     private static async Task SeedAsync(LibraryApiFactory factory, Action<LibraryDbContext> seed)
     {
         using var scope = factory.Services.CreateScope();

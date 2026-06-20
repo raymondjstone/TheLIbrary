@@ -92,7 +92,7 @@ public class BooksController : ControllerBase
                 b.Id, b.Title, b.FirstPublishYear, b.CoverId, b.CoverUrl,
                 b.Series != null ? b.Series.Name : null, b.SeriesPosition,
                 b.AuthorId, b.Author.Name,
-                b.ManuallyOwned || b.LocalFiles.Any(), b.OpenLibraryWorkKey))
+                b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any(), b.OpenLibraryWorkKey))
             .ToListAsync(ct);
     }
 
@@ -195,6 +195,33 @@ public class BooksController : ControllerBase
 
         var hasLocalFiles = await _db.LocalBookFiles.AnyAsync(f => f.BookId == id, ct);
         return Ok(new { book.Id, book.ManuallyOwned, Owned = book.ManuallyOwned || hasLocalFiles });
+    }
+
+    // "Got but in a different edition" — the user already has this work as some
+    // other edition than what's catalogued, with no local file here. Counts as
+    // owned everywhere (so the book leaves Missing / unowned views), independent
+    // of the physical ManuallyOwned flag. Setting it true also clears Wanted —
+    // you have the book now, so it must drop off the Wanted list (which lists
+    // every Wanted row regardless of ownership).
+    [HttpPost("{id:int}/owned-different-edition")]
+    public async Task<IActionResult> SetOwnedDifferentEdition(int id, [FromBody] OwnershipRequest body, CancellationToken ct)
+    {
+        var book = await _db.Books.FirstOrDefaultAsync(b => b.Id == id, ct);
+        if (book is null) return NotFound();
+
+        book.OwnedDifferentEdition = body.Owned;
+        book.OwnedDifferentEditionAt = body.Owned ? DateTime.UtcNow : null;
+        if (body.Owned) book.Wanted = false;
+        await _db.SaveChangesAsync(ct);
+
+        var hasLocalFiles = await _db.LocalBookFiles.AnyAsync(f => f.BookId == id, ct);
+        return Ok(new
+        {
+            book.Id,
+            book.OwnedDifferentEdition,
+            book.Wanted,
+            Owned = book.ManuallyOwned || book.OwnedDifferentEdition || hasLocalFiles,
+        });
     }
 
     public sealed record BulkOwnershipRequest(IReadOnlyList<int> Ids, bool Owned);
@@ -475,7 +502,7 @@ public class BooksController : ControllerBase
                 .Select(b => new SeriesBookRow(
                     b.Id, b.Title, b.SeriesPosition, b.FirstPublishYear, b.CoverId,
                     b.OpenLibraryWorkKey, b.AuthorId, b.Author.Name,
-                    b.ManuallyOwned || b.LocalFiles.Any(), b.ReadStatus.ToString()))
+                    b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any(), b.ReadStatus.ToString()))
                 .ToList();
 
             // Calculate gaps: look for numeric representation positions in books, detect missing integers in the owned sequence.
@@ -982,6 +1009,7 @@ public class BooksController : ControllerBase
             .Where(b => b.Author.Priority >= 1
                      && !b.Suppressed
                      && !b.ManuallyOwned
+                     && !b.OwnedDifferentEdition
                      && !b.LocalFiles.Any())
             .OrderByDescending(b => b.Wanted)
             .ThenByDescending(b => b.Author.Priority)
@@ -1000,6 +1028,49 @@ public class BooksController : ControllerBase
                 b.Wanted,
                 b.Subjects,
                 b.Series != null ? b.Series.Name : null))
+            .ToListAsync(ct);
+    }
+
+    public sealed record PhysicalOnlyRow(
+        int Id,
+        string Title,
+        int? FirstPublishYear,
+        int? CoverId,
+        string OpenLibraryWorkKey,
+        int AuthorId,
+        string AuthorName,
+        string ReadStatus,
+        string? Series,
+        string? SeriesPosition);
+
+    // Books the user holds ONLY as a physical copy: ManuallyOwned, with no local
+    // ebook file and not marked "got in a different edition". These are the gaps
+    // where a digital copy is still wanted even though the work is "owned" — so
+    // they're deliberately excluded from the Missing list but surfaced here.
+    [HttpGet("physical-only")]
+    public async Task<IReadOnlyList<PhysicalOnlyRow>> PhysicalOnly(CancellationToken ct)
+    {
+        return await _db.Books
+            .AsNoTracking()
+            .Where(b => b.ManuallyOwned
+                     && !b.OwnedDifferentEdition
+                     && !b.Suppressed
+                     && !b.LocalFiles.Any())
+            .OrderByDescending(b => b.Author.Priority)
+            .ThenBy(b => b.Author.Name)
+            .ThenBy(b => b.FirstPublishYear ?? int.MaxValue)
+            .ThenBy(b => b.Title)
+            .Select(b => new PhysicalOnlyRow(
+                b.Id,
+                b.Title,
+                b.FirstPublishYear,
+                b.CoverId,
+                b.OpenLibraryWorkKey,
+                b.AuthorId,
+                b.Author.Name,
+                b.ReadStatus.ToString(),
+                b.Series != null ? b.Series.Name : null,
+                b.SeriesPosition))
             .ToListAsync(ct);
     }
 
@@ -1091,7 +1162,7 @@ public class BooksController : ControllerBase
                 b.OpenLibraryWorkKey, b.AuthorId, b.Subjects, b.CreatedAt, b.SeriesPosition,
                 SeriesName = b.Series != null ? b.Series.Name : null,
                 AuthorName = b.Author.Name, AuthorPriority = b.Author.Priority,
-                Owned = b.ManuallyOwned || b.LocalFiles.Any(),
+                Owned = b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any(),
                 ReadStatusStr = b.ReadStatus.ToString(),
             })
             .ToListAsync(ct);

@@ -49,11 +49,12 @@ and wishlist.
 | Search | `/search` | Full-text search across the text of your matched ebooks (opt-in). Shows index progress with a "run indexing now" button (a background batch) and a clear control, then returns books with a matching snippet. Off until enabled in Settings |
 | Home | `/` | Landing dashboard: cover art plus live **stat cards** (wanted, damaged copies, untracked folders, unknown files, authors due for refresh, releases this year, files added this week, owned/missing/active counts) that link straight into the page that acts on each. Backed by the cheap count-only `/api/dashboard` endpoint. This is the default route (replaced the old redirect to the author list) |
 | Authors | `/authors` | Full watchlist with filter, sort, pagination, A–Z jump index, per-row selection, bulk status (Active / Pending / Excluded), author merge, and a per-row **Refresh OL data** button that re-fetches that author's works from OpenLibrary |
-| Author detail | `/authors/:id` | Books (grouped by series), bio, read status, NZB links, reMarkable send, library scan timestamp, bulk "Mark all missing as wanted". A book's local files show its live copies inline; any copies under the archive folder are hidden behind a per-book **"Show N archived"** toggle |
+| Author detail | `/authors/:id` | Books (grouped by series), bio, read status, NZB links, reMarkable send, library scan timestamp, bulk "Mark all missing as wanted". A book's local files show its live copies inline; any copies under the archive folder are hidden behind a per-book **"Show N archived"** toggle. The ownership column carries two checkboxes — **Physical** (a print copy you hold) and **Other edition** ("got but in a different edition than catalogued"); either marks the book owned (it leaves the Missing/Wanted lists) and the status reads e.g. "Yes (other edition)" |
 | Recent Releases | `/recent-releases` | New works from starred authors (last 5 years). Series books show the **series name and number**. Suppressed **and foreign** books are excluded |
 | All Releases | `/all-releases` | New works from all tracked authors. The year filter defaults to the **current year only** (clear either year box to widen the range). Series books show the **series name and number**. Suppressed **and foreign** books are excluded |
 | Missing Works | `/missing` | Unowned books from starred authors — bulk-own, wanted flag, genre filter, year range filter, CSV export, per-book file-candidate matching panel (fuzzy-matched from author unmatched files + unknown folder) |
 | Wanted | `/wanted` | Wanted books grouped by author — per-book selection, author-level select-all, bulk remove from wanted, NZB search links, author priority stars, and (when download automation is configured) a **Grab** button that searches the indexer and sends the best NZB to SABnzbd |
+| Physical Only | `/physical-only` | Books marked **physically owned** (print copy) that have no ebook file here and are **not** flagged "got in a different edition" — i.e. works you hold on paper but might still want digitally. Grouped by author. Backed by `GET /api/books/physical-only` |
 | Health | `/health` | Operational view: backlogs (unmatched files, untracked scans, `__unknown`), authors by status and **by creation source** (provenance), authors created over the last 14 days, the count `prune-authors` would remove, and current job state |
 | Starred Authors | `/starred` | Authors with priority ≥ 1 |
 | Recommendations | `/recommendations` | "Authors you might want to watch" — un-starred authors already in your catalogue ranked by how well their genres overlap the books you own, plus co-authors on series you own; one-click **★ Watch** promotes one onto the watchlist, or **✕ Not interested** dismisses one for good so it's never suggested again — a dismissed author shows an **Undo** banner on its author-detail page so the rejection is reversible. Backed by `GET /api/recommendations` (local data only, no OpenLibrary calls); reject/un-reject via `POST`/`DELETE /api/recommendations/{id}/reject` |
@@ -2336,7 +2337,9 @@ trusted LAN).
 - `Book` — OL work key (unique per author; a synthetic `XX…W` key for
   manually-added books not yet on OpenLibrary), title, first-publish year,
   `CoverId` (OpenLibrary cover) and `CoverUrl` (custom cover, mainly for manual
-  books), `ManuallyOwned` flag + timestamp, `Subjects` (semicolon-delimited OL
+  books), `ManuallyOwned` flag + timestamp (a physical/print copy with no file),
+  `OwnedDifferentEdition` flag + timestamp ("got but in a different edition than
+  catalogued" — no file here), `Subjects` (semicolon-delimited OL
   subject tags; `NULL` = never checked, `""` = checked/none found), `SeriesId`
   (FK to `Series`), `SeriesPosition`, `ReadStatus` (Unread/Reading/Read/Dnf),
   `ReadAt`, `Wanted`, `Suppressed` (user-hidden; rendered in a collapsed
