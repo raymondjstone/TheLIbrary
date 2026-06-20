@@ -1050,6 +1050,7 @@ public class BooksController : ControllerBase
         bool Owned,
         string? ReadStatus,
         string? Series,
+        string? SeriesPosition,
         string? Subjects,
         // When the kept record was first added to the library; null for books that
         // predate added-date tracking. Drives the "by month" grouping on the page.
@@ -1087,7 +1088,7 @@ public class BooksController : ControllerBase
             .Select(b => new
             {
                 b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId,
-                b.OpenLibraryWorkKey, b.AuthorId, b.Subjects, b.CreatedAt,
+                b.OpenLibraryWorkKey, b.AuthorId, b.Subjects, b.CreatedAt, b.SeriesPosition,
                 SeriesName = b.Series != null ? b.Series.Name : null,
                 AuthorName = b.Author.Name, AuthorPriority = b.Author.Priority,
                 Owned = b.ManuallyOwned || b.LocalFiles.Any(),
@@ -1114,7 +1115,7 @@ public class BooksController : ControllerBase
             .Select(r => new RecentReleaseRow(
                 r.Id, r.Title, r.FirstPublishYear!.Value, r.CoverId,
                 r.OpenLibraryWorkKey, r.AuthorId, r.AuthorName, r.AuthorPriority,
-                r.Owned, r.ReadStatusStr, r.SeriesName, r.Subjects, r.CreatedAt))
+                r.Owned, r.ReadStatusStr, r.SeriesName, r.SeriesPosition, r.Subjects, r.CreatedAt))
             .ToList();
     }
 

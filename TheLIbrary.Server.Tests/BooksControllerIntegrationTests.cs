@@ -215,6 +215,29 @@ public class BooksControllerIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task RecentReleases_Includes_Series_Name_And_Position()
+    {
+        var year = DateTime.UtcNow.Year;
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Author", Priority = 1 });
+            db.Series.Add(new Series { Id = 5, Name = "The Saga", NormalizedName = "the saga", PrimaryAuthorId = 1 });
+            db.Books.Add(new Book
+            {
+                Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL1W", Title = "Book Three",
+                NormalizedTitle = "book three", FirstPublishYear = year, SeriesId = 5, SeriesPosition = "3",
+            });
+        });
+
+        using var client = factory.CreateClient();
+        var rows = await client.GetFromJsonAsync<List<BooksController.RecentReleaseRow>>("/api/books/recent-releases");
+        var row = Assert.Single(rows!);
+        Assert.Equal("The Saga", row.Series);
+        Assert.Equal("3", row.SeriesPosition);
+    }
+
     private static async Task SeedAsync(LibraryApiFactory factory, Action<LibraryDbContext> seed)
     {
         using var scope = factory.Services.CreateScope();
