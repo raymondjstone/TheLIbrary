@@ -16,8 +16,7 @@ public class StatsController : ControllerBase
     public async Task<LibraryStats> Get(CancellationToken ct)
     {
         var totalBooks = await _db.Books.CountAsync(ct);
-        var ownedBooks = await _db.Books.CountAsync(
-            b => b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any(), ct);
+        var ownedBooks = await _db.Books.CountAsync(BookOwnership.Owned, ct);
         var missingBooks = totalBooks - ownedBooks;
 
         var readCount = await _db.Books.CountAsync(b => b.ReadStatus == ReadStatus.Read, ct);
@@ -39,7 +38,7 @@ public class StatsController : ControllerBase
 
         // Top 20 genres by book count (owned books only).
         var subjectRows = await _db.Books.AsNoTracking()
-            .Where(b => b.Subjects != null && b.Subjects != "" && (b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any()))
+            .Where(b => b.Subjects != null && b.Subjects != "").Where(BookOwnership.Owned)
             .Select(b => b.Subjects!)
             .ToListAsync(ct);
 

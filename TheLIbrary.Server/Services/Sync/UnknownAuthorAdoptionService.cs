@@ -207,7 +207,10 @@ public sealed class UnknownAuthorAdoptionService
         if (FsPath.SameLocation(src, dest)) return;
         try
         {
-            Directory.Move(src, dest);
+            // SafeMove force-removes a lingering source after a same-volume move
+            // (CIFS deferred-unlink); on a true cross-device move it throws EXDEV
+            // and we fall through to the copy+delete path below.
+            SafeMove.Directory(src, dest);
             return;
         }
         catch (IOException)

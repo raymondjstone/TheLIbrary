@@ -351,7 +351,7 @@ public class BackupController : ControllerBase
                 }
                 var seriesId = r.SeriesId.HasValue && seriesMap.TryGetValue(r.SeriesId.Value, out var sm) ? sm.Id : (int?)null;
 
-                if (bookIndex.TryGetValue((a.Id, r.OpenLibraryWorkKey), out var b))
+                if (bookIndex.TryGetValue((a.Id, r.OpenLibraryWorkKey ?? ""), out var b))
                 {
                     b.Wanted = r.Wanted; b.ReadStatus = (ReadStatus)r.ReadStatus; b.ReadAt = r.ReadAt;
                     b.ManuallyOwned = r.ManuallyOwned; b.ManuallyOwnedAt = r.ManuallyOwnedAt; b.Suppressed = r.Suppressed;

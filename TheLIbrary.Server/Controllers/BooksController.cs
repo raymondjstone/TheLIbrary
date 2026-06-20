@@ -1006,11 +1006,8 @@ public class BooksController : ControllerBase
     {
         return await _db.Books
             .AsNoTracking()
-            .Where(b => b.Author.Priority >= 1
-                     && !b.Suppressed
-                     && !b.ManuallyOwned
-                     && !b.OwnedDifferentEdition
-                     && !b.LocalFiles.Any())
+            .Where(b => b.Author.Priority >= 1 && !b.Suppressed)
+            .Where(BookOwnership.NotOwned)
             .OrderByDescending(b => b.Wanted)
             .ThenByDescending(b => b.Author.Priority)
             .ThenBy(b => b.Author.Name)

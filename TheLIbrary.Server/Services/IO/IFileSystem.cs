@@ -75,27 +75,30 @@ public sealed class SystemFileSystem : IFileSystem
     // All four movers no-op when source and destination are the same location,
     // so callers never have to special-case a move-onto-self (which the
     // underlying File.Move/Directory.Move would throw on).
+    // All movers verify the source is gone after the move and force-remove a
+    // lingering original (CIFS/NFS copy+deferred-unlink) — otherwise the next scan
+    // re-imports the orphan as a duplicate. See SafeMove for the full rationale.
     public void MoveFile(string sourcePath, string destinationPath, bool overwrite)
     {
         if (FsPath.SameLocation(sourcePath, destinationPath)) return;
-        File.Move(sourcePath, destinationPath, overwrite);
+        SafeMove.File(sourcePath, destinationPath, overwrite);
     }
     public Task MoveFileAsync(string sourcePath, string destinationPath, bool overwrite, CancellationToken cancellationToken = default)
         => Task.Run(() =>
         {
             if (FsPath.SameLocation(sourcePath, destinationPath)) return;
-            File.Move(sourcePath, destinationPath, overwrite);
+            SafeMove.File(sourcePath, destinationPath, overwrite);
         }, cancellationToken);
     public void MoveDirectory(string sourcePath, string destinationPath)
     {
         if (FsPath.SameLocation(sourcePath, destinationPath)) return;
-        Directory.Move(sourcePath, destinationPath);
+        SafeMove.Directory(sourcePath, destinationPath);
     }
     public Task MoveDirectoryAsync(string sourcePath, string destinationPath, CancellationToken cancellationToken = default)
         => Task.Run(() =>
         {
             if (FsPath.SameLocation(sourcePath, destinationPath)) return;
-            Directory.Move(sourcePath, destinationPath);
+            SafeMove.Directory(sourcePath, destinationPath);
         }, cancellationToken);
     public IEnumerable<string> EnumerateFiles(string path) => Directory.EnumerateFiles(path);
     public IEnumerable<string> EnumerateFiles(string path, string searchPattern, EnumerationOptions options) => Directory.EnumerateFiles(path, searchPattern, options);

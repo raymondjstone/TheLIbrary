@@ -506,6 +506,7 @@ public class SettingsController : ControllerBase
         var cleaned = (body.Formats ?? Array.Empty<string>())
             .Select(f => f?.Trim().TrimStart('.').ToLowerInvariant())
             .Where(f => !string.IsNullOrWhiteSpace(f))
+            .Select(f => f!) // Where above guarantees non-null/non-empty
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 

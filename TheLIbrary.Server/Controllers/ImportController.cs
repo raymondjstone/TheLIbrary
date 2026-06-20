@@ -139,7 +139,7 @@ public class ImportController : ControllerBase
                 .ExecuteUpdateAsync(s => s.SetProperty(b => b.ReadStatus, _ => ReadStatus.Reading), ct);
 
         if (wantedIds.Count > 0)
-            await _db.Books.Where(b => wantedIds.Contains(b.Id) && !b.ManuallyOwned && !b.OwnedDifferentEdition && !b.LocalFiles.Any())
+            await _db.Books.Where(b => wantedIds.Contains(b.Id)).Where(BookOwnership.NotOwned)
                 .ExecuteUpdateAsync(s => s.SetProperty(b => b.Wanted, _ => true), ct);
 
         await _db.SaveChangesAsync(ct);

@@ -279,8 +279,8 @@ public class SeriesController : ControllerBase
             return NotFound(new { error = "Series not found." });
 
         var missing = await _db.Books
-            .Where(b => b.SeriesId == id && !b.Suppressed && !b.Wanted
-                     && !b.ManuallyOwned && !b.OwnedDifferentEdition && !b.LocalFiles.Any())
+            .Where(b => b.SeriesId == id && !b.Suppressed && !b.Wanted)
+            .Where(BookOwnership.NotOwned)
             .ToListAsync(ct);
         foreach (var b in missing) b.Wanted = true;
         await _db.SaveChangesAsync(ct);

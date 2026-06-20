@@ -1176,7 +1176,7 @@ public class AuthorsController : ControllerBase
 
         try
         {
-            Directory.Move(source, destPath);
+            SafeMove.Directory(source, destPath);
         }
         catch (IOException ex)
         {
@@ -1237,14 +1237,14 @@ public class AuthorsController : ControllerBase
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
                 final = UniqueFilePath(destPath);
-                System.IO.File.Move(file.FullPath, final);
+                SafeMove.File(file.FullPath, final);
             }
             else if (Directory.Exists(file.FullPath))
             {
                 var parent = Path.GetDirectoryName(destPath) ?? destBase;
                 Directory.CreateDirectory(parent);
                 final = UniqueDirectoryPath(parent, Path.GetFileName(destPath));
-                Directory.Move(file.FullPath, final);
+                SafeMove.Directory(file.FullPath, final);
             }
             else return BadRequest(new { error = "File no longer exists on disk." });
 
@@ -1318,7 +1318,7 @@ public class AuthorsController : ControllerBase
             {
                 // Flat: a single file drops straight into the quarantine root.
                 var final = UniqueFilePath(Path.Combine(unknownBase, Path.GetFileName(file.FullPath)));
-                System.IO.File.Move(file.FullPath, final);
+                SafeMove.File(file.FullPath, final);
             }
             else if (Directory.Exists(file.FullPath))
             {
@@ -2114,7 +2114,7 @@ public class AuthorsController : ControllerBase
             var destDir = Path.GetDirectoryName(destPath);
             if (destDir is not null) Directory.CreateDirectory(destDir);
             var final = UniqueFilePath(destPath);
-            System.IO.File.Move(oldPath, final);
+            SafeMove.File(oldPath, final);
             file.FullPath = final;
             file.ResetIntegrity(); // moved into another author's folder — re-check it there
         }
@@ -2123,7 +2123,7 @@ public class AuthorsController : ControllerBase
             var destParent = Path.GetDirectoryName(destPath);
             if (destParent is not null) Directory.CreateDirectory(destParent);
             var final = UniqueDirectoryPath(destParent ?? libRoot, Path.GetFileName(destPath));
-            Directory.Move(oldPath, final);
+            SafeMove.Directory(oldPath, final);
             file.FullPath = final;
             file.ResetIntegrity();
         }
@@ -2478,13 +2478,13 @@ public class AuthorsController : ControllerBase
                 else if (System.IO.File.Exists(file.FullPath))
                 {
                     var finalDest = UniqueFile(destPath);
-                    System.IO.File.Move(file.FullPath, finalDest);
+                    SafeMove.File(file.FullPath, finalDest);
                     file.FullPath = finalDest;
                 }
                 else if (Directory.Exists(file.FullPath))
                 {
                     var finalDest = UniqueDirectory(Path.GetDirectoryName(destPath)!, Path.GetFileName(destPath));
-                    Directory.Move(file.FullPath, finalDest);
+                    SafeMove.Directory(file.FullPath, finalDest);
                     file.FullPath = finalDest;
                 }
                 // If the source has already disappeared, just update the DB
@@ -2616,7 +2616,7 @@ public class AuthorsController : ControllerBase
             var dest = UniqueDirectory(authorDestRoot, leaf);
             try
             {
-                Directory.Move(src, dest);
+                SafeMove.Directory(src, dest);
             }
             catch (IOException ex)
             {
@@ -2673,7 +2673,10 @@ public class AuthorsController : ControllerBase
         string AuthorFolder, int FileCount, IReadOnlyList<string> RootPaths, IReadOnlyList<string> Formats,
         // Integrity-check tally across this folder's files (see BookIntegrityService):
         // Ok = passed, Damaged = failed, Unchecked = never run yet.
-        int IntegrityOk, int IntegrityDamaged, int IntegrityUnchecked);
+        int IntegrityOk, int IntegrityDamaged, int IntegrityUnchecked,
+        // Most-recent file modified time in the folder — lets the UI surface
+        // newly-arrived items at the top (the default sort).
+        DateTime ModifiedAt = default);
 
     public sealed record UntrackedFolderEntry(
         string Name,
@@ -2718,7 +2721,6 @@ public class AuthorsController : ControllerBase
 
         return rows
             .GroupBy(f => f.AuthorFolder)
-            .OrderBy(g => g.Key)
             .Select(g => new UnclaimedFolder(
                 g.Key,
                 g.Count(),
@@ -2733,7 +2735,11 @@ public class AuthorsController : ControllerBase
                     .ToList(),
                 g.Count(f => f.IntegrityOk == true),
                 g.Count(f => f.IntegrityOk == false),
-                g.Count(f => f.IntegrityOk == null)))
+                g.Count(f => f.IntegrityOk == null),
+                g.Max(f => f.ModifiedAt)))
+            // Newest activity first so freshly-arrived folders surface at the top.
+            .OrderByDescending(u => u.ModifiedAt)
+            .ThenBy(u => u.AuthorFolder)
             .ToList();
     }
 
@@ -2888,7 +2894,9 @@ public class AuthorsController : ControllerBase
 
         var safeName = Path.GetFileName(sourcePath).Replace("\"", "");
         Response.Headers["Content-Disposition"] = $"inline; filename=\"{safeName}\"";
-        return PhysicalFile(sourcePath, contentType, enableRangeProcessing: true);
+        // contentType can be null when a supported format had no MIME mapping;
+        // fall back to a generic binary type so PhysicalFile never gets null.
+        return PhysicalFile(sourcePath, contentType ?? "application/octet-stream", enableRangeProcessing: true);
     }
 
     [HttpPost("~/api/untracked/match-openlibrary")]
@@ -3046,7 +3054,7 @@ public class AuthorsController : ControllerBase
             if (string.IsNullOrWhiteSpace(leaf)) leaf = $"returned-{file.Id}";
 
             var dest = UniqueDirectory(authorDestRoot, leaf);
-            try { Directory.Move(src, dest); }
+            try { SafeMove.Directory(src, dest); }
             catch (IOException ex) { moveWarnings.Add($"{leaf}: {ex.Message}"); }
         }
 
@@ -3139,7 +3147,7 @@ public class AuthorsController : ControllerBase
                 if (string.IsNullOrWhiteSpace(leaf)) leaf = $"returned-{file.Id}";
 
                 var dest = UniqueDirectory(authorDestRoot, leaf);
-                try { Directory.Move(src, dest); }
+                try { SafeMove.Directory(src, dest); }
                 catch (IOException ex) { moveWarnings.Add($"{leaf}: {ex.Message}"); }
             }
 
@@ -3170,7 +3178,12 @@ public class AuthorsController : ControllerBase
         // Integrity-check tally for files in this folder (UnknownFileChecks table).
         // A check is valid when SizeBytes+ModifiedAt still match the UnknownFile row.
         // There is no "damaged" state for unknown files — only ok or unchecked.
-        int IntegrityOk = 0, int IntegrityUnchecked = 0);
+        int IntegrityOk = 0, int IntegrityUnchecked = 0,
+        // Disk modified time (folder mtime, or the file's own for a loose file) so
+        // the UI can default to newest-first — a file just moved here by the
+        // incoming job sorts straight to the top instead of being buried
+        // alphabetically among the quarantine backlog.
+        DateTime ModifiedAt = default);
 
     // Lists author-level folders AND loose book files that exist inside the
     // __unknown quarantine bucket across all enabled library locations. Loose
@@ -3191,8 +3204,8 @@ public class AuthorsController : ControllerBase
             ? new[] { (UnknownRoot: customUnknown, RootPath: customUnknown) }
             : locations.Select(l => (UnknownRoot: Path.Combine(l, CalibreScanner.UnknownAuthorFolder), RootPath: l)).ToArray();
 
-        var result = new List<(string Folder, int Count, string RootPath)>();
-        var looseFiles = new List<(string Name, string RootPath, string Ext)>();
+        var result = new List<(string Folder, int Count, string RootPath, DateTime Modified)>();
+        var looseFiles = new List<(string Name, string RootPath, string Ext, DateTime Modified)>();
         foreach (var (unknownRoot, rootPath) in scanRoots)
         {
             if (!Directory.Exists(unknownRoot)) continue;
@@ -3200,13 +3213,24 @@ public class AuthorsController : ControllerBase
             {
                 var fileCount = Directory.GetFiles(dir, "*", SearchOption.AllDirectories).Length;
                 if (fileCount > 0)
-                    result.Add((Folder: Path.GetFileName(dir), Count: fileCount, RootPath: rootPath));
+                {
+                    // Folder mtime updates when the incoming job moves files into
+                    // it, so it's a good "newest activity" proxy without statting
+                    // every file inside (cheap on the NAS mount).
+                    DateTime modified;
+                    try { modified = Directory.GetLastWriteTimeUtc(dir); } catch { modified = default; }
+                    result.Add((Folder: Path.GetFileName(dir), Count: fileCount, RootPath: rootPath, Modified: modified));
+                }
             }
             foreach (var file in Directory.GetFiles(unknownRoot))
             {
                 var ext = Path.GetExtension(file);
                 if (CalibreScanner.EbookExtensions.Contains(ext) || CalibreScanner.ArchiveExtensions.Contains(ext))
-                    looseFiles.Add((Name: Path.GetFileName(file), RootPath: rootPath, Ext: ext.TrimStart('.').ToLowerInvariant()));
+                {
+                    DateTime modified;
+                    try { modified = System.IO.File.GetLastWriteTimeUtc(file); } catch { modified = default; }
+                    looseFiles.Add((Name: Path.GetFileName(file), RootPath: rootPath, Ext: ext.TrimStart('.').ToLowerInvariant(), Modified: modified));
+                }
             }
         }
 
@@ -3284,7 +3308,8 @@ public class AuthorsController : ControllerBase
                         .ToList(),
                     IsFile: false,
                     IntegrityOk: ok,
-                    IntegrityUnchecked: unc);
+                    IntegrityUnchecked: unc,
+                    ModifiedAt: g.Max(x => x.Modified));
             });
 
         var files = looseFiles
@@ -3300,11 +3325,13 @@ public class AuthorsController : ControllerBase
                     g.Select(x => x.Ext).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(x => x).ToList(),
                     IsFile: true,
                     IntegrityOk: ok,
-                    IntegrityUnchecked: unc);
+                    IntegrityUnchecked: unc,
+                    ModifiedAt: g.Max(x => x.Modified));
             });
 
         return folders.Concat(files)
-            .OrderBy(u => u.AuthorFolder)
+            .OrderByDescending(u => u.ModifiedAt)
+            .ThenBy(u => u.AuthorFolder)
             .ToList();
     }
 
@@ -3344,7 +3371,7 @@ public class AuthorsController : ControllerBase
                 found = true;
                 try
                 {
-                    System.IO.File.Move(src, UniqueFilePath(Path.Combine(incomingPath, folder)));
+                    SafeMove.File(src, UniqueFilePath(Path.Combine(incomingPath, folder)));
                 }
                 catch (IOException ex) { warnings.Add(ex.Message); }
                 continue;
@@ -3360,8 +3387,8 @@ public class AuthorsController : ControllerBase
                 {
                     var name = Path.GetFileName(entry);
                     var target = Path.Combine(dest, name);
-                    if (Directory.Exists(entry)) Directory.Move(entry, target);
-                    else System.IO.File.Move(entry, target, overwrite: false);
+                    if (Directory.Exists(entry)) SafeMove.Directory(entry, target);
+                    else SafeMove.File(entry, target, overwrite: false);
                 }
                 if (!Directory.EnumerateFileSystemEntries(src).Any())
                     Directory.Delete(src);
@@ -3412,8 +3439,8 @@ public class AuthorsController : ControllerBase
                     {
                         var name = Path.GetFileName(entry);
                         var target = Path.Combine(dest, name);
-                        if (Directory.Exists(entry)) Directory.Move(entry, target);
-                        else System.IO.File.Move(entry, target, overwrite: false);
+                        if (Directory.Exists(entry)) SafeMove.Directory(entry, target);
+                        else SafeMove.File(entry, target, overwrite: false);
                     }
                     if (!Directory.EnumerateFileSystemEntries(dir).Any())
                         Directory.Delete(dir);
@@ -3430,7 +3457,7 @@ public class AuthorsController : ControllerBase
                 var name = Path.GetFileName(file);
                 try
                 {
-                    System.IO.File.Move(file, UniqueFilePath(Path.Combine(incomingPath, name)));
+                    SafeMove.File(file, UniqueFilePath(Path.Combine(incomingPath, name)));
                 }
                 catch (IOException ex) { warnings.Add($"{name}: {ex.Message}"); }
             }
@@ -3616,15 +3643,15 @@ public class AuthorsController : ControllerBase
                         {
                             var childName = Path.GetFileName(child);
                             var target = UniqueDirectory(dest, childName);
-                            if (Directory.Exists(child)) Directory.Move(child, target);
-                            else System.IO.File.Move(child, target, overwrite: false);
+                            if (Directory.Exists(child)) SafeMove.Directory(child, target);
+                            else SafeMove.File(child, target, overwrite: false);
                         }
                         if (!Directory.EnumerateFileSystemEntries(src).Any())
                             Directory.Delete(src);
                     }
                     else
                     {
-                        Directory.Move(src, dest);
+                        SafeMove.Directory(src, dest);
                     }
 
                     if (entry.TrackedAuthorId is int authorId)

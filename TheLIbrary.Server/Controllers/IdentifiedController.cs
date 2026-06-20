@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
+using TheLibrary.Server.Services.IO;
 using TheLibrary.Server.Services.Sync;
 
 namespace TheLibrary.Server.Controllers;
@@ -610,13 +611,13 @@ public class IdentifiedController : ControllerBase
                 if (System.IO.File.Exists(file.FullPath))
                 {
                     finalPath = UniqueFilePath(destPath);
-                    System.IO.File.Move(file.FullPath, finalPath);
+                    SafeMove.File(file.FullPath, finalPath);
                     PruneEmptyParent(System.IO.Path.GetDirectoryName(file.FullPath), libRoot);
                 }
                 else if (Directory.Exists(file.FullPath))
                 {
                     finalPath = UniqueDirectoryPath(destDir, leafName);
-                    Directory.Move(file.FullPath, finalPath);
+                    SafeMove.Directory(file.FullPath, finalPath);
                     PruneEmptyParent(System.IO.Path.GetDirectoryName(file.FullPath), libRoot);
                 }
                 else

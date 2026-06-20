@@ -68,7 +68,7 @@ export default function Untracked() {
     const [search, setSearch] = useState('')
     const [suffixFilter, setSuffixFilter] = useState('')
     const [statusFilter, setStatusFilter] = useState('all')
-    const [sortOrder, setSortOrder] = useState('name')
+    const [sortOrder, setSortOrder] = useState('newest')
     const [pageSize, setPageSize] = useState(100)
     const [unclaimedPage, setUnclaimedPage] = useState(1)
     const [unknownPage, setUnknownPage] = useState(1)
@@ -654,6 +654,16 @@ export default function Untracked() {
         return true
     }
     const compareFolders = (a, b) => {
+        if (sortOrder === 'newest') {
+            // Server sends modifiedAt (folder/file mtime); newest first so a file
+            // just moved here by the incoming job is at the very top.
+            const diff = new Date(b.modifiedAt || 0) - new Date(a.modifiedAt || 0)
+            return diff || a.authorFolder.localeCompare(b.authorFolder)
+        }
+        if (sortOrder === 'oldest') {
+            const diff = new Date(a.modifiedAt || 0) - new Date(b.modifiedAt || 0)
+            return diff || a.authorFolder.localeCompare(b.authorFolder)
+        }
         if (sortOrder === 'items-desc') {
             const diff = (b.fileCount || 0) - (a.fileCount || 0)
             return diff || a.authorFolder.localeCompare(b.authorFolder)
@@ -744,6 +754,8 @@ export default function Untracked() {
                         setUnclaimedPage(1)
                         setUnknownPage(1)
                     }}>
+                        <option value="newest">Newest first</option>
+                        <option value="oldest">Oldest first</option>
                         <option value="name">Folder name</option>
                         <option value="items-desc">Items: high to low</option>
                         <option value="items-asc">Items: low to high</option>

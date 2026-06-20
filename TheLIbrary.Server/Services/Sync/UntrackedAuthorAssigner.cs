@@ -406,7 +406,7 @@ public sealed class UntrackedAuthorAssigner
             if (!string.IsNullOrWhiteSpace(destDir))
                 Directory.CreateDirectory(destDir);
             var final = UniqueFilePath(destPath);
-            File.Move(sourcePath, final);
+            SafeMove.File(sourcePath, final);
             await PruneEmptyParentsAsync(Path.GetDirectoryName(sourcePath), root, ct);
             return final;
         }
@@ -416,7 +416,7 @@ public sealed class UntrackedAuthorAssigner
             var destParent = Path.GetDirectoryName(destPath) ?? Path.Combine(root, targetFolder);
             Directory.CreateDirectory(destParent);
             var final = UniqueDirectoryPath(destParent, Path.GetFileName(destPath));
-            Directory.Move(sourcePath, final);
+            SafeMove.Directory(sourcePath, final);
             await PruneEmptyParentsAsync(Path.GetDirectoryName(sourcePath), root, ct);
             return final;
         }

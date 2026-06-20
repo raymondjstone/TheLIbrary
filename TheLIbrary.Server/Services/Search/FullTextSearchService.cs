@@ -83,6 +83,12 @@ public sealed class FullTextSearchService
                 var hasCat = await db.Database
                     .SqlQuery<int>($"SELECT COUNT(*) AS [Value] FROM sys.fulltext_catalogs WHERE name = {FtCatalog}")
                     .FirstOrDefaultAsync(ct);
+                // EF1002 (SQL-injection): these DDL statements interpolate only
+                // trusted values — the FtCatalog/FtTable constants and keyIndex,
+                // which is an object NAME read from sys.indexes. SQL parameters
+                // can't stand in for identifiers (catalog/table/index names), so
+                // raw interpolation is required here and is safe.
+#pragma warning disable EF1002
                 if (hasCat == 0)
                     await db.Database.ExecuteSqlRawAsync($"CREATE FULLTEXT CATALOG {FtCatalog}", ct);
 
@@ -94,6 +100,7 @@ public sealed class FullTextSearchService
 
                 await db.Database.ExecuteSqlRawAsync(
                     $"CREATE FULLTEXT INDEX ON dbo.{FtTable}(Content, Title) KEY INDEX {keyIndex} ON {FtCatalog} WITH CHANGE_TRACKING AUTO", ct);
+#pragma warning restore EF1002
             }
             _ftAvailable = true;
             _log.LogInformation("Full-text search: SQL Server full-text index ready (CONTAINS enabled)");

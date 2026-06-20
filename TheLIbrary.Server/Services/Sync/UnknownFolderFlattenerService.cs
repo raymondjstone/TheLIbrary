@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Services.Calibre;
+using TheLibrary.Server.Services.IO;
 using TheLibrary.Server.Services.Scheduling;
 
 namespace TheLibrary.Server.Services.Sync;
@@ -143,7 +144,7 @@ public sealed class UnknownFolderFlattenerService
             var dest = UniqueFilePath(Path.Combine(unknownRoot, Path.GetFileName(src)));
             try
             {
-                File.Move(src, dest);
+                SafeMove.File(src, dest);
                 pathRewrites[src] = dest;
                 filesMoved++;
             }

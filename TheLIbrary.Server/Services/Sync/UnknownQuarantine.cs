@@ -1,3 +1,5 @@
+using TheLibrary.Server.Services.IO;
+
 namespace TheLibrary.Server.Services.Sync;
 
 // The __unknown quarantine is a FLAT bucket: loose files only, NEVER author or
@@ -23,7 +25,7 @@ public static class UnknownQuarantine
         {
             var dest = UntrackedAuthorAssigner.UniqueFilePath(
                 Path.Combine(unknownRoot, Path.GetFileName(file)));
-            File.Move(file, dest);
+            SafeMove.File(file, dest);
             if (rewrites is not null) rewrites[file] = dest;
             moved++;
         }
@@ -39,7 +41,7 @@ public static class UnknownQuarantine
         Directory.CreateDirectory(unknownRoot);
         var dest = UntrackedAuthorAssigner.UniqueFilePath(
             Path.Combine(unknownRoot, Path.GetFileName(sourceFile)));
-        File.Move(sourceFile, dest);
+        SafeMove.File(sourceFile, dest);
         return dest;
     }
 }
