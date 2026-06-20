@@ -50,8 +50,8 @@ and wishlist.
 | Home | `/` | Landing dashboard: cover art plus live **stat cards** (wanted, damaged copies, untracked folders, unknown files, authors due for refresh, releases this year, files added this week, owned/missing/active counts) that link straight into the page that acts on each. Backed by the cheap count-only `/api/dashboard` endpoint. This is the default route (replaced the old redirect to the author list) |
 | Authors | `/authors` | Full watchlist with filter, sort, pagination, A–Z jump index, per-row selection, bulk status (Active / Pending / Excluded), author merge, and a per-row **Refresh OL data** button that re-fetches that author's works from OpenLibrary |
 | Author detail | `/authors/:id` | Books (grouped by series), bio, read status, NZB links, reMarkable send, library scan timestamp, bulk "Mark all missing as wanted". A book's local files show its live copies inline; any copies under the archive folder are hidden behind a per-book **"Show N archived"** toggle |
-| Recent Releases | `/recent-releases` | New works from starred authors (last 5 years) |
-| All Releases | `/all-releases` | New works from all tracked authors. The year filter defaults to the **current year only** (clear either year box to widen the range) |
+| Recent Releases | `/recent-releases` | New works from starred authors (last 5 years). Suppressed **and foreign** books are excluded |
+| All Releases | `/all-releases` | New works from all tracked authors. The year filter defaults to the **current year only** (clear either year box to widen the range). Suppressed **and foreign** books are excluded |
 | Missing Works | `/missing` | Unowned books from starred authors — bulk-own, wanted flag, genre filter, year range filter, CSV export, per-book file-candidate matching panel (fuzzy-matched from author unmatched files + unknown folder) |
 | Wanted | `/wanted` | Wanted books grouped by author — per-book selection, author-level select-all, bulk remove from wanted, NZB search links, author priority stars, and (when download automation is configured) a **Grab** button that searches the indexer and sends the best NZB to SABnzbd |
 | Health | `/health` | Operational view: backlogs (unmatched files, untracked scans, `__unknown`), authors by status and **by creation source** (provenance), authors created over the last 14 days, the count `prune-authors` would remove, and current job state |
@@ -2342,6 +2342,11 @@ trusted LAN).
   `ReadAt`, `Wanted`, `Suppressed` (user-hidden; rendered in a collapsed
   section at the bottom of the author detail page, never deleted),
   `Isbn` (ISBN-13 preferred, normalised on insert), FK to Author.
+  `CreatedAt` (when the library first saw the book — drives the Recent Releases
+  by-month grouping). DB-defaulted to the insert time, **except** a book first
+  seen with a publish year already in the past is stamped 1 Jan of that publish
+  year (`Book.CreatedAtForPublishYear`) so an old title can't surface as a brand-
+  new release; a book published this year keeps the live insert time.
 - `LocalBookFile` — path on disk (file path after organizer runs, directory path
   in classic library layout), library folder names, optional FKs to Author
   and Book (null FK = unmatched), `Isbn` (extracted from `dc:identifier` when

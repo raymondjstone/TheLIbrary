@@ -593,6 +593,9 @@ public class ImportController : ControllerBase
             ManuallyOwnedAt = DateTime.UtcNow,
             Subjects = "",
             Isbn = row.Isbn,
+            // Past publish year → dated to 1 Jan of that year (not "now") so it
+            // groups under its real release period, not the current month.
+            CreatedAt = Book.CreatedAtForPublishYear(body.FirstPublishYear),
         };
 
         _db.Books.Add(book);

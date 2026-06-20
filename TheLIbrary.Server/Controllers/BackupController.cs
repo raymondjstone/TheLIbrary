@@ -366,6 +366,10 @@ public class BackupController : ControllerBase
                         SeriesPosition = r.SeriesPosition, Isbn = r.Isbn, CoverId = r.CoverId,
                         Wanted = r.Wanted, ReadStatus = (ReadStatus)r.ReadStatus, ReadAt = r.ReadAt,
                         ManuallyOwned = r.ManuallyOwned, ManuallyOwnedAt = r.ManuallyOwnedAt, Suppressed = r.Suppressed,
+                        // Backups don't carry CreatedAt; date a restored book with a
+                        // past publish year to 1 Jan of that year (not "now") so it
+                        // doesn't resurface as a new release after a restore.
+                        CreatedAt = Book.CreatedAtForPublishYear(r.FirstPublishYear),
                     };
                     _db.Books.Add(nb);
                     bookIndex[(a.Id, nb.OpenLibraryWorkKey)] = nb;

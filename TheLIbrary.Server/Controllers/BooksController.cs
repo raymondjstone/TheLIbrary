@@ -1077,6 +1077,11 @@ public class BooksController : ControllerBase
             .AsNoTracking()
             .Where(b => (!starredOnly || b.Author.Priority >= 1)
                      && !b.Suppressed
+                     // Foreign titles never belong on the releases pages. Suppressed
+                     // is meant to cover them too, but a foreign book whose Suppressed
+                     // flag drifted off would otherwise leak through — exclude on the
+                     // foreign flag directly.
+                     && !b.Foreign
                      && b.FirstPublishYear != null
                      && b.FirstPublishYear >= cutoffYear)
             .Select(b => new

@@ -364,6 +364,9 @@ public sealed class UntrackedAuthorAssigner
             ManuallyOwned = owned,
             ManuallyOwnedAt = owned ? DateTime.UtcNow : null,
             Subjects = "",
+            // Past publish year → dated to 1 Jan of that year, not "now", so an
+            // old title filed today doesn't surface as a new release.
+            CreatedAt = Book.CreatedAtForPublishYear(firstPublishYear),
         };
 
         _db.Books.Add(book);

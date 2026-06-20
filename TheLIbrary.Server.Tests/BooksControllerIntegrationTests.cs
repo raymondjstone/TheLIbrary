@@ -190,6 +190,31 @@ public class BooksControllerIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task RecentReleases_Excludes_Foreign_Books()
+    {
+        var year = DateTime.UtcNow.Year;
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Author", Priority = 1 });
+            db.Books.AddRange(
+                new Book { Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL1W", Title = "English Title", NormalizedTitle = "english title", FirstPublishYear = year },
+                // Foreign but its Suppressed flag has drifted off — must still be
+                // excluded from the releases pages on the Foreign flag alone.
+                new Book { Id = 11, AuthorId = 1, OpenLibraryWorkKey = "OL2W", Title = "Foreign Title", NormalizedTitle = "foreign title", FirstPublishYear = year, Foreign = true, Suppressed = false });
+        });
+
+        using var client = factory.CreateClient();
+        foreach (var url in new[] { "/api/books/recent-releases", "/api/books/recent-releases/all" })
+        {
+            var rows = await client.GetFromJsonAsync<List<BooksController.RecentReleaseRow>>(url);
+            Assert.NotNull(rows);
+            Assert.Contains(rows!, r => r.Id == 10);
+            Assert.DoesNotContain(rows!, r => r.Id == 11);
+        }
+    }
+
     private static async Task SeedAsync(LibraryApiFactory factory, Action<LibraryDbContext> seed)
     {
         using var scope = factory.Services.CreateScope();

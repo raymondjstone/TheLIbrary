@@ -96,6 +96,9 @@ public sealed class ManualBookService
             // "" (not null) → the refresher treats subjects as "checked, none"
             // for a row with no OL work to fetch them from.
             Subjects = "",
+            // Past publish year → dated to 1 Jan of that year (not "now") so the
+            // book groups under its real release period in Recent Releases.
+            CreatedAt = Book.CreatedAtForPublishYear(firstPublishYear),
         };
         _db.Books.Add(book);
         await _db.SaveChangesAsync(ct);

@@ -316,12 +316,13 @@ public sealed class AuthorRefresher
                 isForeign = TitleLanguageGuesser.IsLikelyNonEnglish(doc.Title);
             }
 
+            var clampedYear = ClampPublishYear(doc.FirstPublishYear);
             _db.Books.Add(new Book
             {
                 OpenLibraryWorkKey = workKey,
                 Title = doc.Title!,
                 NormalizedTitle = normTitle,
-                FirstPublishYear = ClampPublishYear(doc.FirstPublishYear),
+                FirstPublishYear = clampedYear,
                 CoverId = doc.CoverId,
                 AuthorId = author.Id,
                 Subjects = BuildSubjects(doc.Subject), // "" when OL has none
@@ -329,6 +330,10 @@ public sealed class AuthorRefresher
                 SeriesPosition = seriesPos,
                 Foreign = isForeign,
                 Suppressed = isForeign,
+                // A book first seen with a past publish year is dated to 1 Jan of
+                // that year (not "now"), so old titles don't masquerade as new
+                // releases in the by-month grouping.
+                CreatedAt = Book.CreatedAtForPublishYear(clampedYear),
             });
             fetched++;
 

@@ -93,6 +93,20 @@ public class Book
     // Releases "by month" grouping uses to surface what's actually new.
     public DateTime? CreatedAt { get; set; }
 
+    // The CreatedAt to stamp on a book the library is seeing for the FIRST time.
+    // A book whose publish year is already in the PAST was not really "added"
+    // today — filing it under the current month would wrongly surface a years-old
+    // title as a brand-new release. Date it to 1 Jan of its publish year so the
+    // Recent Releases "by month" grouping reflects when the book actually came
+    // out. A book published THIS year (or with an unknown/future year) returns
+    // null, which lets the DB default (SYSUTCDATETIME) stamp the live insert time
+    // — it genuinely is new to the library right now. Mirrors the one-time
+    // BackfillBookCreatedAtFromPublishYear migration for new rows going forward.
+    public static DateTime? CreatedAtForPublishYear(int? firstPublishYear)
+        => firstPublishYear is int y && y >= 1 && y < DateTime.UtcNow.Year
+            ? new DateTime(y, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+            : null;
+
     public int AuthorId { get; set; }
     public Author Author { get; set; } = null!;
 
