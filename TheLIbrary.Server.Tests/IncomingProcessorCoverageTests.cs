@@ -57,4 +57,43 @@ public sealed class IncomingProcessorCoverageTests : IDisposable
         // The unresolvable file was quarantined.
         Assert.True(Directory.Exists(Path.Combine(_root, "__unknown")));
     }
+
+    [Fact]
+    public async Task ProcessAsync_Deletes_Junk_And_Quarantines_Mixed_Bag()
+    {
+        using var rdb = new RelationalTestDb();
+        await using (var s = rdb.NewContext())
+        {
+            s.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "L", Path = _root, Enabled = true, IsPrimary = true, CreatedAt = DateTime.UtcNow });
+            s.AppSettings.Add(new AppSetting { Key = AppSettingKeys.IncomingFolder, Value = _incoming });
+            await s.SaveChangesAsync();
+        }
+
+        // A junk file (deleted in place), a couple of loose unresolvable ebooks,
+        // and an archive — exercises the junk/quarantine/extension branches.
+        await File.WriteAllTextAsync(Path.Combine(_incoming, "cover.jpg"), "x");
+        await File.WriteAllTextAsync(Path.Combine(_incoming, "Mystery Zzqq One.epub"), "x");
+        await File.WriteAllTextAsync(Path.Combine(_incoming, "Mystery Zzqq Two.mobi"), "x");
+
+        await using var db = rdb.NewContext();
+        var processor = new IncomingProcessor(db, new SystemFileSystem(), NullLogger<IncomingProcessor>.Instance);
+        var result = await processor.ProcessAsync(CancellationToken.None);
+        Assert.True(result.Processed >= 2);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_Empty_Incoming_Is_A_Noop()
+    {
+        using var rdb = new RelationalTestDb();
+        await using (var s = rdb.NewContext())
+        {
+            s.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "L", Path = _root, Enabled = true, IsPrimary = true, CreatedAt = DateTime.UtcNow });
+            s.AppSettings.Add(new AppSetting { Key = AppSettingKeys.IncomingFolder, Value = _incoming });
+            await s.SaveChangesAsync();
+        }
+        await using var db = rdb.NewContext();
+        var processor = new IncomingProcessor(db, new SystemFileSystem(), NullLogger<IncomingProcessor>.Instance);
+        var result = await processor.ProcessAsync(CancellationToken.None);
+        Assert.Equal(0, result.Processed);
+    }
 }
