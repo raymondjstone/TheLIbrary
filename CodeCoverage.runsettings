@@ -26,6 +26,7 @@
                 <Source>.*\\TheLIbrary\.Server\\Controllers\\OpenLibraryController\.cs$</Source>
                 <Source>.*\\TheLIbrary\.Server\\Controllers\\BooksController\.cs$</Source>
                 <Source>.*\\TheLIbrary\.Server\\Controllers\\AuthorsController\.cs$</Source>
+                <Source>.*\\TheLIbrary\.Server\\Controllers\\AuthorsController\.Untracked\.cs$</Source>
                 <Source>.*\\TheLIbrary\.Server\\Services\\OpenLibrary\\OpenLibraryClient\.cs$</Source>
                 <Source>.*\\TheLIbrary\.Server\\Services\\Sync\\ManualBookService\.cs$</Source>
                 <Source>.*\\TheLIbrary\.Server\\Services\\Incoming\\IncomingProcessor\.cs$</Source>
