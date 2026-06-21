@@ -41,6 +41,7 @@ public sealed class ScheduledJobs
     private readonly TheLibrary.Server.Services.Search.FullTextSearchService _fullText;
     private readonly AuthorPruneService _pruneAuthors;
     private readonly DuplicateAutoArchiveService _dupAutoArchive;
+    private readonly SeriesWatchService _seriesWatch;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -68,6 +69,7 @@ public sealed class ScheduledJobs
         TheLibrary.Server.Services.Search.FullTextSearchService fullText,
         AuthorPruneService pruneAuthors,
         DuplicateAutoArchiveService dupAutoArchive,
+        SeriesWatchService seriesWatch,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
@@ -77,7 +79,7 @@ public sealed class ScheduledJobs
         _flattenUnknown = flattenUnknown; _dedupeUnknown = dedupeUnknown; _dedupeAuthorFiles = dedupeAuthorFiles; _promoteManualBooks = promoteManualBooks; _adoptUnknownAuthors = adoptUnknownAuthors; _archiveForeign = archiveForeign;
         _mergeLinkedAuthors = mergeLinkedAuthors; _integrity = integrity; _pruneStaleFiles = pruneStaleFiles;
         _contentScan = contentScan; _assignAuthors = assignAuthors; _fullText = fullText; _pruneAuthors = pruneAuthors;
-        _dupAutoArchive = dupAutoArchive;
+        _dupAutoArchive = dupAutoArchive; _seriesWatch = seriesWatch;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -262,6 +264,12 @@ public sealed class ScheduledJobs
         ScheduleJobIds.DuplicateAutoArchive, manualTrigger,
         ct => _dupAutoArchive.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _dupAutoArchive.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunSeriesWatch(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.SeriesWatch, manualTrigger,
+        ct => _seriesWatch.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _seriesWatch.IsRunning);
 
     internal Task RunWithPollingForTests(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,

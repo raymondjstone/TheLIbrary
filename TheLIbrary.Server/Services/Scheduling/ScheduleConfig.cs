@@ -43,6 +43,7 @@ public static class ScheduleJobIds
     public const string IndexFullText = "index-fulltext";
     public const string PruneAuthors = "prune-authors";
     public const string DuplicateAutoArchive = "duplicate-auto-archive";
+    public const string SeriesWatch = "series-watch";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
@@ -51,7 +52,8 @@ public static class ScheduleJobIds
         StarPhysicalAuthors, CacheOpenLibraryMetadata, FlattenUnknown,
         DedupeUnknown, DedupeAuthorFiles, PromoteManualBooks, AdoptUnknownAuthors,
         ArchiveForeign, MergeLinkedAuthors, CheckIntegrity, PruneStaleFiles,
-        ContentScan, AssignAuthors, IndexFullText, PruneAuthors, DuplicateAutoArchive
+        ContentScan, AssignAuthors, IndexFullText, PruneAuthors, DuplicateAutoArchive,
+        SeriesWatch
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -121,5 +123,8 @@ public static class ScheduleJobIds
             // (the automated "Archive extras"). Moves files, so it ships DISABLED
             // — opt in on the Schedules page.
             [DuplicateAutoArchive] = new() { Cron = "30 3 * * *", Enabled = false },
+            // Mark newly-added volumes of series you own as Wanted (+ Pushover).
+            // Acts on your collection, so it ships DISABLED — opt in on Schedules.
+            [SeriesWatch] = new() { Cron = "0 14 * * *", Enabled = false },
         };
 }

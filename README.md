@@ -1722,6 +1722,7 @@ on every startup.
 | `index-fulltext` | `0 * * * *` (disabled by default) | Extract and index ebook text for [full-text search](#full-text-search). No-op unless the feature is enabled in Settings; indexes up to `FullTextIndexMaxPerRun` books per run. See [Full-text search](#full-text-search) |
 | `prune-authors` | `40 3 * * *` (disabled by default) | Delete **empty auto-created authors** — rows whose `CreationSource` is `same-name`/`assign`/`content-scan`/`adopt`, status Pending/NotFound, priority 0, with no books, no local files, no links and no notes. Never touches manual/restored/pre-existing authors. Capped 5000/run. Destructive, so opt-in |
 | `duplicate-auto-archive` | `30 3 * * *` (disabled by default) | For every book with more than one live copy, keep the best one (healthy beats damaged, then preferred format, then lowest id — same rule as the Duplicates page) and **archive the rest** — the automated "Archive extras". Moves files (forward-slash paths, source verified removed via `SafeMove`), so it ships **disabled**; opt in on the Schedules page |
+| `series-watch` | `0 14 * * *` (disabled by default) | When a series you **own a book in** gains a recently-added (≤14 days) volume you don't own, mark it **Wanted** and send one Pushover summary — the high-signal "next in a series I'm collecting" case. Acts on your collection, so it ships **disabled**; opt in on the Schedules page |
 
 Hangfire runs with `WorkerCount=1`, and all background work also passes through
 a single `BackgroundTaskCoordinator`, so a manual UI run and a cron tick can't
