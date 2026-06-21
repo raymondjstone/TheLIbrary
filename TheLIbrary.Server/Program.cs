@@ -85,6 +85,7 @@ builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.AuthorDuplicateRem
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.DuplicateAutoArchiveService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.SeriesWatchService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Download.AutoReplaceDamagedService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.WorkResolutionService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.ManualBookPromotionService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnknownAuthorAdoptionService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.StarredAuthorRefreshService>();

@@ -45,6 +45,7 @@ public static class ScheduleJobIds
     public const string DuplicateAutoArchive = "duplicate-auto-archive";
     public const string SeriesWatch = "series-watch";
     public const string AutoReplaceDamaged = "auto-replace-damaged";
+    public const string ResolveWorks = "resolve-works";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
@@ -54,7 +55,7 @@ public static class ScheduleJobIds
         DedupeUnknown, DedupeAuthorFiles, PromoteManualBooks, AdoptUnknownAuthors,
         ArchiveForeign, MergeLinkedAuthors, CheckIntegrity, PruneStaleFiles,
         ContentScan, AssignAuthors, IndexFullText, PruneAuthors, DuplicateAutoArchive,
-        SeriesWatch, AutoReplaceDamaged
+        SeriesWatch, AutoReplaceDamaged, ResolveWorks
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -127,6 +128,10 @@ public static class ScheduleJobIds
             // Mark newly-added volumes of series you own as Wanted (+ Pushover).
             // Acts on your collection, so it ships DISABLED — opt in on Schedules.
             [SeriesWatch] = new() { Cron = "0 14 * * *", Enabled = false },
+            // Link author-known/work-less files to their OpenLibrary work by ISBN.
+            // Makes OL calls + creates Book rows, so it ships DISABLED — opt in on
+            // the Schedules page (or trigger once to work the backlog).
+            [ResolveWorks] = new() { Cron = "0 16 * * *", Enabled = false },
             // Search the indexer and grab replacements for damaged books. Pulls
             // downloads + indexer rate-limited, so it ships DISABLED — opt in on
             // the Schedules page (and configure Download automation in Settings).

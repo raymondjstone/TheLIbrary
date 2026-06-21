@@ -67,6 +67,32 @@ public sealed class OpenLibraryClient
         return GetJsonAsync<WorkSearchResponse>(url, ct);
     }
 
+    public sealed record IsbnEdition(string WorkKey, string? Title, int? CoverId);
+
+    // ISBN → edition (`/isbn/{isbn}.json`), then its work. This direct edition
+    // endpoint resolves far more ISBNs than the `search.json?isbn=` index (it
+    // carries editions the search index hasn't surfaced), so it's the primary ISBN
+    // path. Returns null on a 404 / no-work edition; the caller falls back to the
+    // ISBN search. Only digits/X are kept so a hyphenated stored ISBN still hits.
+    public async Task<IsbnEdition?> ResolveEditionByIsbnAsync(string isbn, CancellationToken ct)
+    {
+        var clean = new string(isbn.Where(c => char.IsDigit(c) || c is 'X' or 'x').ToArray());
+        if (clean.Length is not (10 or 13)) return null;
+        var ed = await GetJsonAsync<EditionResponse>($"isbn/{HttpUtility.UrlEncode(clean)}.json", ct);
+        var workKey = ed?.Works?.FirstOrDefault(w => !string.IsNullOrWhiteSpace(w.Key))?.Key;
+        if (string.IsNullOrWhiteSpace(workKey)) return null;
+        var cover = ed!.Covers?.FirstOrDefault(c => c > 0);
+        return new IsbnEdition(workKey!, string.IsNullOrWhiteSpace(ed.Title) ? null : ed.Title, cover);
+    }
+
+    private sealed class EditionResponse
+    {
+        public string? Title { get; set; }
+        public List<EditionWorkRef>? Works { get; set; }
+        public List<int>? Covers { get; set; }
+    }
+    private sealed class EditionWorkRef { public string? Key { get; set; } }
+
     // Fetches a single author record by OL key (e.g. "OL123A"). Returns null on
     // 404 or if the record is a redirect (merged into another key). Upstream
     // failures throw OpenLibraryRequestFailedException so callers can distinguish

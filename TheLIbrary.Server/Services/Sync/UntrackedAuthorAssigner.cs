@@ -374,6 +374,64 @@ public sealed class UntrackedAuthorAssigner
         return new EnsuredOpenLibraryBook(book, null);
     }
 
+    // Resolves the WORK for a file that is ALREADY filed under an author but has
+    // no Book link, using its ISBN — the case AssignAsync deliberately skips
+    // (it bails on author-linked files). The edition endpoint is tried first
+    // (resolves ~2x the ISBNs the search index does), then the ISBN search. The
+    // work is linked under the file's EXISTING author; the file is NOT moved (it
+    // is already in the right folder). A lenient title check guards against a
+    // mis-extracted/placeholder ISBN pointing at an unrelated work. Does not
+    // save — the caller persists. Returns true when BookId was set.
+    public async Task<bool> TryLinkWorkByIsbnAsync(LocalBookFile file, string? isbn, string? knownTitle, CancellationToken ct)
+    {
+        if (file.AuthorId is null) return false;
+        var clean = CleanForSearch(isbn);
+        if (string.IsNullOrWhiteSpace(clean)) return false;
+
+        string? workKey = null, title = null; int? coverId = null, year = null;
+
+        var edition = await _ol.ResolveEditionByIsbnAsync(clean!, ct);
+        if (edition is not null)
+        {
+            workKey = edition.WorkKey; title = edition.Title; coverId = edition.CoverId;
+        }
+        else
+        {
+            var doc = (await _ol.SearchByIsbnAsync(clean!, ct))?.Docs?.FirstOrDefault();
+            if (doc is not null && !string.IsNullOrWhiteSpace(doc.Key))
+            {
+                workKey = doc.Key; title = doc.Title; coverId = doc.CoverId; year = doc.FirstPublishYear;
+            }
+        }
+        if (string.IsNullOrWhiteSpace(workKey)) return false;
+
+        // Guard: if we have a confident local title AND it shares nothing with the
+        // resolved work's title, the ISBN is likely wrong — don't mis-link.
+        if (!string.IsNullOrWhiteSpace(knownTitle) && !string.IsNullOrWhiteSpace(title)
+            && !TitlesShareSignal(knownTitle!, title!))
+            return false;
+
+        var add = await EnsureOpenLibraryBookAsync(file.AuthorId.Value, workKey, title, year, coverId, owned: false, ct);
+        if (add.Book is null) return false;
+        file.BookId = add.Book.Id;
+        return true;
+    }
+
+    // Lenient agreement test: do two titles share at least one significant token,
+    // or is one contained in the other? Deliberately permissive — it only rejects
+    // a gross mismatch (a wrong ISBN pointing at an unrelated book), not subtitle
+    // or punctuation differences.
+    private static bool TitlesShareSignal(string a, string b)
+    {
+        var na = TitleNormalizer.Normalize(a);
+        var nb = TitleNormalizer.Normalize(b);
+        if (na.Length == 0 || nb.Length == 0) return true; // nothing to disagree on
+        if (na.Contains(nb) || nb.Contains(na)) return true;
+        var ta = na.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(w => w.Length >= 4).ToHashSet();
+        var tb = nb.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(w => w.Length >= 4);
+        return ta.Count == 0 || tb.Any(ta.Contains);
+    }
+
     // Moves an untracked file (or folder) into the target author's folder under
     // the given library root, keeping any relative sub-path and avoiding name
     // collisions. Returns the final path.

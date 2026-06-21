@@ -43,6 +43,7 @@ public sealed class ScheduledJobs
     private readonly DuplicateAutoArchiveService _dupAutoArchive;
     private readonly SeriesWatchService _seriesWatch;
     private readonly TheLibrary.Server.Services.Download.AutoReplaceDamagedService _autoReplaceDamaged;
+    private readonly WorkResolutionService _resolveWorks;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -72,6 +73,7 @@ public sealed class ScheduledJobs
         DuplicateAutoArchiveService dupAutoArchive,
         SeriesWatchService seriesWatch,
         TheLibrary.Server.Services.Download.AutoReplaceDamagedService autoReplaceDamaged,
+        WorkResolutionService resolveWorks,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
@@ -81,7 +83,7 @@ public sealed class ScheduledJobs
         _flattenUnknown = flattenUnknown; _dedupeUnknown = dedupeUnknown; _dedupeAuthorFiles = dedupeAuthorFiles; _promoteManualBooks = promoteManualBooks; _adoptUnknownAuthors = adoptUnknownAuthors; _archiveForeign = archiveForeign;
         _mergeLinkedAuthors = mergeLinkedAuthors; _integrity = integrity; _pruneStaleFiles = pruneStaleFiles;
         _contentScan = contentScan; _assignAuthors = assignAuthors; _fullText = fullText; _pruneAuthors = pruneAuthors;
-        _dupAutoArchive = dupAutoArchive; _seriesWatch = seriesWatch; _autoReplaceDamaged = autoReplaceDamaged;
+        _dupAutoArchive = dupAutoArchive; _seriesWatch = seriesWatch; _autoReplaceDamaged = autoReplaceDamaged; _resolveWorks = resolveWorks;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -278,6 +280,12 @@ public sealed class ScheduledJobs
         ScheduleJobIds.AutoReplaceDamaged, manualTrigger,
         ct => _autoReplaceDamaged.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _autoReplaceDamaged.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunResolveWorks(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.ResolveWorks, manualTrigger,
+        ct => _resolveWorks.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _resolveWorks.IsRunning);
 
     internal Task RunWithPollingForTests(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,
