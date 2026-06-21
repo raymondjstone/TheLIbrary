@@ -48,6 +48,17 @@ export default function Stats() {
                         <StatCard label="Starred authors" value={stats.starredAuthors} />
                     </div>
 
+                    {stats.insights && (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
+                            <StatCard label="Read last 12 mo" value={stats.insights.readLast12Months} />
+                            <StatCard label="Pace" value={`${stats.insights.perMonth}/mo`} />
+                            <StatCard label="Owned, unread" value={stats.insights.ownedUnread} />
+                            <StatCard label="Years to clear backlog"
+                                value={stats.insights.yearsToClearBacklog == null ? '—' : `${stats.insights.yearsToClearBacklog} yr`}
+                                sub="at current pace" />
+                        </div>
+                    )}
+
                     {stats.topGenres.length > 0 && (
                         <>
                             <h3>Top Genres (owned books)</h3>

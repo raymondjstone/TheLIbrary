@@ -99,6 +99,21 @@ public class StatsController : ControllerBase
             .OrderBy(m => m.Month)
             .ToList();
 
+        // Reading insights: pace over the last 12 months and how long the owned,
+        // not-yet-read backlog would take to finish at that pace.
+        var since = DateTime.UtcNow.AddMonths(-12);
+        var readLast12 = await _db.Books.CountAsync(
+            b => b.ReadStatus == ReadStatus.Read && b.ReadAt != null && b.ReadAt >= since, ct);
+        var ownedUnread = await _db.Books
+            .Where(b => b.ReadStatus == ReadStatus.Unread)
+            .Where(BookOwnership.Owned)
+            .CountAsync(ct);
+        var perMonth = Math.Round(readLast12 / 12.0, 1);
+        double? yearsToClearBacklog = readLast12 > 0
+            ? Math.Round(ownedUnread / (double)readLast12, 1)
+            : (double?)null;
+        var insights = new ReadingInsights(readLast12, perMonth, ownedUnread, yearsToClearBacklog);
+
         return new LibraryStats(
             totalBooks, ownedBooks, missingBooks,
             readCount, readingCount, wantedCount,
@@ -107,7 +122,8 @@ public class StatsController : ControllerBase
             topGenres,
             coverage,
             formatBreakdown,
-            acquisitionCounts);
+            acquisitionCounts,
+            insights);
     }
 
     public sealed record LibraryStats(
@@ -124,7 +140,13 @@ public class StatsController : ControllerBase
         IReadOnlyList<GenreCount> TopGenres,
         IReadOnlyList<AuthorCoverage> AuthorCoverage,
         IReadOnlyList<FormatCount> FormatBreakdown,
-        IReadOnlyList<MonthCount> AcquisitionByMonth);
+        IReadOnlyList<MonthCount> AcquisitionByMonth,
+        ReadingInsights Insights);
+
+    // ReadLast12Months: books finished in the last year. PerMonth: that ÷ 12.
+    // OwnedUnread: owned books not yet read. YearsToClearBacklog: OwnedUnread at
+    // the last-year pace (null when nothing was read, so pace is unknown).
+    public sealed record ReadingInsights(int ReadLast12Months, double PerMonth, int OwnedUnread, double? YearsToClearBacklog);
 
     public sealed record YearCount(int Year, int Count);
     public sealed record GenreCount(string Genre, int Count);
