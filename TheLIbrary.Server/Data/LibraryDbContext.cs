@@ -27,9 +27,12 @@ public class LibraryDbContext : DbContext
     public DbSet<BookCollection> BookCollections => Set<BookCollection>();
     public DbSet<BookTextIndex> BookTextIndexes => Set<BookTextIndex>();
     public DbSet<TextIndexWord> TextIndexWords => Set<TextIndexWord>();
+    public DbSet<ActivityLogEntry> ActivityLog => Set<ActivityLogEntry>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
+        b.Entity<ActivityLogEntry>(e => e.HasIndex(x => x.At));
+
         b.Entity<Author>(e =>
         {
             // DB-assigned creation timestamp; lets any insert path stamp it

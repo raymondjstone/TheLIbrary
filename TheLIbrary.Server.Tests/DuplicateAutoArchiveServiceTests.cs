@@ -69,5 +69,8 @@ public sealed class DuplicateAutoArchiveServiceTests : IDisposable
         Assert.False(File.Exists(pdf));
         Assert.True(File.Exists(extra.FullPath));
         Assert.True(File.Exists(epub));
+
+        // The action was recorded to the activity log.
+        Assert.True(await verify.ActivityLog.AnyAsync(a => a.Action == "auto-archive"));
     }
 }

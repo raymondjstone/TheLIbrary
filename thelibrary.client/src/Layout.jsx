@@ -34,6 +34,7 @@ export default function Layout() {
                     <span className="nav-group-label">Library health</span>
                     <NavLink to="/stats">Stats</NavLink>
                     <NavLink to="/health">Health</NavLink>
+                    <NavLink to="/activity">Activity</NavLink>
                     <NavLink to="/duplicates">Duplicates</NavLink>
                     <NavLink to="/damaged">Damaged</NavLink>
                     <NavLink to="/foreign">Foreign Titles</NavLink>

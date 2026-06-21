@@ -125,6 +125,14 @@ public sealed class DuplicateAutoArchiveService
             await db.SaveChangesAsync(ct);
         }
 
+        if (filesArchived > 0)
+        {
+            Services.ActivityLogger.Record(db, "auto-archive",
+                $"Auto-archived {filesArchived} duplicate extra(s) across {booksProcessed} book(s)",
+                source: "duplicate-auto-archive");
+            await db.SaveChangesAsync(ct);
+        }
+
         var summary = new DuplicateAutoArchiveSummary(booksProcessed, filesArchived, warnings);
         _log.LogInformation(
             "Duplicate auto-archive done. Books={Books} Archived={Archived} Warnings={Warnings}",

@@ -839,6 +839,13 @@ public class BooksController : ControllerBase
             }
         }
 
+        if (archived > 0 || deleted > 0)
+        {
+            var verb = action == "archive" ? "Archived" : "Deleted";
+            var n = action == "archive" ? archived : deleted;
+            Services.ActivityLogger.Record(_db, action!,
+                $"{verb} {n} duplicate file(s) via the Duplicates page" + (warnings.Count > 0 ? $" ({warnings.Count} warning(s))" : ""));
+        }
         await _db.SaveChangesAsync(ct);
         return Ok(new DuplicateActionResult(deleted, archived, warnings));
     }
