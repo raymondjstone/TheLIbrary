@@ -14,6 +14,24 @@ public class FrontMatterExtractorTests
     }
 
     [Fact]
+    public void Reads_Title_And_Author_From_Standalone_By_Title_Page()
+    {
+        // The most common ebook title-page layout: title, a standalone "by"
+        // connector, a blank line, then the author on its own line.
+        var det = FrontMatterExtractor.Parse("The Old Gods Awaken\nby\n\nManley Wade Wellman\n\nChapter One\n");
+        Assert.Equal("The Old Gods Awaken", det.Title);
+        Assert.Equal("Manley Wade Wellman", det.Author);
+    }
+
+    [Fact]
+    public void Standalone_By_Without_A_Name_Below_Does_Not_Invent_An_Author()
+    {
+        // "by" followed by prose (not a name) must not be promoted to an author.
+        var det = FrontMatterExtractor.Parse("Some Heading\nby\nthe time the sun rose over the hills\n");
+        Assert.Null(det.Author);
+    }
+
+    [Fact]
     public void Finds_Labeled_Isbn()
     {
         var det = FrontMatterExtractor.Parse("First published 1969\nISBN: 978-0-345-33871-9\n");

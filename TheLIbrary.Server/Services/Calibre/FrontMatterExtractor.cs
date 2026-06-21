@@ -339,9 +339,26 @@ public static class FrontMatterExtractor
         var head = lines.Where(l => l.Length > 0).Take(12).ToList();
         for (var i = 0; i < head.Count; i++)
         {
-            var m = Regex.Match(head[i], @"^\s*by\s+(" + NamePattern + NameSuffixPattern + @")\s*$", RegexOptions.IgnoreCase);
-            if (!m.Success) continue;
-            var author = CleanAuthor(m.Groups[1].Value);
+            string? author = null;
+
+            // Form A: "by <Author>" on one line.
+            var inline = Regex.Match(head[i], @"^\s*by\s+(" + NamePattern + NameSuffixPattern + @")\s*$", RegexOptions.IgnoreCase);
+            if (inline.Success)
+                author = CleanAuthor(inline.Groups[1].Value);
+            // Form B: a standalone "by" connector line — the title sits above it and
+            // the author on a following line ("Title" / "by" / "Manley Wade Wellman").
+            // This is the most common ebook title-page layout. (Blank lines are
+            // already filtered out of `head`, so the author is within a line or two.)
+            else if (Regex.IsMatch(head[i], @"^\s*by\s*$", RegexOptions.IgnoreCase))
+            {
+                for (var k = i + 1; k < head.Count && k <= i + 3; k++)
+                {
+                    var nm = Regex.Match(head[k], @"^\s*(" + NamePattern + NameSuffixPattern + @")\s*$");
+                    if (nm.Success && CleanAuthor(nm.Groups[1].Value) is { } a) { author = a; break; }
+                }
+            }
+
+            if (author is null) continue;
             // The title must be a plausible line within the 3 lines directly above
             // the byline — not just any earlier line.
             string? title = null;
