@@ -68,6 +68,25 @@ public sealed class UntrackedAuthorAssigner
         var searchIsbn = CleanForSearch(!string.IsNullOrWhiteSpace(scan.Isbn) ? scan.Isbn
             : embeddedAuthor is not null ? embedded!.Isbn : null);
 
+        // Content + embedded metadata gave us NOTHING (no title and no author) —
+        // the common case for quarantined .txt/.pdf/.mobi with no front matter.
+        // The FILENAME usually still carries "<Title> - <Author>"
+        // ("Zero Sight - B. Justin Shier.mobi"), so interpret it for both. Skip
+        // the literal "Unknown" placeholder the importer stamps on truly-unknown
+        // files. The downstream OpenLibrary search + author validation reject a
+        // junk guess, so this only ever helps — it can't mis-file.
+        if (string.IsNullOrWhiteSpace(searchTitle) && string.IsNullOrWhiteSpace(searchAuthor))
+        {
+            var guess = FilenameGuesser.Interpret(sourcePath).FirstOrDefault(g =>
+                !string.IsNullOrWhiteSpace(g.Title) && !string.IsNullOrWhiteSpace(g.Author)
+                && !string.Equals(g.Author, "Unknown", StringComparison.OrdinalIgnoreCase));
+            if (guess is not null)
+            {
+                searchTitle = CleanForSearch(guess.Title);
+                searchAuthor = CleanForSearch(guess.Author);
+            }
+        }
+
         // An author guess with NO title is a dead end: the OL work search never
         // runs, and an author missing from the local OL dump can then never be
         // confirmed — such rows used to be retried forever. Recover the title

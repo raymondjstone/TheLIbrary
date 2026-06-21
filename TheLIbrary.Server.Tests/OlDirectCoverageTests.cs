@@ -128,6 +128,32 @@ public sealed class OlDirectCoverageTests : IDisposable
     }
 
     [Fact]
+    public async Task AssignAsync_Recovers_Title_And_Author_From_Filename_When_Extraction_Empty()
+    {
+        using var rdb = new RelationalTestDb();
+        await using (var s = rdb.NewContext())
+        {
+            s.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "L", Path = _root, Enabled = true, IsPrimary = true, CreatedAt = DateTime.UtcNow });
+            s.OpenLibraryAuthors.Add(new OpenLibraryAuthor { OlKey = "OL1A", Name = "Primary Auth", NormalizedName = TitleNormalizer.NormalizeAuthor("Primary Auth"), ImportedAt = DateTime.UtcNow });
+            var dir = Path.Combine(_root, CalibreScanner.UnknownAuthorFolder);
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, "Alpha - Primary Auth.epub");
+            File.WriteAllText(path, "x");
+            // Extraction got NOTHING — only the filename carries "Title - Author".
+            s.BookContentScans.Add(new BookContentScan { Id = 1, FullPath = path, Source = "untracked", ScannedAt = DateTime.UtcNow });
+            await s.SaveChangesAsync();
+        }
+        await using var db = rdb.NewContext();
+        var scan = db.BookContentScans.First();
+        var assigner = new UntrackedAuthorAssigner(db, NewOl(), new SystemFileSystem());
+
+        var outcome = await assigner.AssignAsync(scan, default);
+
+        Assert.True(outcome.Assigned, outcome.Reason);
+        Assert.Equal("Primary Auth", outcome.AuthorName);
+    }
+
+    [Fact]
     public async Task ApplyContentGuess_Runs()
     {
         using var rdb = new RelationalTestDb();
