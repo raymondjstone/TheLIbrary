@@ -151,6 +151,22 @@ export default function Damaged() {
     }
 
     // Flag the book for re-acquisition (it appears on the Wanted page).
+    // Search the configured indexer and send the best NZB to SABnzbd for a fresh
+    // copy of this (damaged) book. Reuses the per-book grab endpoint.
+    const grabReplacement = async (bookId) => {
+        setOne(`grab:${bookId}`, true)
+        try {
+            const r = await fetch(`/api/books/${bookId}/grab`, { method: 'POST' })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || body.message || r.statusText)
+            alert(body.message || 'Sent to SABnzbd.')
+        } catch (e) {
+            alert(`Grab failed: ${e.message}`)
+        } finally {
+            setOne(`grab:${bookId}`, false)
+        }
+    }
+
     const addToWanted = async (bookId) => {
         setOne(`want:${bookId}`, true)
         try {
@@ -334,6 +350,14 @@ export default function Damaged() {
                                                             title="Add this book to the Wanted list to find a replacement"
                                                             onClick={() => addToWanted(g.bookId)}>
                                                         {wantedBooks.has(g.bookId) ? '★ Wanted' : busy.has(`want:${g.bookId}`) ? '…' : '☆ Want'}
+                                                    </button>
+                                                )}
+                                                {g.bookId != null && (
+                                                    <button className="btn-ghost"
+                                                            disabled={busy.has(`grab:${g.bookId}`)}
+                                                            title="Search the indexer and send the best replacement to SABnzbd (needs Download automation configured)"
+                                                            onClick={() => grabReplacement(g.bookId)}>
+                                                        {busy.has(`grab:${g.bookId}`) ? 'Grabbing…' : '⤓ Grab replacement'}
                                                     </button>
                                                 )}
                                                 <button className="btn-danger" style={{ marginLeft: g.bookId != null ? 0 : 'auto' }}

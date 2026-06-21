@@ -42,6 +42,7 @@ public sealed class ScheduledJobs
     private readonly AuthorPruneService _pruneAuthors;
     private readonly DuplicateAutoArchiveService _dupAutoArchive;
     private readonly SeriesWatchService _seriesWatch;
+    private readonly TheLibrary.Server.Services.Download.AutoReplaceDamagedService _autoReplaceDamaged;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -70,6 +71,7 @@ public sealed class ScheduledJobs
         AuthorPruneService pruneAuthors,
         DuplicateAutoArchiveService dupAutoArchive,
         SeriesWatchService seriesWatch,
+        TheLibrary.Server.Services.Download.AutoReplaceDamagedService autoReplaceDamaged,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
@@ -79,7 +81,7 @@ public sealed class ScheduledJobs
         _flattenUnknown = flattenUnknown; _dedupeUnknown = dedupeUnknown; _dedupeAuthorFiles = dedupeAuthorFiles; _promoteManualBooks = promoteManualBooks; _adoptUnknownAuthors = adoptUnknownAuthors; _archiveForeign = archiveForeign;
         _mergeLinkedAuthors = mergeLinkedAuthors; _integrity = integrity; _pruneStaleFiles = pruneStaleFiles;
         _contentScan = contentScan; _assignAuthors = assignAuthors; _fullText = fullText; _pruneAuthors = pruneAuthors;
-        _dupAutoArchive = dupAutoArchive; _seriesWatch = seriesWatch;
+        _dupAutoArchive = dupAutoArchive; _seriesWatch = seriesWatch; _autoReplaceDamaged = autoReplaceDamaged;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -270,6 +272,12 @@ public sealed class ScheduledJobs
         ScheduleJobIds.SeriesWatch, manualTrigger,
         ct => _seriesWatch.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _seriesWatch.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunAutoReplaceDamaged(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.AutoReplaceDamaged, manualTrigger,
+        ct => _autoReplaceDamaged.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _autoReplaceDamaged.IsRunning);
 
     internal Task RunWithPollingForTests(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,

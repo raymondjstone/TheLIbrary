@@ -44,6 +44,7 @@ public static class ScheduleJobIds
     public const string PruneAuthors = "prune-authors";
     public const string DuplicateAutoArchive = "duplicate-auto-archive";
     public const string SeriesWatch = "series-watch";
+    public const string AutoReplaceDamaged = "auto-replace-damaged";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
@@ -53,7 +54,7 @@ public static class ScheduleJobIds
         DedupeUnknown, DedupeAuthorFiles, PromoteManualBooks, AdoptUnknownAuthors,
         ArchiveForeign, MergeLinkedAuthors, CheckIntegrity, PruneStaleFiles,
         ContentScan, AssignAuthors, IndexFullText, PruneAuthors, DuplicateAutoArchive,
-        SeriesWatch
+        SeriesWatch, AutoReplaceDamaged
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -126,5 +127,9 @@ public static class ScheduleJobIds
             // Mark newly-added volumes of series you own as Wanted (+ Pushover).
             // Acts on your collection, so it ships DISABLED — opt in on Schedules.
             [SeriesWatch] = new() { Cron = "0 14 * * *", Enabled = false },
+            // Search the indexer and grab replacements for damaged books. Pulls
+            // downloads + indexer rate-limited, so it ships DISABLED — opt in on
+            // the Schedules page (and configure Download automation in Settings).
+            [AutoReplaceDamaged] = new() { Cron = "0 15 * * *", Enabled = false },
         };
 }

@@ -103,6 +103,7 @@ public sealed class ScheduleService
             ScheduleJobIds.DedupeAuthorFiles => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunDedupeAuthorFiles(true)),
             ScheduleJobIds.DuplicateAutoArchive => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunDuplicateAutoArchive(true)),
             ScheduleJobIds.SeriesWatch => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunSeriesWatch(true)),
+            ScheduleJobIds.AutoReplaceDamaged => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunAutoReplaceDamaged(true)),
             ScheduleJobIds.PromoteManualBooks => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunPromoteManualBooks(true)),
             ScheduleJobIds.AdoptUnknownAuthors => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunAdoptUnknownAuthors(true)),
             ScheduleJobIds.ArchiveForeign => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunArchiveForeign(true)),
@@ -219,6 +220,9 @@ public sealed class ScheduleService
                     break;
                 case ScheduleJobIds.SeriesWatch:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunSeriesWatch(), entry.Cron);
+                    break;
+                case ScheduleJobIds.AutoReplaceDamaged:
+                    _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunAutoReplaceDamaged(), entry.Cron);
                     break;
                 case ScheduleJobIds.PromoteManualBooks:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunPromoteManualBooks(), entry.Cron);
