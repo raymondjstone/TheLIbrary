@@ -32,6 +32,29 @@ public class BooksControllerCoverageTests
     }
 
     [Fact]
+    public async Task UnlinkFile_Detaches_File_From_Book_And_Marks_ManuallyUnmatched()
+    {
+        using var rdb = new RelationalTestDb();
+        await using (var s = rdb.NewContext())
+        {
+            s.Authors.Add(new Author { Id = 1, Name = "Auth" });
+            s.Books.Add(new Book { Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL10W", Title = "Book", NormalizedTitle = "book" });
+            s.LocalBookFiles.Add(new LocalBookFile { Id = 1, BookId = 10, AuthorId = 1, AuthorFolder = "Auth", FullPath = "/lib/Auth/wrong.epub", ModifiedAt = DateTime.UtcNow });
+            await s.SaveChangesAsync();
+        }
+        await using (var db = rdb.NewContext())
+        {
+            var r = await NewController(db).UnlinkFile(1, default);
+            var ok = Assert.IsType<OkObjectResult>(r.Result);
+            Assert.True(((BooksController.UnlinkFileResult)ok.Value!).Unlinked);
+        }
+        await using var v = rdb.NewContext();
+        var file = await v.LocalBookFiles.FindAsync(1);
+        Assert.Null(file!.BookId);              // detached from the book
+        Assert.True(file.ManuallyUnmatched);    // sync won't re-link it
+    }
+
+    [Fact]
     public async Task UpNext_Returns_Next_Unread_Owned_Volume_For_Started_Series()
     {
         using var rdb = new RelationalTestDb();

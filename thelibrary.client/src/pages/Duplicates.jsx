@@ -90,6 +90,25 @@ export default function Duplicates() {
         }
     }
 
+    // Undo a false match: detach this file from the book (keeps the file, stops
+    // sync re-linking it). Reload so the group reflects the change.
+    const unlinkFile = async (fileId, bookTitle) => {
+        if (!window.confirm(`Unlink this file from "${bookTitle ?? 'this book'}"? It stays on disk under its author but is no longer matched to this book.`)) return
+        setSendNotice(null); setError(null)
+        setSendBusyIds(prev => new Set(prev).add(fileId))
+        try {
+            const r = await fetch(`/api/books/files/${fileId}/unlink`, { method: 'POST' })
+            const body = await r.json().catch(() => null)
+            if (!r.ok) throw new Error(body?.error ?? r.statusText)
+            setSendNotice('File unlinked from its book.')
+            load()
+        } catch (e) {
+            setError(`Unlink failed: ${e.message ?? e}`)
+        } finally {
+            setSendBusyIds(prev => { const n = new Set(prev); n.delete(fileId); return n })
+        }
+    }
+
     const toggle = (id) => setSelected(prev => ({ ...prev, [id]: !prev[id] }))
 
     const selectAllExtras = () => {
@@ -338,6 +357,16 @@ export default function Duplicates() {
                                                                     : 'Send this file to reMarkable'}
                                                                 onClick={() => sendToRemarkable(f.id, fmt, g.title)}>
                                                                 {sendBusyIds.has(f.id) ? 'Sending…' : 'Send to rM'}
+                                                            </button>
+                                                        )}
+                                                        {g.files && (
+                                                            <button
+                                                                className="btn-ghost"
+                                                                style={{ fontSize: '0.7rem', padding: '0 0.4rem', whiteSpace: 'nowrap', color: 'var(--danger, #b91c1c)' }}
+                                                                disabled={sendBusyIds.has(f.id)}
+                                                                title="Not this book? Unlink this file from the book (undo a false match). The file stays on disk under its author."
+                                                                onClick={() => unlinkFile(f.id, g.title)}>
+                                                                Unlink
                                                             </button>
                                                         )}
                                                     </div>

@@ -850,6 +850,27 @@ public class BooksController : ControllerBase
         return Ok(new DuplicateActionResult(deleted, archived, warnings));
     }
 
+    public sealed record UnlinkFileResult(int FileId, bool Unlinked);
+
+    // Undo a false match: detach a file from its book (keeping it on disk, under
+    // its author) and mark it ManuallyUnmatched so the title-matcher won't just
+    // re-link it on the next sync. Used by the Duplicates page when a "duplicate"
+    // is actually a different book wrongly matched to this one.
+    [HttpPost("files/{fileId:int}/unlink")]
+    public async Task<ActionResult<UnlinkFileResult>> UnlinkFile(int fileId, CancellationToken ct)
+    {
+        var file = await _db.LocalBookFiles.FirstOrDefaultAsync(f => f.Id == fileId, ct);
+        if (file is null) return NotFound(new { error = "File not found." });
+        if (file.BookId is null) return Ok(new UnlinkFileResult(fileId, false));
+
+        file.BookId = null;
+        file.ManuallyUnmatched = true;
+        Services.ActivityLogger.Record(_db, "unlink",
+            $"Unlinked {System.IO.Path.GetFileName(file.FullPath)} (file #{fileId}) from its book — false match undone");
+        await _db.SaveChangesAsync(ct);
+        return Ok(new UnlinkFileResult(fileId, true));
+    }
+
     // Decides whether a LocalBookFile row is a real, actionable duplicate copy
     // and returns its format. A plain file is a copy (by extension). A directory
     // (classic library layout) is a copy ONLY if it holds a readable ebook file
