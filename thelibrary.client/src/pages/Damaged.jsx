@@ -272,6 +272,11 @@ export default function Damaged() {
                         {status.damagedCount} damaged file(s){groups ? ` in ${groups.length} book(s)` : ''}.
                     </span>
                 )}
+                {status?.backlogCount > 0 && (
+                    <span className="subtle" title="Files still awaiting an integrity check (missing or stale check stamp). Raise 'Max files per run' on Settings to clear faster.">
+                        · ⏳ {status.backlogCount.toLocaleString()} still to check
+                    </span>
+                )}
             </div>
 
             {error && <p className="error">{error}</p>}

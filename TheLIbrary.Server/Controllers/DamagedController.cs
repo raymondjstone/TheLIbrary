@@ -49,7 +49,7 @@ public class DamagedController : ControllerBase
         int AuthorPriority,   // 0–5; "starred" is >= 1, matching the rest of the app
         IReadOnlyList<DamagedFile> Files);
 
-    public sealed record JobStatus(bool Running, string? Message, int DamagedCount);
+    public sealed record JobStatus(bool Running, string? Message, int DamagedCount, int BacklogCount = 0);
     public sealed record ArchiveResult(bool Archived, string? NewPath, string? Warning);
 
     // Another file linked to the same book as a damaged file — a candidate
@@ -128,7 +128,19 @@ public class DamagedController : ControllerBase
             .Select(f => f.FullPath)
             .ToListAsync(ct);
         var count = paths.Count(BookIntegrityChecker.IsEbook);
-        return new JobStatus(_integrity.IsRunning, _integrity.CurrentMessage, count);
+
+        // Backlog: files still awaiting a first/again integrity check — the same
+        // candidate predicate the job uses (book/author-linked, stamp missing or
+        // stale, not archived). A fast SQL COUNT; the job's in-memory ebook filter
+        // trims a little off this, so treat it as an upper bound for the gauge.
+        var backlog = await _db.LocalBookFiles.AsNoTracking()
+            .Where(f => f.BookId != null || f.AuthorId != null)
+            .Where(f => f.IntegrityCheckedSize == null
+                     || f.IntegrityCheckedSize != f.SizeBytes
+                     || f.IntegrityCheckedModified != f.ModifiedAt)
+            .Where(ArchivedFilesController.NotUnderArchive(archiveLeaf))
+            .CountAsync(ct);
+        return new JobStatus(_integrity.IsRunning, _integrity.CurrentMessage, count, backlog);
     }
 
     /// <summary>
