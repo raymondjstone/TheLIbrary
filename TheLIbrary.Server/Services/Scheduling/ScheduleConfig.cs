@@ -42,6 +42,7 @@ public static class ScheduleJobIds
     public const string AssignAuthors = "assign-authors";
     public const string IndexFullText = "index-fulltext";
     public const string PruneAuthors = "prune-authors";
+    public const string DuplicateAutoArchive = "duplicate-auto-archive";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
@@ -50,7 +51,7 @@ public static class ScheduleJobIds
         StarPhysicalAuthors, CacheOpenLibraryMetadata, FlattenUnknown,
         DedupeUnknown, DedupeAuthorFiles, PromoteManualBooks, AdoptUnknownAuthors,
         ArchiveForeign, MergeLinkedAuthors, CheckIntegrity, PruneStaleFiles,
-        ContentScan, AssignAuthors, IndexFullText, PruneAuthors
+        ContentScan, AssignAuthors, IndexFullText, PruneAuthors, DuplicateAutoArchive
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -116,5 +117,9 @@ public static class ScheduleJobIds
             // Delete empty auto-created authors (homonym/guess noise). Destructive,
             // so it ships DISABLED — opt in on the Schedules page.
             [PruneAuthors] = new() { Cron = "40 3 * * *", Enabled = false },
+            // Keep the best copy of every multi-file book and archive the rest
+            // (the automated "Archive extras"). Moves files, so it ships DISABLED
+            // — opt in on the Schedules page.
+            [DuplicateAutoArchive] = new() { Cron = "30 3 * * *", Enabled = false },
         };
 }

@@ -82,6 +82,7 @@ builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnzipService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnknownFolderFlattenerService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnknownDuplicateRemovalService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.AuthorDuplicateRemovalService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.DuplicateAutoArchiveService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.ManualBookPromotionService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnknownAuthorAdoptionService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.StarredAuthorRefreshService>();
