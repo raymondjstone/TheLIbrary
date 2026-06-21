@@ -71,9 +71,15 @@ function SuppressedBooksSection({ books, onToggleSuppress }) {
     )
 }
 
-function BookActions({ book, onEdit, onDelete, onToggleSuppress, onMarkForeign }) {
+function BookActions({ book, onEdit, onDelete, onToggleSuppress, onMarkForeign, onConvert }) {
+    const hasEpub = (book.files ?? []).some(f => (f.formats ?? []).some(x => x?.toLowerCase() === 'epub'))
     return (
         <span style={{ marginLeft: '0.3rem', whiteSpace: 'nowrap' }}>
+            {onConvert && book.hasLocalFiles && !hasEpub && (
+                <button className="btn-ghost" title="Convert a copy to EPUB with Calibre"
+                        onClick={() => onConvert(book)}
+                        style={{ fontSize: '0.72rem', padding: '0 0.3rem', opacity: 0.55 }}>→epub</button>
+            )}
             <button className="btn-ghost" title="Edit this book"
                     onClick={() => onEdit(book)}
                     style={{ fontSize: '0.72rem', padding: '0 0.3rem', opacity: 0.55 }}>edit</button>
@@ -1020,6 +1026,22 @@ export default function AuthorDetail() {
         }
     }
 
+    // Convert one of a book's non-EPUB copies to EPUB via Calibre, then reload so
+    // the new file shows.
+    const convertToEpub = async (book) => {
+        setBusyIds(prev => new Set(prev).add(book.id))
+        try {
+            const r = await fetch(`/api/books/${book.id}/convert-to-epub`, { method: 'POST' })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            await load()
+        } catch (e) {
+            alert(`Convert failed: ${e.message}`)
+        } finally {
+            setBusyIds(prev => { const n = new Set(prev); n.delete(book.id); return n })
+        }
+    }
+
     const unmatchFile = async (fileId) => {
         const r = await fetch(`/api/authors/${id}/unmatched/${fileId}/match`, { method: 'DELETE' })
         if (r.ok) setData(await r.json())
@@ -1700,7 +1722,7 @@ export default function AuthorDetail() {
                                 </td>}
                                 <td>
                                     <WorkTitle workKey={b.openLibraryWorkKey} title={b.title} />
-                                    <BookActions book={b} onEdit={setEditBook} onDelete={deleteBook} onToggleSuppress={toggleSuppress} onMarkForeign={markForeign} />
+                                    <BookActions book={b} onEdit={setEditBook} onDelete={deleteBook} onToggleSuppress={toggleSuppress} onMarkForeign={markForeign} onConvert={convertToEpub} />
                                     {editingSeriesId === b.id ? (
                                         <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
                                             <SeriesNamePicker
@@ -1874,7 +1896,7 @@ export default function AuthorDetail() {
                                 {series && <td></td>}
                                 <td>
                                     <WorkTitle workKey={b.openLibraryWorkKey} title={b.title} />
-                                    <BookActions book={b} onEdit={setEditBook} onDelete={deleteBook} onToggleSuppress={toggleSuppress} onMarkForeign={markForeign} />
+                                    <BookActions book={b} onEdit={setEditBook} onDelete={deleteBook} onToggleSuppress={toggleSuppress} onMarkForeign={markForeign} onConvert={convertToEpub} />
                                     {editingSeriesId === b.id ? (
                                         <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
                                             <SeriesNamePicker
