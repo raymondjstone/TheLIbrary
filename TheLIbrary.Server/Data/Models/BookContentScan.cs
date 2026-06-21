@@ -52,4 +52,10 @@ public class BookContentScan
     // Settings page ("reset assign-attempt flags") to force a full re-run — e.g.
     // after new authors have been added that might now match.
     public DateTime? AssignAttemptedAt { get; set; }
+
+    // When the LLM identification job last tried this row. Set whether or not the
+    // LLM resolved it, so a hopeless file is never re-sent to the (paid) model on
+    // every run — only resolved files leave the candidate set (they get an
+    // AuthorId). Null = never tried. Cleared by the same Settings reset action.
+    public DateTime? LlmAttemptedAt { get; set; }
 }

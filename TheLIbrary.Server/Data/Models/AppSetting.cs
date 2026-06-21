@@ -138,4 +138,20 @@ public static class AppSettingKeys
     // __unknown files before author-linked unmatched files (reverses the default
     // tier order). Unset / "false" = matched/unmatched author files first.
     public const string ContentScanUntrackedFirst = "ContentScanUntrackedFirst";
+
+    // LLM-assisted identification (optional, paid). An LLM reads the signals we
+    // already have (filename, embedded metadata, ISBN, a front-matter snippet) and
+    // returns title/author for files the deterministic paths couldn't resolve.
+    // Off unless enabled AND an API key is set. The guess still goes through
+    // OpenLibrary validation, so a hallucinated author is rejected.
+    public const string LlmEnabled = "LlmEnabled";
+    public const string LlmProvider = "LlmProvider";      // "anthropic" (Claude) | "openai" (ChatGPT); unset = anthropic
+    public const string LlmApiKey = "LlmApiKey";          // write-only from the UI; the active provider's key
+    public const string LlmModel = "LlmModel";            // unset = the provider's default model
+    public const string LlmBaseUrl = "LlmBaseUrl";        // unset = the provider's default endpoint (override for proxies/gateways)
+    public const string LlmMaxPerRun = "LlmMaxPerRun";    // cap per job run
+    public const string LlmMaxPerDay = "LlmMaxPerDay";    // hard daily cap to bound cost
+    // Rolling daily-usage counter (date + count) used to enforce LlmMaxPerDay.
+    public const string LlmUsageDate = "LlmUsageDate";
+    public const string LlmUsageCount = "LlmUsageCount";
 }

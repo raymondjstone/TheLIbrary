@@ -44,6 +44,7 @@ public sealed class ScheduledJobs
     private readonly SeriesWatchService _seriesWatch;
     private readonly TheLibrary.Server.Services.Download.AutoReplaceDamagedService _autoReplaceDamaged;
     private readonly WorkResolutionService _resolveWorks;
+    private readonly TheLibrary.Server.Services.Llm.LlmIdentificationService _llmIdentify;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -74,6 +75,7 @@ public sealed class ScheduledJobs
         SeriesWatchService seriesWatch,
         TheLibrary.Server.Services.Download.AutoReplaceDamagedService autoReplaceDamaged,
         WorkResolutionService resolveWorks,
+        TheLibrary.Server.Services.Llm.LlmIdentificationService llmIdentify,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
@@ -84,6 +86,7 @@ public sealed class ScheduledJobs
         _mergeLinkedAuthors = mergeLinkedAuthors; _integrity = integrity; _pruneStaleFiles = pruneStaleFiles;
         _contentScan = contentScan; _assignAuthors = assignAuthors; _fullText = fullText; _pruneAuthors = pruneAuthors;
         _dupAutoArchive = dupAutoArchive; _seriesWatch = seriesWatch; _autoReplaceDamaged = autoReplaceDamaged; _resolveWorks = resolveWorks;
+        _llmIdentify = llmIdentify;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -286,6 +289,12 @@ public sealed class ScheduledJobs
         ScheduleJobIds.ResolveWorks, manualTrigger,
         ct => _resolveWorks.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _resolveWorks.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunLlmIdentify(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.LlmIdentify, manualTrigger,
+        ct => _llmIdentify.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _llmIdentify.IsRunning);
 
     internal Task RunWithPollingForTests(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,

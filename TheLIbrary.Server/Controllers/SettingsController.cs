@@ -559,8 +559,10 @@ public class SettingsController : ControllerBase
     public async Task<ResetAssignAttemptsResult> ResetAssignAttempts(CancellationToken ct)
     {
         var cleared = await _db.BookContentScans
-            .Where(c => c.AssignAttemptedAt != null)
-            .ExecuteUpdateAsync(s => s.SetProperty(c => c.AssignAttemptedAt, _ => (DateTime?)null), ct);
+            .Where(c => c.AssignAttemptedAt != null || c.LlmAttemptedAt != null)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(c => c.AssignAttemptedAt, _ => (DateTime?)null)
+                .SetProperty(c => c.LlmAttemptedAt, _ => (DateTime?)null), ct);
         return new ResetAssignAttemptsResult(cleared);
     }
 
@@ -812,6 +814,46 @@ public class SettingsController : ControllerBase
             limit.ToString(System.Globalization.CultureInfo.InvariantCulture), ct);
         await _db.SaveChangesAsync(ct);
         return new OlSearchSettingsDto(limit);
+    }
+
+    public sealed record LlmSettingsDto(
+        bool Enabled, string Provider, bool ApiKeySet, string Model, string BaseUrl,
+        int MaxPerRun, int MaxPerDay, int UsedToday);
+    // ApiKey is write-only (mirrors the download keys): GET never returns it, PUT
+    // only overwrites it when a non-empty value is supplied.
+    public sealed record LlmSettingsUpdate(
+        bool? Enabled, string? Provider, string? ApiKey, string? Model, string? BaseUrl, int? MaxPerRun, int? MaxPerDay);
+
+    [HttpGet("llm")]
+    public async Task<LlmSettingsDto> GetLlm(CancellationToken ct)
+    {
+        var cfg = await TheLibrary.Server.Services.Llm.LlmMetadataClient.LoadConfigAsync(_db, ct);
+        var usage = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.LlmUsageDate || s.Key == AppSettingKeys.LlmUsageCount)
+            .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
+        var usedToday = usage.GetValueOrDefault(AppSettingKeys.LlmUsageDate) == DateTime.UtcNow.ToString("yyyy-MM-dd")
+            && int.TryParse(usage.GetValueOrDefault(AppSettingKeys.LlmUsageCount), out var n) ? n : 0;
+        return new LlmSettingsDto(cfg.Enabled, cfg.Provider, !string.IsNullOrWhiteSpace(cfg.ApiKey),
+            cfg.Model, cfg.BaseUrl, cfg.MaxPerRun, cfg.MaxPerDay, usedToday);
+    }
+
+    [HttpPut("llm")]
+    public async Task<ActionResult<LlmSettingsDto>> SetLlm([FromBody] LlmSettingsUpdate body, CancellationToken ct)
+    {
+        var provider = string.Equals(body.Provider, "openai", StringComparison.OrdinalIgnoreCase) ? "openai" : "anthropic";
+        await UpsertSettingAsync(AppSettingKeys.LlmEnabled, body.Enabled == true ? "true" : "false", ct);
+        await UpsertSettingAsync(AppSettingKeys.LlmProvider, provider, ct);
+        await UpsertSettingAsync(AppSettingKeys.LlmModel, body.Model?.Trim() ?? "", ct);
+        await UpsertSettingAsync(AppSettingKeys.LlmBaseUrl, body.BaseUrl?.Trim().TrimEnd('/') ?? "", ct);
+        await UpsertSettingAsync(AppSettingKeys.LlmMaxPerRun,
+            Math.Clamp(body.MaxPerRun ?? TheLibrary.Server.Services.Llm.LlmMetadataClient.DefaultMaxPerRun, 1, 100_000).ToString(), ct);
+        await UpsertSettingAsync(AppSettingKeys.LlmMaxPerDay,
+            Math.Clamp(body.MaxPerDay ?? TheLibrary.Server.Services.Llm.LlmMetadataClient.DefaultMaxPerDay, 1, 1_000_000).ToString(), ct);
+        // Only overwrite the key when a new non-empty value is provided.
+        if (!string.IsNullOrWhiteSpace(body.ApiKey))
+            await UpsertSettingAsync(AppSettingKeys.LlmApiKey, body.ApiKey.Trim(), ct);
+        await _db.SaveChangesAsync(ct);
+        return await GetLlm(ct);
     }
 
     // Best-effort write check: can we create the directory and a temp file there?

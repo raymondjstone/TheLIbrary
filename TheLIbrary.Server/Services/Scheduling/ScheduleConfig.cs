@@ -46,6 +46,7 @@ public static class ScheduleJobIds
     public const string SeriesWatch = "series-watch";
     public const string AutoReplaceDamaged = "auto-replace-damaged";
     public const string ResolveWorks = "resolve-works";
+    public const string LlmIdentify = "llm-identify";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
@@ -55,7 +56,7 @@ public static class ScheduleJobIds
         DedupeUnknown, DedupeAuthorFiles, PromoteManualBooks, AdoptUnknownAuthors,
         ArchiveForeign, MergeLinkedAuthors, CheckIntegrity, PruneStaleFiles,
         ContentScan, AssignAuthors, IndexFullText, PruneAuthors, DuplicateAutoArchive,
-        SeriesWatch, AutoReplaceDamaged, ResolveWorks
+        SeriesWatch, AutoReplaceDamaged, ResolveWorks, LlmIdentify
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -132,6 +133,11 @@ public static class ScheduleJobIds
             // Makes OL calls + creates Book rows, so it ships DISABLED — opt in on
             // the Schedules page (or trigger once to work the backlog).
             [ResolveWorks] = new() { Cron = "0 16 * * *", Enabled = false },
+            // Last-resort LLM identification of opaque quarantined files. Paid +
+            // makes external API calls, so it ships DISABLED and additionally
+            // no-ops unless enabled with an API key in Settings (per-run + daily
+            // caps bound the cost).
+            [LlmIdentify] = new() { Cron = "0 17 * * *", Enabled = false },
             // Search the indexer and grab replacements for damaged books. Pulls
             // downloads + indexer rate-limited, so it ships DISABLED — opt in on
             // the Schedules page (and configure Download automation in Settings).

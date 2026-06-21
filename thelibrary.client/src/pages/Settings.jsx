@@ -1421,6 +1421,8 @@ export default function Settings() {
 
             <DownloadAutomationSection />
 
+            <LlmIdentificationSection />
+
             <BackupSection />
 
             {/* Excluded authors (blacklist) — kept at the very bottom of the page. */}
@@ -1617,6 +1619,86 @@ function DownloadAutomationSection() {
                     <tr><td>SABnzbd category</td><td><input style={{ width: '12rem' }} value={form.sabnzbdCategory}
                         onChange={e => setForm(f => ({ ...f, sabnzbdCategory: e.target.value }))}
                         placeholder="(optional) e.g. books" /></td></tr>
+                </tbody>
+            </table>
+            <div style={{ marginTop: '0.6rem', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <button onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
+                {done ? <span className="subtle">Saved.</span> : null}
+            </div>
+        </>
+    )
+}
+
+// LLM-assisted identification (optional, paid). Pick a provider (Claude / ChatGPT),
+// enter that provider's API key (write-only), and cap usage per run and per day to
+// bound cost. The llm-identify job (off by default on the Schedules page) then
+// names quarantined files the deterministic paths couldn't — its guess is still
+// validated against OpenLibrary before anything is filed.
+function LlmIdentificationSection() {
+    const [cfg, setCfg] = useState(null)
+    const [form, setForm] = useState({ enabled: false, provider: 'anthropic', apiKey: '', model: '', baseUrl: '', maxPerRun: 50, maxPerDay: 500 })
+    const [busy, setBusy] = useState(false)
+    const [error, setError] = useState(null)
+    const [done, setDone] = useState(false)
+
+    useEffect(() => {
+        fetch('/api/settings/llm').then(r => r.ok ? r.json() : null).then(d => {
+            if (!d) return
+            setCfg(d)
+            setForm(f => ({ ...f, enabled: d.enabled, provider: d.provider, model: d.model || '', baseUrl: d.baseUrl || '', maxPerRun: d.maxPerRun, maxPerDay: d.maxPerDay }))
+        }).catch(() => {})
+    }, [])
+
+    const save = async () => {
+        setBusy(true); setError(null); setDone(false)
+        try {
+            const r = await fetch('/api/settings/llm', {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form),
+            })
+            if (!r.ok) throw new Error(r.statusText)
+            setCfg(await r.json())
+            setForm(f => ({ ...f, apiKey: '' }))   // clear key field after save
+            setDone(true)
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setBusy(false) }
+    }
+
+    const keyPlaceholder = cfg?.apiKeySet ? '•••••••• (set — leave blank to keep)' : 'API key'
+    const set = (patch) => setForm(f => ({ ...f, ...patch }))
+
+    return (
+        <>
+            <h2 style={{ marginTop: '1.5rem' }}>AI identification (experimental)</h2>
+            <p className="subtle">
+                Optional and <strong>paid</strong>. For files no other method could identify, an LLM reads the
+                filename, embedded metadata, ISBN and a snippet of the opening text and guesses the title/author —
+                which is then verified against OpenLibrary before anything is filed. Enable it here, then turn on
+                the <em>llm-identify</em> job on the Schedules page. {cfg?.usedToday > 0 ? <span>Used today: <strong>{cfg.usedToday}</strong>/{cfg.maxPerDay}.</span> : null}
+            </p>
+            {error ? <p className="error">{error}</p> : null}
+            <table className="grid" style={{ maxWidth: 720 }}>
+                <tbody>
+                    <tr><td>Enabled</td><td>
+                        <label className="subtle" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <input type="checkbox" checked={form.enabled} onChange={e => set({ enabled: e.target.checked })} /> Use the LLM
+                        </label></td></tr>
+                    <tr><td>Provider</td><td>
+                        <select value={form.provider} onChange={e => set({ provider: e.target.value, model: '' })}>
+                            <option value="anthropic">Claude (Anthropic)</option>
+                            <option value="openai">ChatGPT (OpenAI)</option>
+                        </select></td></tr>
+                    <tr><td>API key</td><td><input type="password" style={{ width: '100%' }} value={form.apiKey}
+                        onChange={e => set({ apiKey: e.target.value })} placeholder={keyPlaceholder} /></td></tr>
+                    <tr><td>Model</td><td><input style={{ width: '100%' }} value={form.model}
+                        onChange={e => set({ model: e.target.value })}
+                        placeholder={form.provider === 'openai' ? 'gpt-4o-mini (default)' : 'claude-haiku-4-5-20251001 (default)'} /></td></tr>
+                    <tr><td>Base URL</td><td><input style={{ width: '100%' }} value={form.baseUrl}
+                        onChange={e => set({ baseUrl: e.target.value })}
+                        placeholder="(optional) override the provider endpoint" /></td></tr>
+                    <tr><td>Max per run</td><td><input type="number" min="1" style={{ width: '8rem' }} value={form.maxPerRun}
+                        onChange={e => set({ maxPerRun: Number(e.target.value) })} /></td></tr>
+                    <tr><td>Max per day</td><td><input type="number" min="1" style={{ width: '8rem' }} value={form.maxPerDay}
+                        onChange={e => set({ maxPerDay: Number(e.target.value) })} /> <span className="subtle">hard daily cap to bound cost</span></td></tr>
                 </tbody>
             </table>
             <div style={{ marginTop: '0.6rem', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>

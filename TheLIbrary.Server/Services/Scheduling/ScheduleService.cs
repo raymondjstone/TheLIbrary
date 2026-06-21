@@ -105,6 +105,7 @@ public sealed class ScheduleService
             ScheduleJobIds.SeriesWatch => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunSeriesWatch(true)),
             ScheduleJobIds.AutoReplaceDamaged => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunAutoReplaceDamaged(true)),
             ScheduleJobIds.ResolveWorks => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunResolveWorks(true)),
+            ScheduleJobIds.LlmIdentify => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunLlmIdentify(true)),
             ScheduleJobIds.PromoteManualBooks => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunPromoteManualBooks(true)),
             ScheduleJobIds.AdoptUnknownAuthors => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunAdoptUnknownAuthors(true)),
             ScheduleJobIds.ArchiveForeign => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunArchiveForeign(true)),
@@ -227,6 +228,9 @@ public sealed class ScheduleService
                     break;
                 case ScheduleJobIds.ResolveWorks:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunResolveWorks(), entry.Cron);
+                    break;
+                case ScheduleJobIds.LlmIdentify:
+                    _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunLlmIdentify(), entry.Cron);
                     break;
                 case ScheduleJobIds.PromoteManualBooks:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunPromoteManualBooks(), entry.Cron);
