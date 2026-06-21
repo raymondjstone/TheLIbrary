@@ -20,6 +20,7 @@ export default function Layout() {
                     <NavLink to="/collections">Collections</NavLink>
 
                     <span className="nav-group-label">Discover</span>
+                    <NavLink to="/up-next">Up Next</NavLink>
                     <NavLink to="/recent-releases">Recent Releases</NavLink>
                     <NavLink to="/all-releases">All Releases</NavLink>
                     <NavLink to="/recommendations">Recommendations</NavLink>

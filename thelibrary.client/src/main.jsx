@@ -26,6 +26,7 @@ import Health from './pages/Health.jsx'
 import Wanted from './pages/Wanted.jsx'
 import PhysicalUnmatched from './pages/PhysicalUnmatched.jsx'
 import PhysicalOnly from './pages/PhysicalOnly.jsx'
+import UpNext from './pages/UpNext.jsx'
 import ManualBooks from './pages/ManualBooks.jsx'
 import ForeignTitles from './pages/ForeignTitles.jsx'
 import UnknownFiles from './pages/UnknownFiles.jsx'
@@ -62,6 +63,7 @@ createRoot(document.getElementById('root')).render(
                     <Route path="wanted" element={<Wanted />} />
                     <Route path="physical-unmatched" element={<PhysicalUnmatched />} />
                     <Route path="physical-only" element={<PhysicalOnly />} />
+                    <Route path="up-next" element={<UpNext />} />
                     <Route path="manual-books" element={<ManualBooks />} />
                     <Route path="foreign" element={<ForeignTitles />} />
                     <Route path="unknown-files" element={<UnknownFiles />} />

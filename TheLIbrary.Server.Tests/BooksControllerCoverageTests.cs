@@ -32,6 +32,27 @@ public class BooksControllerCoverageTests
     }
 
     [Fact]
+    public async Task UpNext_Returns_Next_Unread_Owned_Volume_For_Started_Series()
+    {
+        using var rdb = new RelationalTestDb();
+        await using (var s = rdb.NewContext())
+        {
+            s.Authors.Add(new Author { Id = 1, Name = "Auth", Priority = 1 });
+            s.Series.Add(new Series { Id = 1, Name = "Saga", NormalizedName = "saga", PrimaryAuthorId = 1 });
+            // Vol 1 read; Vol 2 owned+unread (the "up next"); Vol 3 owned+unread (later).
+            s.Books.AddRange(
+                new Book { Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL10W", Title = "Saga 1", NormalizedTitle = "saga 1", SeriesId = 1, SeriesPosition = "1", ManuallyOwned = true, ReadStatus = ReadStatus.Read },
+                new Book { Id = 11, AuthorId = 1, OpenLibraryWorkKey = "OL11W", Title = "Saga 2", NormalizedTitle = "saga 2", SeriesId = 1, SeriesPosition = "2", ManuallyOwned = true, ReadStatus = ReadStatus.Unread },
+                new Book { Id = 12, AuthorId = 1, OpenLibraryWorkKey = "OL12W", Title = "Saga 3", NormalizedTitle = "saga 3", SeriesId = 1, SeriesPosition = "3", ManuallyOwned = true, ReadStatus = ReadStatus.Unread });
+            await s.SaveChangesAsync();
+        }
+        await using var db = rdb.NewContext();
+        var rows = await NewController(db).UpNext(default);
+        var row = Assert.Single(rows);
+        Assert.Equal(11, row.BookId); // lowest-position owned-unread in a started series
+    }
+
+    [Fact]
     public async Task Query_Endpoints_Return_Seeded_Data()
     {
         using var rdb = new RelationalTestDb();

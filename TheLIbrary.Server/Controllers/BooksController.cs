@@ -1071,6 +1071,62 @@ public class BooksController : ControllerBase
             .ToListAsync(ct);
     }
 
+    public sealed record UpNextRow(
+        int BookId, string Title, int AuthorId, string AuthorName,
+        string Series, string? SeriesPosition, int? CoverId, string OpenLibraryWorkKey, int? LocalFileId);
+
+    // "Up next": for every series the user has STARTED (owns and has read at least
+    // one volume), the next owned-but-unread volume by reading-order position. The
+    // reading queue across all in-progress series. LocalFileId (when present) lets
+    // the UI send it straight to reMarkable.
+    [HttpGet("up-next")]
+    public async Task<IReadOnlyList<UpNextRow>> UpNext(CancellationToken ct)
+    {
+        // Series the user has started reading (≥1 read book in the series).
+        var startedSeries = await _db.Books.AsNoTracking()
+            .Where(b => b.SeriesId != null && b.ReadStatus == ReadStatus.Read)
+            .Select(b => b.SeriesId!.Value).Distinct().ToListAsync(ct);
+        if (startedSeries.Count == 0) return Array.Empty<UpNextRow>();
+        var started = startedSeries.ToHashSet();
+
+        // Owned, unread volumes in those series.
+        var rows = await _db.Books.AsNoTracking()
+            .Where(b => b.SeriesId != null && !b.Suppressed && !b.Foreign && b.ReadStatus == ReadStatus.Unread)
+            .Where(BookOwnership.Owned)
+            .Select(b => new
+            {
+                b.Id, b.Title, b.AuthorId, AuthorName = b.Author.Name, b.SeriesId,
+                SeriesName = b.Series!.Name, b.SeriesPosition, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
+                LocalFileId = b.LocalFiles.Select(f => (int?)f.Id).FirstOrDefault(),
+            })
+            .ToListAsync(ct);
+
+        // One row per series: the lowest-position owned-unread volume.
+        return rows
+            .Where(r => started.Contains(r.SeriesId!.Value))
+            .GroupBy(r => r.SeriesId!.Value)
+            .Select(g => g
+                .OrderBy(r => ParseSeriesPosition(r.SeriesPosition))
+                .ThenBy(r => r.FirstPublishYear ?? int.MaxValue)
+                .ThenBy(r => r.Title)
+                .First())
+            .OrderBy(r => r.AuthorName).ThenBy(r => r.SeriesName)
+            .Select(r => new UpNextRow(
+                r.Id, r.Title, r.AuthorId, r.AuthorName, r.SeriesName, r.SeriesPosition,
+                r.CoverId, r.OpenLibraryWorkKey, r.LocalFileId))
+            .ToList();
+    }
+
+    // Leading numeric part of a series position string ("3", "02", "10.5") for
+    // ordering; non-numeric / missing positions sort last.
+    private static double ParseSeriesPosition(string? pos)
+    {
+        if (string.IsNullOrWhiteSpace(pos)) return double.MaxValue;
+        var m = System.Text.RegularExpressions.Regex.Match(pos, @"\d+(\.\d+)?");
+        return m.Success && double.TryParse(m.Value, System.Globalization.CultureInfo.InvariantCulture, out var v)
+            ? v : double.MaxValue;
+    }
+
     // CSV download of the missing-works list.
     [HttpGet("missing/export")]
     public async Task<IActionResult> ExportMissingWorks(CancellationToken ct)
