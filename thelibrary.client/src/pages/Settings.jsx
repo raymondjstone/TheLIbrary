@@ -1636,7 +1636,7 @@ function DownloadAutomationSection() {
 // validated against OpenLibrary before anything is filed.
 function LlmIdentificationSection() {
     const [cfg, setCfg] = useState(null)
-    const [form, setForm] = useState({ enabled: false, provider: 'anthropic', apiKey: '', model: '', baseUrl: '', maxPerRun: 50, maxPerDay: 500 })
+    const [form, setForm] = useState({ enabled: false, provider: 'anthropic', apiKey: '', model: '', baseUrl: '', maxPerRun: 50, maxPerDay: 500, openAiAdminKey: '', anthropicAdminKey: '' })
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState(null)
     const [done, setDone] = useState(false)
@@ -1657,7 +1657,7 @@ function LlmIdentificationSection() {
             })
             if (!r.ok) throw new Error(r.statusText)
             setCfg(await r.json())
-            setForm(f => ({ ...f, apiKey: '' }))   // clear key field after save
+            setForm(f => ({ ...f, apiKey: '', openAiAdminKey: '', anthropicAdminKey: '' }))   // clear key fields after save
             setDone(true)
         } catch (e) { setError(String(e.message || e)) }
         finally { setBusy(false) }
@@ -1699,6 +1699,15 @@ function LlmIdentificationSection() {
                         onChange={e => set({ maxPerRun: Number(e.target.value) })} /></td></tr>
                     <tr><td>Max per day</td><td><input type="number" min="1" style={{ width: '8rem' }} value={form.maxPerDay}
                         onChange={e => set({ maxPerDay: Number(e.target.value) })} /> <span className="subtle">hard daily cap to bound cost</span></td></tr>
+                    <tr><td colSpan={2} style={{ paddingTop: '0.5rem', color: 'var(--subtle)', fontSize: '0.85em' }}>
+                        Optional <strong>admin keys</strong> (separate from the message key above) let the Health page show your actual provider <em>spend</em> over the last 30 days. Providers don’t expose a remaining-balance figure, so this is spend, not credit left; the cost endpoints are beta.
+                    </td></tr>
+                    <tr><td>OpenAI admin key</td><td><input type="password" style={{ width: '100%' }} value={form.openAiAdminKey}
+                        onChange={e => set({ openAiAdminKey: e.target.value })}
+                        placeholder={cfg?.openAiAdminKeySet ? '•••••••• (set — leave blank to keep)' : 'sk-admin-… (optional, for spend)'} /></td></tr>
+                    <tr><td>Anthropic admin key</td><td><input type="password" style={{ width: '100%' }} value={form.anthropicAdminKey}
+                        onChange={e => set({ anthropicAdminKey: e.target.value })}
+                        placeholder={cfg?.anthropicAdminKeySet ? '•••••••• (set — leave blank to keep)' : 'sk-ant-admin-… (optional, for spend)'} /></td></tr>
                 </tbody>
             </table>
             <div style={{ marginTop: '0.6rem', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>

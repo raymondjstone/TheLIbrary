@@ -818,11 +818,13 @@ public class SettingsController : ControllerBase
 
     public sealed record LlmSettingsDto(
         bool Enabled, string Provider, bool ApiKeySet, string Model, string BaseUrl,
-        int MaxPerRun, int MaxPerDay, int UsedToday);
-    // ApiKey is write-only (mirrors the download keys): GET never returns it, PUT
-    // only overwrites it when a non-empty value is supplied.
+        int MaxPerRun, int MaxPerDay, int UsedToday,
+        bool OpenAiAdminKeySet, bool AnthropicAdminKeySet);
+    // Keys are write-only (mirrors the download keys): GET never returns them, PUT
+    // only overwrites one when a non-empty value is supplied.
     public sealed record LlmSettingsUpdate(
-        bool? Enabled, string? Provider, string? ApiKey, string? Model, string? BaseUrl, int? MaxPerRun, int? MaxPerDay);
+        bool? Enabled, string? Provider, string? ApiKey, string? Model, string? BaseUrl, int? MaxPerRun, int? MaxPerDay,
+        string? OpenAiAdminKey, string? AnthropicAdminKey);
 
     [HttpGet("llm")]
     public async Task<LlmSettingsDto> GetLlm(CancellationToken ct)
@@ -833,8 +835,13 @@ public class SettingsController : ControllerBase
             .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
         var usedToday = usage.GetValueOrDefault(AppSettingKeys.LlmUsageDate) == DateTime.UtcNow.ToString("yyyy-MM-dd")
             && int.TryParse(usage.GetValueOrDefault(AppSettingKeys.LlmUsageCount), out var n) ? n : 0;
+        var adminKeys = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.LlmOpenAiAdminKey || s.Key == AppSettingKeys.LlmAnthropicAdminKey)
+            .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
+        bool KeySet(string k) => !string.IsNullOrWhiteSpace(adminKeys.GetValueOrDefault(k));
         return new LlmSettingsDto(cfg.Enabled, cfg.Provider, !string.IsNullOrWhiteSpace(cfg.ApiKey),
-            cfg.Model, cfg.BaseUrl, cfg.MaxPerRun, cfg.MaxPerDay, usedToday);
+            cfg.Model, cfg.BaseUrl, cfg.MaxPerRun, cfg.MaxPerDay, usedToday,
+            KeySet(AppSettingKeys.LlmOpenAiAdminKey), KeySet(AppSettingKeys.LlmAnthropicAdminKey));
     }
 
     [HttpPut("llm")]
@@ -849,9 +856,13 @@ public class SettingsController : ControllerBase
             Math.Clamp(body.MaxPerRun ?? TheLibrary.Server.Services.Llm.LlmMetadataClient.DefaultMaxPerRun, 1, 100_000).ToString(), ct);
         await UpsertSettingAsync(AppSettingKeys.LlmMaxPerDay,
             Math.Clamp(body.MaxPerDay ?? TheLibrary.Server.Services.Llm.LlmMetadataClient.DefaultMaxPerDay, 1, 1_000_000).ToString(), ct);
-        // Only overwrite the key when a new non-empty value is provided.
+        // Only overwrite a key when a new non-empty value is provided.
         if (!string.IsNullOrWhiteSpace(body.ApiKey))
             await UpsertSettingAsync(AppSettingKeys.LlmApiKey, body.ApiKey.Trim(), ct);
+        if (!string.IsNullOrWhiteSpace(body.OpenAiAdminKey))
+            await UpsertSettingAsync(AppSettingKeys.LlmOpenAiAdminKey, body.OpenAiAdminKey.Trim(), ct);
+        if (!string.IsNullOrWhiteSpace(body.AnthropicAdminKey))
+            await UpsertSettingAsync(AppSettingKeys.LlmAnthropicAdminKey, body.AnthropicAdminKey.Trim(), ct);
         await _db.SaveChangesAsync(ct);
         return await GetLlm(ct);
     }

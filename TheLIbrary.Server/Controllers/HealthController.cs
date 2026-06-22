@@ -16,7 +16,9 @@ public class HealthController : ControllerBase
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(60);
     private readonly LibraryDbContext _db;
     private readonly IMemoryCache _cache;
-    public HealthController(LibraryDbContext db, IMemoryCache cache) { _db = db; _cache = cache; }
+    private readonly TheLibrary.Server.Services.Llm.LlmSpendClient _spend;
+    public HealthController(LibraryDbContext db, IMemoryCache cache, TheLibrary.Server.Services.Llm.LlmSpendClient spend)
+    { _db = db; _cache = cache; _spend = spend; }
 
     public sealed record Bucket(string Key, int Count);
     public sealed record HealthReport(
@@ -32,7 +34,10 @@ public class HealthController : ControllerBase
         bool LlmEnabled,
         int LlmUsedToday,
         int LlmMaxPerDay,
-        int LlmCallsLeftToday);
+        int LlmCallsLeftToday,
+        decimal? LlmOpenAiSpend,
+        decimal? LlmAnthropicSpend,
+        int LlmSpendDays);
 
     [HttpGet]
     public Task<HealthReport> Get(CancellationToken ct)
@@ -106,8 +111,18 @@ public class HealthController : ControllerBase
             && int.TryParse(llmUsage.GetValueOrDefault(AppSettingKeys.LlmUsageCount), out var lc) ? lc : 0;
         var llmCallsLeft = llmCfg.Enabled ? Math.Max(0, llmCfg.MaxPerDay - llmUsedToday) : 0;
 
+        // Optional real $ spend from the provider cost APIs (needs admin keys).
+        // Best-effort and cached inside the spend client; null when not configured
+        // or unavailable.
+        var adminKeys = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.LlmOpenAiAdminKey || s.Key == AppSettingKeys.LlmAnthropicAdminKey)
+            .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
+        var openAiSpend = await _spend.GetOpenAiSpendAsync(adminKeys.GetValueOrDefault(AppSettingKeys.LlmOpenAiAdminKey), ct);
+        var anthropicSpend = await _spend.GetAnthropicSpendAsync(adminKeys.GetValueOrDefault(AppSettingKeys.LlmAnthropicAdminKey), ct);
+
         return new HealthReport(totalAuthors, byStatus, bySource, byDay, emptyPrunable,
             unmatchedFiles, untrackedScans, unknownFiles, untrackedNotLlmParsed,
-            llmCfg.Enabled, llmUsedToday, llmCfg.MaxPerDay, llmCallsLeft);
+            llmCfg.Enabled, llmUsedToday, llmCfg.MaxPerDay, llmCallsLeft,
+            openAiSpend, anthropicSpend, TheLibrary.Server.Services.Llm.LlmSpendClient.WindowDays);
     }
 }

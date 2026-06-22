@@ -62,6 +62,8 @@ export default function Health() {
                 {card('Untracked, not LLM-parsed', h.untrackedNotLlmParsed, '/schedules', 'warn')}
                 {h.llmEnabled && card(`LLM calls left today (of ${fmt(h.llmMaxPerDay)})`, h.llmCallsLeftToday, '/settings',
                     h.llmCallsLeftToday === 0 ? 'danger' : 'default')}
+                {h.llmOpenAiSpend != null && card(`OpenAI spend (${h.llmSpendDays}d)`, `$${h.llmOpenAiSpend.toFixed(2)}`, '/settings', 'default')}
+                {h.llmAnthropicSpend != null && card(`Claude spend (${h.llmSpendDays}d)`, `$${h.llmAnthropicSpend.toFixed(2)}`, '/settings', 'default')}
                 {card('Total authors', h.totalAuthors, '/authors', 'default')}
                 {card('Empty prunable authors', h.emptyPrunableAuthors, '/authors', 'danger')}
             </div>

@@ -87,6 +87,7 @@ builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.SeriesWatchService
 builder.Services.AddSingleton<TheLibrary.Server.Services.Download.AutoReplaceDamagedService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.WorkResolutionService>();
 builder.Services.AddHttpClient<TheLibrary.Server.Services.Llm.LlmMetadataClient>();
+builder.Services.AddHttpClient<TheLibrary.Server.Services.Llm.LlmSpendClient>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Llm.LlmIdentificationService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.ManualBookPromotionService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnknownAuthorAdoptionService>();

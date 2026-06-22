@@ -154,4 +154,11 @@ public static class AppSettingKeys
     // Rolling daily-usage counter (date + count) used to enforce LlmMaxPerDay.
     public const string LlmUsageDate = "LlmUsageDate";
     public const string LlmUsageCount = "LlmUsageCount";
+
+    // Optional provider ADMIN/org keys (separate from the message key above) used
+    // only to read org-level SPEND for the Health page. The providers don't expose
+    // a remaining-credit figure via the API, so this reports $ spent in a window,
+    // not balance. Beta endpoints; write-only from the UI.
+    public const string LlmOpenAiAdminKey = "LlmOpenAiAdminKey";
+    public const string LlmAnthropicAdminKey = "LlmAnthropicAdminKey";
 }
