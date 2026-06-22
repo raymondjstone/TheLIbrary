@@ -81,6 +81,7 @@ public sealed class WorkResolutionService
                   f => f.FullPath, s => s.FullPath,
                   (f, s) => new { f.Id, s.Isbn, s.Title })
             .Where(x => x.Isbn != null && x.Isbn != "")
+            .OrderBy(x => x.Id)
             .Take(MaxPerRun)
             .ToListAsync(ct);
 

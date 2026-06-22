@@ -237,6 +237,7 @@ public sealed class FullTextSearchService
         {
             var unknown = await db.UnknownFiles.AsNoTracking()
                 .Where(u => !db.BookTextIndexes.Any(ix => ix.FullPath == u.FullPath))
+                .OrderBy(u => u.Id)
                 .Select(u => new { u.FullPath, u.NormalizedTitle, u.FileName, u.SizeBytes, u.ModifiedAt })
                 .Take(over).ToListAsync(ct);
             candidates.AddRange(unknown
@@ -404,7 +405,7 @@ public sealed class FullTextSearchService
                     .Where(t => EF.Functions.Like(t.Word, pref)).Select(t => t.TextIndexId).Distinct();
                 ids = ids is null ? s : ids.Intersect(s);
             }
-            var hitIds = await ids!.Take(2000).ToListAsync(ct);
+            var hitIds = await ids!.OrderBy(x => x).Take(2000).ToListAsync(ct);
             baseQuery = db.BookTextIndexes.AsNoTracking().Where(ix => hitIds.Contains(ix.Id));
         }
 

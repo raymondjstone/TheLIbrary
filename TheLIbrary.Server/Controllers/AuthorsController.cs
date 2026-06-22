@@ -761,6 +761,7 @@ public partial class AuthorsController : ControllerBase
                      && (a.Name == current.Name
                          || a.Name.EndsWith(" " + lastTok)
                          || a.Name.StartsWith(firstTok + " ")))
+            .OrderBy(a => a.Id)
             .Select(a => new { a.Id, a.Name, a.OpenLibraryKey, a.Status })
             .Take(2000)
             .ToListAsync(ct);

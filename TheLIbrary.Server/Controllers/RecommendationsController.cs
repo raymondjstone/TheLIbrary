@@ -59,6 +59,7 @@ public class RecommendationsController : ControllerBase
                      && !b.Author.RecommendationRejected
                      && (b.Author.Status == AuthorStatus.Active || b.Author.Status == AuthorStatus.Pending)
                      && b.Subjects != null && b.Subjects != "")
+            .OrderBy(b => b.Id)
             .Select(b => new { b.AuthorId, b.Author.Name, b.Author.Status, b.Subjects })
             .Take(40_000)
             .ToListAsync(ct);
