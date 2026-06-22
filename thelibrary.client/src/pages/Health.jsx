@@ -59,6 +59,7 @@ export default function Health() {
                 {card('Unmatched files', h.unmatchedFiles, '/untracked', 'warn')}
                 {card('Untracked scans', h.untrackedScans, '/identified', 'warn')}
                 {card('__unknown files', h.unknownFiles, '/unknown-files', 'warn')}
+                {card('Untracked, not LLM-parsed', h.untrackedNotLlmParsed, '/schedules', 'warn')}
                 {card('Total authors', h.totalAuthors, '/authors', 'default')}
                 {card('Empty prunable authors', h.emptyPrunableAuthors, '/authors', 'danger')}
             </div>

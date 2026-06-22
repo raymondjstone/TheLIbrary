@@ -27,7 +27,8 @@ public class HealthController : ControllerBase
         int EmptyPrunableAuthors,
         int UnmatchedFiles,
         int UntrackedScans,
-        int UnknownFiles);
+        int UnknownFiles,
+        int UntrackedNotLlmParsed);
 
     [HttpGet]
     public Task<HealthReport> Get(CancellationToken ct)
@@ -84,8 +85,12 @@ public class HealthController : ControllerBase
         var unmatchedFiles = await _db.LocalBookFiles.AsNoTracking().CountAsync(f => f.AuthorId == null, ct);
         var untrackedScans = await _db.BookContentScans.AsNoTracking().CountAsync(s => s.Source == "untracked", ct);
         var unknownFiles = await _db.UnknownFiles.CountAsync(ct);
+        // What the llm-identify job still has to do: untracked, author-less scans
+        // not yet sent to the LLM (its exact candidate predicate).
+        var untrackedNotLlmParsed = await _db.BookContentScans.AsNoTracking().CountAsync(
+            s => s.Source == "untracked" && s.AuthorId == null && s.Author == null && s.LlmAttemptedAt == null, ct);
 
         return new HealthReport(totalAuthors, byStatus, bySource, byDay, emptyPrunable,
-            unmatchedFiles, untrackedScans, unknownFiles);
+            unmatchedFiles, untrackedScans, unknownFiles, untrackedNotLlmParsed);
     }
 }
