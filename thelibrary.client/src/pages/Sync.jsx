@@ -226,6 +226,11 @@ export default function Sync() {
                                                 { key: 'assignAuthors',      label: 'Assign untracked books to authors', endpoint: '/api/jobs/assign-authors/start' },
                                                 { key: 'fullTextIndex',      label: 'Index ebook text (full-text search)', endpoint: '/api/jobs/index-fulltext/start' },
                                                 { key: 'pruneAuthors',       label: 'Prune empty auto-created authors', endpoint: '/api/jobs/prune-authors/start' },
+                                                { key: 'dupAutoArchive',     label: 'Auto-archive duplicate copies', endpoint: '/api/jobs/duplicate-auto-archive/start' },
+                                                { key: 'seriesWatch',        label: 'Watch owned series for new volumes', endpoint: '/api/jobs/series-watch/start' },
+                                                { key: 'autoReplaceDamaged', label: 'Auto-replace damaged books', endpoint: '/api/jobs/auto-replace-damaged/start' },
+                                                { key: 'resolveWorks',       label: 'Resolve works by ISBN', endpoint: '/api/jobs/resolve-works/start' },
+                                                { key: 'llmIdentify',        label: 'LLM identify quarantined files', endpoint: '/api/jobs/llm-identify/start' },
                                             ]
                                             const anyJobRunning = !!jobs.activeJob
                                             return (

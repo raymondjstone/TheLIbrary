@@ -29,6 +29,11 @@ public class JobsController : ControllerBase
     private readonly UntrackedAuthorAssignmentService _assignAuthors;
     private readonly TheLibrary.Server.Services.Search.FullTextSearchService _fullText;
     private readonly AuthorPruneService _pruneAuthors;
+    private readonly DuplicateAutoArchiveService _dupAutoArchive;
+    private readonly SeriesWatchService _seriesWatch;
+    private readonly TheLibrary.Server.Services.Download.AutoReplaceDamagedService _autoReplaceDamaged;
+    private readonly WorkResolutionService _resolveWorks;
+    private readonly TheLibrary.Server.Services.Llm.LlmIdentificationService _llmIdentify;
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly OpenLibraryRateLimiter _rateLimiter;
@@ -55,6 +60,11 @@ public class JobsController : ControllerBase
         UntrackedAuthorAssignmentService assignAuthors,
         TheLibrary.Server.Services.Search.FullTextSearchService fullText,
         AuthorPruneService pruneAuthors,
+        DuplicateAutoArchiveService dupAutoArchive,
+        SeriesWatchService seriesWatch,
+        TheLibrary.Server.Services.Download.AutoReplaceDamagedService autoReplaceDamaged,
+        WorkResolutionService resolveWorks,
+        TheLibrary.Server.Services.Llm.LlmIdentificationService llmIdentify,
         BackgroundTaskCoordinator coordinator,
         IHostApplicationLifetime lifetime,
         OpenLibraryRateLimiter rateLimiter,
@@ -80,6 +90,11 @@ public class JobsController : ControllerBase
         _assignAuthors = assignAuthors;
         _fullText = fullText;
         _pruneAuthors = pruneAuthors;
+        _dupAutoArchive = dupAutoArchive;
+        _seriesWatch = seriesWatch;
+        _autoReplaceDamaged = autoReplaceDamaged;
+        _resolveWorks = resolveWorks;
+        _llmIdentify = llmIdentify;
         _coordinator = coordinator;
         _lifetime = lifetime;
         _rateLimiter = rateLimiter;
@@ -120,6 +135,11 @@ public class JobsController : ControllerBase
             assignAuthors = new { isRunning = _assignAuthors.IsRunning, message = _assignAuthors.CurrentMessage },
             fullTextIndex = new { isRunning = _fullText.IsRunning, message = _fullText.CurrentMessage },
             pruneAuthors = new { isRunning = _pruneAuthors.IsRunning, message = _pruneAuthors.CurrentMessage },
+            dupAutoArchive = new { isRunning = _dupAutoArchive.IsRunning, message = _dupAutoArchive.CurrentMessage },
+            seriesWatch = new { isRunning = _seriesWatch.IsRunning, message = _seriesWatch.CurrentMessage },
+            autoReplaceDamaged = new { isRunning = _autoReplaceDamaged.IsRunning, message = _autoReplaceDamaged.CurrentMessage },
+            resolveWorks = new { isRunning = _resolveWorks.IsRunning, message = _resolveWorks.CurrentMessage },
+            llmIdentify = new { isRunning = _llmIdentify.IsRunning, message = _llmIdentify.CurrentMessage },
         });
     }
 
@@ -279,6 +299,46 @@ public class JobsController : ControllerBase
     public IActionResult StartPruneAuthors()
     {
         if (!_pruneAuthors.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("duplicate-auto-archive/start")]
+    public IActionResult StartDuplicateAutoArchive()
+    {
+        if (!_dupAutoArchive.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("series-watch/start")]
+    public IActionResult StartSeriesWatch()
+    {
+        if (!_seriesWatch.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("auto-replace-damaged/start")]
+    public IActionResult StartAutoReplaceDamaged()
+    {
+        if (!_autoReplaceDamaged.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("resolve-works/start")]
+    public IActionResult StartResolveWorks()
+    {
+        if (!_resolveWorks.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("llm-identify/start")]
+    public IActionResult StartLlmIdentify()
+    {
+        if (!_llmIdentify.TryStart(_lifetime.ApplicationStopping, out var err))
             return Conflict(new { error = err });
         return Accepted();
     }
