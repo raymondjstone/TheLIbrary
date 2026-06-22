@@ -89,10 +89,13 @@ public sealed class LlmIdentificationService
         var fs = sp.GetRequiredService<IFileSystem>();
         var assigner = new UntrackedAuthorAssigner(db, sp.GetRequiredService<OpenLibraryClient>(), fs);
 
-        // Opaque residual: quarantined files with no author the cheap paths could
-        // find, not yet sent to the LLM.
+        // Quarantined files still UNASSIGNED (no author filed) that the LLM hasn't
+        // tried. We deliberately do NOT also require Author == null: a row where
+        // extraction guessed an author but it couldn't be assigned (junk name, or
+        // an author OpenLibrary won't confirm) is exactly the kind of thing the LLM
+        // can still rescue, so those are eligible too.
         var candidateIds = await db.BookContentScans.AsNoTracking()
-            .Where(s => s.Source == "untracked" && s.AuthorId == null && s.Author == null && s.LlmAttemptedAt == null)
+            .Where(s => s.Source == "untracked" && s.AuthorId == null && s.LlmAttemptedAt == null)
             .OrderBy(s => s.Id)
             .Take(budget)
             .Select(s => s.Id)
