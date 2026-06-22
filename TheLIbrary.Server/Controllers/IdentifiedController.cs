@@ -63,33 +63,43 @@ public class IdentifiedController : ControllerBase
                     || (c.Author != null && c.AuthorId == null)));
         if (authorId is int aid) q = q.Where(c => c.AuthorId == aid);
 
-        // The list is capped (Take below), and there can be tens of thousands of
-        // eligible rows — dominated by tracked author files that merely carry a
-        // series catalogue. Surface the rows that actually need a human first so
-        // they're never buried under the cap: UNTRACKED quarantine guesses, then
-        // any still-unassigned guess, then the rest — newest within each tier.
-        var rows = await q
-            .OrderBy(c => c.Source == "untracked" ? 0 : 1)
-            .ThenBy(c => c.AuthorId == null ? 0 : 1)
-            .ThenByDescending(c => c.ScannedAt)
-            .Select(c => new
-            {
-                c.Id, c.FullPath, c.Source, c.AuthorId, c.Isbn, c.Title, c.Author,
-                c.Series, c.SeriesPosition, c.AlsoByTitles, c.SeriesCatalogJson, c.ScannedAt,
-                LinkedAuthorName = c.AuthorId != null
-                    ? _db.Authors.Where(a => a.Id == c.AuthorId).Select(a => a.Name).FirstOrDefault()
-                    : null,
-                FileId = _db.LocalBookFiles.Where(f => f.FullPath == c.FullPath).Select(f => (int?)f.Id).FirstOrDefault(),
-            })
-            .Take(2000)
-            .ToListAsync(ct);
+        // There can be tens of thousands of eligible rows, dominated by TRACKED
+        // author files that merely carry a series catalogue. The UNTRACKED
+        // (__unknown) guesses are a small set (sub-1000) and the ones a human most
+        // needs to action, so a single shared cap ordered by date wrongly buries
+        // them under the tracked flood. Query the two groups SEPARATELY: return
+        // every untracked row (uncapped within a safety ceiling), and cap only the
+        // tracked group. The client renders them in their own sections.
+        const int untrackedCeiling = 10000;
+        const int trackedCap = 2000;
 
-        return rows.Select(r => new IdentifiedRow(
-            r.Id, r.FileId, r.FullPath, FormatOf(r.FullPath), r.Source, r.AuthorId, r.LinkedAuthorName,
-            r.Isbn, r.Title, r.Author, r.Series, r.SeriesPosition,
-            string.IsNullOrEmpty(r.AlsoByTitles) ? Array.Empty<string>() : r.AlsoByTitles.Split(';'),
-            ParseCatalog(r.SeriesCatalogJson),
-            r.ScannedAt)).ToList();
+        async Task<List<IdentifiedRow>> FetchAsync(IQueryable<BookContentScan> src, int take)
+        {
+            var rows = await src
+                .OrderByDescending(c => c.ScannedAt)
+                .Select(c => new
+                {
+                    c.Id, c.FullPath, c.Source, c.AuthorId, c.Isbn, c.Title, c.Author,
+                    c.Series, c.SeriesPosition, c.AlsoByTitles, c.SeriesCatalogJson, c.ScannedAt,
+                    LinkedAuthorName = c.AuthorId != null
+                        ? _db.Authors.Where(a => a.Id == c.AuthorId).Select(a => a.Name).FirstOrDefault()
+                        : null,
+                    FileId = _db.LocalBookFiles.Where(f => f.FullPath == c.FullPath).Select(f => (int?)f.Id).FirstOrDefault(),
+                })
+                .Take(take)
+                .ToListAsync(ct);
+
+            return rows.Select(r => new IdentifiedRow(
+                r.Id, r.FileId, r.FullPath, FormatOf(r.FullPath), r.Source, r.AuthorId, r.LinkedAuthorName,
+                r.Isbn, r.Title, r.Author, r.Series, r.SeriesPosition,
+                string.IsNullOrEmpty(r.AlsoByTitles) ? Array.Empty<string>() : r.AlsoByTitles.Split(';'),
+                ParseCatalog(r.SeriesCatalogJson),
+                r.ScannedAt)).ToList();
+        }
+
+        var untracked = await FetchAsync(q.Where(c => c.Source == "untracked"), untrackedCeiling);
+        var tracked = await FetchAsync(q.Where(c => c.Source != "untracked"), trackedCap);
+        return untracked.Concat(tracked).ToList();
     }
 
     // Bibliography-section headers that name a *category*, not a real series, and
