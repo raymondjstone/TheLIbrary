@@ -83,6 +83,8 @@ public sealed class UnknownAuthorAdoptionService
         return true;
     }
 
+    internal Task<UnknownAuthorAdoptionSummary> RunForTestsAsync(CancellationToken ct) => RunAsync(ct);
+
     private async Task<UnknownAuthorAdoptionSummary> RunAsync(CancellationToken ct)
     {
         _log.LogInformation("Adopt-unknown-authors job starting");
@@ -93,19 +95,18 @@ public sealed class UnknownAuthorAdoptionService
         var details = new List<string>();
         var warnings = new List<string>();
 
+        // Incoming is needed only to RETURN __unknown folders. The library-root
+        // _OLkey pass below claims in place and needs no incoming folder, so a
+        // missing/absent incoming only skips the __unknown loop — it no longer
+        // aborts the whole job.
         var incomingSetting = await db.AppSettings
             .FirstOrDefaultAsync(s => s.Key == AppSettingKeys.IncomingFolder, ct);
         var incomingPath = incomingSetting?.Value?.Trim();
-        if (string.IsNullOrWhiteSpace(incomingPath))
-        {
-            warnings.Add("Incoming folder is not configured — nothing moved.");
-            return new UnknownAuthorAdoptionSummary(0, 0, 0, details, warnings);
-        }
-        if (!Directory.Exists(incomingPath))
-        {
-            warnings.Add($"Incoming folder does not exist: {incomingPath}");
-            return new UnknownAuthorAdoptionSummary(0, 0, 0, details, warnings);
-        }
+        var incomingReady = !string.IsNullOrWhiteSpace(incomingPath) && Directory.Exists(incomingPath);
+        if (!incomingReady)
+            warnings.Add(string.IsNullOrWhiteSpace(incomingPath)
+                ? "Incoming folder is not configured — __unknown folders not returned (library-root _OLkey folders still adopted)."
+                : $"Incoming folder does not exist: {incomingPath} — __unknown folders not returned.");
 
         var locations = await db.LibraryLocations
             .Where(l => l.Enabled)
@@ -128,7 +129,7 @@ public sealed class UnknownAuthorAdoptionService
 
         int suffixedFound = 0, authorsAdded = 0, foldersReturned = 0;
 
-        foreach (var unknownRoot in unknownRoots)
+        if (incomingReady) foreach (var unknownRoot in unknownRoots)
         {
             ct.ThrowIfCancellationRequested();
             if (!Directory.Exists(unknownRoot)) continue;
@@ -187,6 +188,70 @@ public sealed class UnknownAuthorAdoptionService
                 }
             }
         }
+
+        // --- _OLkey folders sitting in a LIBRARY root (not __unknown) -----------
+        // The loop above only scans __unknown. An "<Author>_OLkey" folder can also
+        // land directly in a library root, where sync won't link its files while
+        // the author is untracked and the __unknown adopt never sees it — so it
+        // sits unclaimed forever (e.g. "Francois Mauriac _OL15295370A"). Here we
+        // create the author from the key and claim the files IN PLACE (no move),
+        // setting the author's CalibreFolderName to the exact on-disk folder so the
+        // folder-driven link survives the next sync.
+        _currentMessage = "Adopting _OLkey folders in library roots";
+        var unclaimedFolders = await db.LocalBookFiles.AsNoTracking()
+            .Where(f => f.AuthorId == null && f.AuthorFolder != null && f.AuthorFolder != "")
+            .Select(f => f.AuthorFolder!)
+            .Distinct()
+            .ToListAsync(ct);
+
+        int claimedInPlace = 0;
+        foreach (var folderName in unclaimedFolders)
+        {
+            ct.ThrowIfCancellationRequested();
+            var (namePart, olKey) = ParseSuffixedFolder(folderName);
+            if (namePart is null || olKey is null) continue;   // not an _OLkey folder
+            suffixedFound++;
+
+            var author = await db.Authors.FirstOrDefaultAsync(a => a.OpenLibraryKey == olKey, ct);
+            if (author is null)
+            {
+                var olRow = await db.OpenLibraryAuthors.AsNoTracking().FirstOrDefaultAsync(o => o.OlKey == olKey, ct);
+                var name = !string.IsNullOrWhiteSpace(olRow?.Name) ? olRow!.Name.Trim() : namePart.Trim();
+                var norm = TitleNormalizer.NormalizeAuthor(name);
+                if (!string.IsNullOrEmpty(norm) && blacklist.Contains(norm))
+                {
+                    warnings.Add($"{folderName}: '{name}' is blacklisted — left unclaimed");
+                    continue;
+                }
+                author = new Author
+                {
+                    Name = name,
+                    OpenLibraryKey = olKey,
+                    CalibreFolderName = folderName,   // match the on-disk folder → durable link
+                    Status = AuthorStatus.Pending,
+                    CreationSource = "adopt",
+                };
+                db.Authors.Add(author);
+                await db.SaveChangesAsync(ct);
+                trackedKeys.Add(olKey);
+                authorsAdded++;
+                details.Add($"Added {name} ({olKey}) [library-root folder]"
+                    + (olRow is null ? " [not in OL catalogue — used folder name]" : ""));
+            }
+
+            var files = await db.LocalBookFiles
+                .Where(f => f.AuthorId == null && f.AuthorFolder == folderName)
+                .ToListAsync(ct);
+            foreach (var f in files) f.AuthorId = author.Id;
+            if (files.Count > 0)
+            {
+                await db.SaveChangesAsync(ct);
+                claimedInPlace += files.Count;
+                details.Add($"Claimed '{folderName}' in place → {author.Name} ({files.Count} file(s))");
+            }
+        }
+        if (claimedInPlace > 0)
+            _log.LogInformation("Adopt: claimed {Count} library-root _OLkey file(s) in place", claimedInPlace);
 
         var summary = new UnknownAuthorAdoptionSummary(
             suffixedFound, authorsAdded, foldersReturned, details, warnings);
