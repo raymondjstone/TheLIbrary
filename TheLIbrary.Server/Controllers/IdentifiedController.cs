@@ -552,6 +552,26 @@ public class IdentifiedController : ControllerBase
         return Ok(new { reviewed = true });
     }
 
+    public sealed record DismissAllResult(int Dismissed);
+
+    /// <summary>
+    /// Marks every row currently shown on the Identified page reviewed in one go —
+    /// the same filter (and optional ?authorId) as the listing, so it clears exactly
+    /// what's visible. POST /api/identified/dismiss-all
+    /// </summary>
+    [HttpPost("dismiss-all")]
+    public async Task<DismissAllResult> DismissAll([FromQuery] int? authorId = null, CancellationToken ct = default)
+    {
+        var q = _db.BookContentScans
+            .Where(c => !c.Reviewed
+                && (c.Isbn != null || c.Title != null || c.Series != null
+                    || c.AlsoByTitles != null || c.SeriesCatalogJson != null
+                    || (c.Author != null && c.AuthorId == null)));
+        if (authorId is int aid) q = q.Where(c => c.AuthorId == aid);
+        var dismissed = await q.ExecuteUpdateAsync(s => s.SetProperty(c => c.Reviewed, _ => true), ct);
+        return new DismissAllResult(dismissed);
+    }
+
     /// <summary>
     /// Accepts the matched author for a scan row that has an author but no title.
     /// Assigns the LocalBookFile to the author, moves it on disk into the author's

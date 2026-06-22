@@ -102,6 +102,26 @@ export default function IdentifiedBooks() {
         }
     }
 
+    // Mark every row currently listed (respecting the author filter) reviewed in
+    // one go, so the list can be cleared without dismissing line by line.
+    const dismissAll = async () => {
+        const n = (rows ?? []).length
+        if (!window.confirm(`Dismiss all ${n} listed row(s)? They’re marked reviewed and leave this list (files and guesses are untouched).`)) return
+        setBulkBusy(true)
+        try {
+            const qs = authorId ? `?authorId=${authorId}` : ''
+            const r = await fetch(`/api/identified/dismiss-all${qs}`, { method: 'POST' })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            alert(`Dismissed ${body.dismissed} row(s).`)
+            load()
+        } catch (e) {
+            alert(`Failed: ${e.message}`)
+        } finally {
+            setBulkBusy(false)
+        }
+    }
+
     const dismiss = async (id) => {
         setBusy(prev => new Set(prev).add(id))
         try {
@@ -208,22 +228,6 @@ export default function IdentifiedBooks() {
             setAssignAllBusy(false)
             setAssignAllProgress(null)
             load()
-        }
-    }
-
-    // Accept the linked author — moves the file into the author's folder and
-    // leaves it in the author's Unmatched section (title may still be wrong).
-    const acceptAuthor = async (id, authorName) => {
-        setBusy(prev => new Set(prev).add(id))
-        try {
-            const r = await fetch(`/api/identified/${id}/accept-author`, { method: 'POST' })
-            const body = await r.json().catch(() => ({}))
-            if (!r.ok) throw new Error(body.error || r.statusText)
-            setRows(prev => prev.filter(x => x.id !== id))
-        } catch (e) {
-            alert(`Failed: ${e.message}`)
-        } finally {
-            setBusy(prev => { const n = new Set(prev); n.delete(id); return n })
         }
     }
 
@@ -337,6 +341,16 @@ export default function IdentifiedBooks() {
                 </div>
             )}
 
+            {(rows?.length ?? 0) > 0 && (
+                <div className="toolbar">
+                    <button className="btn-danger" onClick={dismissAll} disabled={bulkBusy}
+                            title="Mark every listed row reviewed so it leaves this list. Files and guesses are untouched.">
+                        {bulkBusy ? 'Dismissing…' : `Dismiss all ${rows.length} listed`}
+                    </button>
+                    <span className="subtle">Clears the whole list at once (respects the author filter). Files and their guesses are not changed — they just stop showing here.</span>
+                </div>
+            )}
+
             {error && <p className="error">{error}</p>}
             {rows === null ? (
                 <p>Loading…</p>
@@ -347,7 +361,7 @@ export default function IdentifiedBooks() {
             ) : (() => {
                 const untracked = filtered.filter(r => r.source === 'untracked')
                 const tracked   = filtered.filter(r => r.source !== 'untracked')
-                const tableProps = { busy, expanded, toggleCatalog, setPreview, apply, acceptAuthor, assignAuthor, applyCatalog, dismiss, setAuthorEdit, setWorkSearch }
+                const tableProps = { busy, expanded, toggleCatalog, setPreview, apply, assignAuthor, applyCatalog, dismiss, setAuthorEdit, setWorkSearch }
                 return (
                     <>
                         <h2 style={{ marginTop: '1.5rem' }}>
@@ -414,7 +428,7 @@ export default function IdentifiedBooks() {
     )
 }
 
-function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, acceptAuthor, assignAuthor, applyCatalog, dismiss, setAuthorEdit, setWorkSearch }) {
+function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, assignAuthor, applyCatalog, dismiss, setAuthorEdit, setWorkSearch }) {
     return (
         <table className="grid">
             <thead>
@@ -505,13 +519,9 @@ function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, acce
                                         {busy.has(r.id) ? '…' : 'Apply'}
                                     </button>
                                 )}
-                                {r.fileId != null && r.authorId != null && r.source !== 'matched' && (
-                                    <button disabled={busy.has(r.id)}
-                                            title={`Accept "${r.linkedAuthorName}" as the author and move the file to their folder`}
-                                            onClick={() => acceptAuthor(r.id, r.linkedAuthorName ?? r.author ?? 'this author')}>
-                                        {busy.has(r.id) ? '…' : 'Accept author'}
-                                    </button>
-                                )}
+                                {/* Tracked files (authorId set) take their author from the
+                                    folder they live in — it's not changed here, so no
+                                    "Accept author" action. Untracked files get "Assign to …". */}
                                 {r.source === 'untracked' && r.author && (
                                     <button disabled={busy.has(r.id)}
                                             title={`File this untracked book under "${r.author}" (resolves via OpenLibrary or by name)`}

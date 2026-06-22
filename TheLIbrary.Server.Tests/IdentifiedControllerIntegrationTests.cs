@@ -58,6 +58,32 @@ public class IdentifiedControllerIntegrationTests
         Assert.Equal("2", bothy.SeriesPosition);
     }
 
+    // Direct against the relational (SQLite) harness because DismissAll uses
+    // ExecuteUpdate, which the in-memory factory can't translate.
+    [Fact]
+    public async Task DismissAll_Marks_Every_Listed_Row_Reviewed()
+    {
+        using var rdb = new RelationalTestDb();
+        await using (var s = rdb.NewContext())
+        {
+            s.BookContentScans.AddRange(
+                new BookContentScan { Id = 1, FullPath = "/u/a.epub", Source = "untracked", Title = "A", ScannedAt = DateTime.UtcNow },
+                new BookContentScan { Id = 2, FullPath = "/u/b.epub", Source = "untracked", Author = "Someone", ScannedAt = DateTime.UtcNow },
+                // No title/author/ISBN/series and no author -> not listed, so not dismissed.
+                new BookContentScan { Id = 3, FullPath = "/u/c.epub", Source = "untracked", ScannedAt = DateTime.UtcNow });
+            await s.SaveChangesAsync();
+        }
+        await using (var db = rdb.NewContext())
+        {
+            var result = await new IdentifiedController(db).DismissAll(null, default);
+            Assert.Equal(2, result.Dismissed);
+        }
+        await using var v = rdb.NewContext();
+        Assert.True((await v.BookContentScans.FindAsync(1))!.Reviewed);
+        Assert.True((await v.BookContentScans.FindAsync(2))!.Reviewed);
+        Assert.False((await v.BookContentScans.FindAsync(3))!.Reviewed); // wasn't listed
+    }
+
     [Fact]
     public async Task UseWork_Fully_Matches_The_File_To_The_Chosen_Work()
     {
