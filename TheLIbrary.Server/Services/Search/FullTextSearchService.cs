@@ -305,21 +305,50 @@ public sealed class FullTextSearchService
     {
         var words = Tokenize(text, WordsCapPerFile);
         if (words.Count == 0) return;
+        var added = new List<TextIndexWord>(words.Count);
         foreach (var w in words)
-            db.TextIndexWords.Add(new TextIndexWord { Word = w, TextIndexId = textIndexId });
-        await db.SaveChangesAsync(ct);
+        {
+            var e = new TextIndexWord { Word = w, TextIndexId = textIndexId };
+            added.Add(e);
+            db.TextIndexWords.Add(e);
+        }
+        try { await db.SaveChangesAsync(ct); }
+        catch
+        {
+            // Detach our pending inserts so a failure here can't re-flush (and
+            // re-fail) on a LATER file's SaveChanges, cascading onto unrelated rows.
+            foreach (var e in added) db.Entry(e).State = EntityState.Detached;
+            throw;
+        }
     }
 
     // Distinct lowercase alphanumeric tokens (length 2..64), capped. Enumeration
     // is lazy, so we stop scanning once the cap of distinct words is reached.
-    private static List<string> Tokenize(string text, int cap)
+    //
+    // Words are NFKC-normalised first: this folds ligatures (ﬁ→fi), full-width and
+    // other Unicode compatibility forms to their canonical characters. Without it
+    // two tokens that SQL Server's (case-insensitive) collation treats as EQUAL —
+    // e.g. "ﬁrst" and "first" — survive C#'s ordinal de-dup as distinct, then
+    // collide on the (Word, TextIndexId) primary key when inserted. De-dup is also
+    // culture-aware/ignore-case so any residual collation-equivalent tokens merge.
+    internal static List<string> Tokenize(string text, int cap)
     {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
         if (string.IsNullOrEmpty(text)) return new();
+        string normalized;
+        try { normalized = text.Normalize(System.Text.NormalizationForm.FormKC); }
+        catch (ArgumentException) { normalized = text; } // ill-formed UTF-16 — index as-is
+        normalized = normalized.ToLowerInvariant();
+
+        var seen = new HashSet<string>(StringComparer.InvariantCultureIgnoreCase);
+        var result = new List<string>();
         foreach (System.Text.RegularExpressions.Match m in
-                 System.Text.RegularExpressions.Regex.Matches(text.ToLowerInvariant(), @"[\p{L}\p{Nd}]{2,64}"))
-            if (seen.Add(m.Value) && seen.Count >= cap) break;
-        return seen.ToList();
+                 System.Text.RegularExpressions.Regex.Matches(normalized, @"[\p{L}\p{Nd}]{2,64}"))
+            if (seen.Add(m.Value))
+            {
+                result.Add(m.Value);
+                if (result.Count >= cap) break;
+            }
+        return result;
     }
 
     public async Task<int> ClearAsync(CancellationToken ct)
