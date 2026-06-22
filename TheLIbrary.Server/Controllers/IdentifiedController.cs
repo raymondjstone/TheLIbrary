@@ -97,8 +97,18 @@ public class IdentifiedController : ControllerBase
                 r.ScannedAt)).ToList();
         }
 
+        // A TRACKED row (file already in an author folder) is only worth showing if
+        // there's something to ACT on for book-matching: a series catalogue (Build
+        // series) or a title/ISBN (match the file to a book). Its author is fixed by
+        // the folder and never changed here, so a row whose only guess is an author
+        // (or an "also by" list, or a bare series name) is pure noise and is hidden.
+        // ('matched' rows null their title/ISBN, so title/ISBN only fires for
+        // book-unmatched files — i.e. "unmatched and we found a name".)
         var untracked = await FetchAsync(q.Where(c => c.Source == "untracked"), untrackedCeiling);
-        var tracked = await FetchAsync(q.Where(c => c.Source != "untracked"), trackedCap);
+        var tracked = await FetchAsync(
+            q.Where(c => c.Source != "untracked"
+                && (c.SeriesCatalogJson != null || c.Title != null || c.Isbn != null)),
+            trackedCap);
         return untracked.Concat(tracked).ToList();
     }
 

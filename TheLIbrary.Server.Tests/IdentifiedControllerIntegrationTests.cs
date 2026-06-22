@@ -80,6 +80,32 @@ public class IdentifiedControllerIntegrationTests
         Assert.Equal("Marc Brandle", rows[0].Author);
     }
 
+    // Tracked rows are only shown when there's something to act on (series
+    // catalogue, or a title/ISBN to match to a book). An author-only tracked row
+    // is hidden — the author is fixed by the folder and never changed here.
+    [Fact]
+    public async Task Get_Hides_Author_Only_Tracked_Rows()
+    {
+        using var rdb = new RelationalTestDb();
+        await using (var s = rdb.NewContext())
+        {
+            s.Authors.Add(new Author { Id = 1, Name = "Auth" });
+            s.BookContentScans.AddRange(
+                // author-only tracked guess -> hidden
+                new BookContentScan { Id = 1, FullPath = "/lib/Auth/a.epub", Source = "unmatched", AuthorId = 1, Author = "Auth", ScannedAt = DateTime.UtcNow },
+                // has a title -> shown (matchable to a book)
+                new BookContentScan { Id = 2, FullPath = "/lib/Auth/b.epub", Source = "unmatched", AuthorId = 1, Title = "Some Book", ScannedAt = DateTime.UtcNow },
+                // matched row carrying only a series catalogue -> shown (Build series)
+                new BookContentScan { Id = 3, FullPath = "/lib/Auth/c.epub", Source = "matched", AuthorId = 1, SeriesCatalogJson = "[]", ScannedAt = DateTime.UtcNow });
+            await s.SaveChangesAsync();
+        }
+        await using var db = rdb.NewContext();
+        var ids = (await new IdentifiedController(db).Get(null, default)).Select(r => r.Id).ToHashSet();
+        Assert.DoesNotContain(1, ids);   // author-only hidden
+        Assert.Contains(2, ids);         // title shown
+        Assert.Contains(3, ids);         // catalogue shown
+    }
+
     // Direct against the relational (SQLite) harness because DismissAll uses
     // ExecuteUpdate, which the in-memory factory can't translate.
     [Fact]
