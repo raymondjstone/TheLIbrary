@@ -26,6 +26,46 @@ const labels = {
     'assign-authors': 'Assign untracked books to authors (created from OL if needed)',
     'index-fulltext': 'Index ebook text for full-text search (opt-in; books per run set in Settings)',
     'prune-authors': 'Prune empty auto-created authors (same-name/assign/content-scan/adopt with no books or files; off by default)',
+    'duplicate-auto-archive': 'Auto-archive duplicate copies, keeping the best (off by default)',
+    'series-watch': 'Watch owned series for new volumes → mark Wanted (off by default)',
+    'auto-replace-damaged': 'Grab replacements for damaged books via SABnzbd (off by default)',
+    'resolve-works': 'Link author-known files to their work by ISBN (off by default)',
+    'llm-identify': 'LLM identification of opaque files (paid; Claude/ChatGPT; off by default)',
+}
+
+// Reasonable-detail explanation of what each job actually does, shown in a
+// collapsible panel per row. Keyed by job id.
+const descriptions = {
+    'sync': 'The backbone job. Walks every enabled library location on disk, matches files to authors and books by folder and title, and reconciles the database with what is actually on disk — (re)linking files, dropping rows for files that have vanished, and feeding the matchers. Heavy; disabled by default.',
+    'seed': 'Imports the OpenLibrary authors dump into the local catalogue so author lookups and same-name matching work offline without hitting the OpenLibrary API. Occasional/one-off; disabled by default.',
+    'author-updates': 'Applies queued OpenLibrary author-record changes the refresher has gathered — renames, merged keys, newly-listed works — to your catalogue. Disabled by default.',
+    'incoming': 'Processes the configured Incoming folder: files dropped there are identified and filed into the right author/series, or quarantined to __unknown if they can’t be placed. Disabled by default.',
+    'reprocess-unknown': 'Re-examines files sitting in the __unknown quarantine folder and tries again to identify and file them — useful after adding authors or fixing metadata. Disabled by default.',
+    'refresh-works': 'The main “find new books” job. Refreshes OpenLibrary works for authors that are due on a cadence (recently-active authors checked more often than dormant ones) so new releases get discovered. Capped per run (set in Settings).',
+    'organize-series': 'Moves matched book files into tidy per-series folders under each author, following the detected series structure. Runs twice daily.',
+    'unzip': 'Extracts .zip / archive files found in library folders so the books inside become visible to the scanner.',
+    'disambiguate-folders': 'When two different authors share a folder name, splits them into distinct, correctly-named author folders so their books stop getting mixed up.',
+    'same-name-authors': 'Adds OpenLibrary authors who share a name with one you own, so homonyms are catalogued and can be told apart instead of being silently merged.',
+    'star-physical-authors': 'Gives a 1-star priority to authors you own only in physical form, so they are tracked for new releases alongside your ebook authors.',
+    'cache-openlibrary-metadata': 'Downloads and caches OpenLibrary cover images and subjects for owned books, in batches, so the UI renders covers and genres without live API calls.',
+    'flatten-unknown': 'Flattens any author/title subfolders that have crept into the __unknown quarantine back into loose files (the quarantine is flat by design). Off by default.',
+    'dedupe-unknown': 'Deletes byte-identical duplicate files inside the __unknown quarantine, keeping one copy per content hash. Destructive, so it ships disabled.',
+    'dedupe-author-files': 'Deletes byte-identical duplicate files within each author folder (keeping one), for authors that still have unmatched files. Same content-hash check as the quarantine dedupe.',
+    'promote-manual-books': 'Searches OpenLibrary for each manually-catalogued book and, once OL lists it, promotes/merges your manual entry onto the real work — preserving its series, files and ownership.',
+    'adopt-unknown-authors': 'Takes _OLkey author folders found in __unknown, creates the author from that OpenLibrary key, and returns the files to the incoming pipeline to be filed properly.',
+    'archive-foreign': 'Moves the files of titles you have flagged as foreign into the archive folder so they drop out of the main lists.',
+    'merge-linked-authors': 'Completes the duplicate-author merges you have requested: folds a linked author fully into its canonical author, moving files on disk and reassigning books so the merge survives the next sync.',
+    'check-integrity': 'Opens (and where needed converts) each ebook to verify it is not corrupt and has enough pages; files that fail are flagged on the Damaged page. Heavy (PDF parsing / Calibre conversion) and capped per run, so it ships disabled.',
+    'prune-stale-files': 'Removes leftover folder-pointer file rows and empty title folders left behind by moves, so stale pointers don’t linger or get counted as books. Cheap and guarded for the NAS mount.',
+    'content-scan': 'Reads the front matter of unmatched / untracked files to guess title, author and series when the filename and embedded metadata came up short. Heavy (opens each file) and capped per run, so it ships disabled.',
+    'assign-authors': 'Files untracked __unknown books under their author — creating the author from OpenLibrary if needed — using the ISBN, then title + author, then the filename. Runs every 15 minutes to work through the backlog.',
+    'index-fulltext': 'Extracts and indexes ebook text so the Search page can do full-text content search. Opt-in: does nothing unless full-text search is enabled in Settings. Capped per run.',
+    'prune-authors': 'Deletes empty auto-created author rows (homonym / guess noise) that have no books, files, links or notes. Never touches manual or pre-existing authors. Destructive, so it ships disabled.',
+    'duplicate-auto-archive': 'For every book with more than one live copy, keeps the single best one (a healthy copy always beats a damaged one, then your preferred format) and archives the rest — the automated version of “Archive extras” on the Duplicates page. Moves files, so it ships disabled.',
+    'series-watch': 'When a series you already own a book in gains a recently-added (≤ 14 days) volume you don’t own, marks it Wanted and sends a single Pushover summary. The high-signal “next in a series I’m collecting” case. Acts on your collection, so it ships disabled.',
+    'auto-replace-damaged': 'For each damaged book, searches your configured indexer and sends the best replacement to SABnzbd — the automated “Grab”. Needs Download automation set up in Settings, is capped at 20 per run, and ships disabled because it pulls downloads.',
+    'resolve-works': 'Links files that already know their author but not their specific book, using the ISBN already extracted: ISBN → OpenLibrary work (the /isbn/ edition endpoint first, then ISBN search) → ensure the book under that author. Closes the gap where the title-only matcher never consulted ISBNs. Capped 200/run; ships disabled.',
+    'llm-identify': 'Last-resort, paid identification of opaque quarantined files nothing else could place. Sends the signals we already hold — filename, embedded metadata, ISBN, a snippet of the opening text — to the LLM configured in Settings (Claude or ChatGPT), then validates its guess against OpenLibrary before anything is filed. Cost is bounded by a per-run cap and a hard daily cap; ships disabled.',
 }
 
 const fmtNextRun = (iso) => {
@@ -213,6 +253,16 @@ export default function Schedules() {
                                     </tr>
                                     <tr>
                                         <td colSpan={5} style={{ paddingTop: 0, paddingBottom: '0.5rem' }}>
+                                            {descriptions[row.jobId] && (
+                                                <details style={{ marginBottom: '0.35rem' }}>
+                                                    <summary style={{ cursor: 'pointer', fontSize: '0.8em', color: 'var(--subtle)' }}>
+                                                        What this job does
+                                                    </summary>
+                                                    <p style={{ margin: '0.3rem 0 0', fontSize: '0.85em', maxWidth: '60rem', lineHeight: 1.45 }}>
+                                                        {descriptions[row.jobId]}
+                                                    </p>
+                                                </details>
+                                            )}
                                             <JobHistory jobId={row.jobId} />
                                         </td>
                                     </tr>
