@@ -599,6 +599,59 @@ public class IdentifiedController : ControllerBase
         return new DismissAllResult(dismissed);
     }
 
+    public sealed record DeleteFileResult(bool Deleted);
+
+    /// <summary>
+    /// Permanently deletes an UNTRACKED (__unknown) file from disk and drops its
+    /// tracking rows. Refuses anything outside the library / quarantine roots, and
+    /// only removes the DB rows once the file is confirmed gone (CIFS deferred
+    /// unlink). POST /api/identified/{id}/delete-file
+    /// </summary>
+    [HttpPost("{id:int}/delete-file")]
+    public async Task<ActionResult<DeleteFileResult>> DeleteFile(int id, CancellationToken ct)
+    {
+        var scan = await _db.BookContentScans.FirstOrDefaultAsync(c => c.Id == id, ct);
+        if (scan is null) return NotFound(new { error = "Scan row not found." });
+        if (scan.Source != "untracked")
+            return BadRequest(new { error = "Only untracked (__unknown) files can be deleted here." });
+
+        var path = scan.FullPath;
+        if (string.IsNullOrWhiteSpace(path))
+            return BadRequest(new { error = "Scan row has no path." });
+
+        // Safety: only ever delete inside an enabled library location or the
+        // resolved __unknown quarantine — never an arbitrary path.
+        var locations = await _db.LibraryLocations.AsNoTracking().Where(l => l.Enabled).Select(l => l.Path).ToListAsync(ct);
+        var roots = await UnknownFolderResolver.GetSourceRootsAsync(_db, locations, ct);
+        var allowed = locations.Concat(roots).Where(r => !string.IsNullOrWhiteSpace(r)).ToList();
+        if (!allowed.Any(r => path.StartsWith(r.TrimEnd('/', '\\'), StringComparison.OrdinalIgnoreCase)))
+            return BadRequest(new { error = "Refusing to delete a file outside the library / quarantine." });
+
+        try
+        {
+            if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+            else if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return StatusCode(500, new { error = $"Could not delete: {ex.Message}" });
+        }
+
+        // Only drop the tracking rows once the file is actually gone, so a failed
+        // delete doesn't make it silently reappear on the next sync.
+        if (System.IO.File.Exists(path) || Directory.Exists(path))
+            return StatusCode(500, new { error = "File still present after delete." });
+
+        _db.BookContentScans.Remove(scan);
+        var uf = await _db.UnknownFiles.Where(u => u.FullPath == path).ToListAsync(ct);
+        if (uf.Count > 0) _db.UnknownFiles.RemoveRange(uf);
+        var lbf = await _db.LocalBookFiles.Where(f => f.FullPath == path).ToListAsync(ct);
+        if (lbf.Count > 0) _db.LocalBookFiles.RemoveRange(lbf);
+        await _db.SaveChangesAsync(ct);
+
+        return Ok(new DeleteFileResult(true));
+    }
+
     /// <summary>
     /// Accepts the matched author for a scan row that has an author but no title.
     /// Assigns the LocalBookFile to the author, moves it on disk into the author's

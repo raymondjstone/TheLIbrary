@@ -122,6 +122,22 @@ export default function IdentifiedBooks() {
         }
     }
 
+    // Permanently delete an untracked (__unknown) file from disk and drop its row.
+    const deleteFile = async (id) => {
+        if (!window.confirm('Permanently delete this file from disk? This cannot be undone.')) return
+        setBusy(prev => new Set(prev).add(id))
+        try {
+            const r = await fetch(`/api/identified/${id}/delete-file`, { method: 'POST' })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setRows(prev => prev.filter(x => x.id !== id))
+        } catch (e) {
+            alert(`Delete failed: ${e.message}`)
+        } finally {
+            setBusy(prev => { const n = new Set(prev); n.delete(id); return n })
+        }
+    }
+
     const dismiss = async (id) => {
         setBusy(prev => new Set(prev).add(id))
         try {
@@ -361,7 +377,7 @@ export default function IdentifiedBooks() {
             ) : (() => {
                 const untracked = filtered.filter(r => r.source === 'untracked')
                 const tracked   = filtered.filter(r => r.source !== 'untracked')
-                const tableProps = { busy, expanded, toggleCatalog, setPreview, apply, assignAuthor, applyCatalog, dismiss, setAuthorEdit, setWorkSearch }
+                const tableProps = { busy, expanded, toggleCatalog, setPreview, apply, assignAuthor, applyCatalog, dismiss, deleteFile, setAuthorEdit, setWorkSearch }
                 return (
                     <>
                         <h2 style={{ marginTop: '1.5rem' }}>
@@ -428,7 +444,7 @@ export default function IdentifiedBooks() {
     )
 }
 
-function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, assignAuthor, applyCatalog, dismiss, setAuthorEdit, setWorkSearch }) {
+function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, assignAuthor, applyCatalog, dismiss, deleteFile, setAuthorEdit, setWorkSearch }) {
     return (
         <table className="grid">
             <thead>
@@ -539,6 +555,14 @@ function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, assi
                                         onClick={() => dismiss(r.id)}>
                                     Dismiss
                                 </button>
+                                {r.source === 'untracked' && (
+                                    <button className="btn-ghost" disabled={busy.has(r.id)}
+                                            style={{ color: 'var(--danger, #b91c1c)' }}
+                                            title="Permanently delete this __unknown file from disk"
+                                            onClick={() => deleteFile(r.id)}>
+                                        🗑 Delete
+                                    </button>
+                                )}
                             </div>
                         </td>
                     </tr>

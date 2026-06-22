@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using TheLibrary.Server.Controllers;
@@ -104,6 +105,49 @@ public class IdentifiedControllerIntegrationTests
         Assert.DoesNotContain(1, ids);   // author-only hidden
         Assert.Contains(2, ids);         // title shown
         Assert.Contains(3, ids);         // catalogue shown
+    }
+
+    [Fact]
+    public async Task DeleteFile_Removes_Untracked_File_And_Row()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "tl-iddel-" + Guid.NewGuid().ToString("N"));
+        var unknownDir = Path.Combine(root, CalibreScanner.UnknownAuthorFolder);
+        Directory.CreateDirectory(unknownDir);
+        var file = Path.Combine(unknownDir, "junk.epub");
+        await File.WriteAllTextAsync(file, "x");
+
+        using var rdb = new RelationalTestDb();
+        await using (var s = rdb.NewContext())
+        {
+            s.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "L", Path = root, Enabled = true, IsPrimary = true, CreatedAt = DateTime.UtcNow });
+            s.BookContentScans.Add(new BookContentScan { Id = 1, FullPath = file, Source = "untracked", Title = "Junk", ScannedAt = DateTime.UtcNow });
+            await s.SaveChangesAsync();
+        }
+        await using (var db = rdb.NewContext())
+        {
+            var r = await new IdentifiedController(db).DeleteFile(1, default);
+            Assert.IsType<OkObjectResult>(r.Result);
+        }
+
+        Assert.False(File.Exists(file));                               // gone from disk
+        await using var v = rdb.NewContext();
+        Assert.Null(await v.BookContentScans.FindAsync(1));            // row removed
+        try { Directory.Delete(root, true); } catch { }
+    }
+
+    [Fact]
+    public async Task DeleteFile_Refuses_Tracked_Rows()
+    {
+        using var rdb = new RelationalTestDb();
+        await using (var s = rdb.NewContext())
+        {
+            s.Authors.Add(new Author { Id = 1, Name = "Auth" });
+            s.BookContentScans.Add(new BookContentScan { Id = 1, FullPath = "/lib/Auth/x.epub", Source = "unmatched", AuthorId = 1, Title = "X", ScannedAt = DateTime.UtcNow });
+            await s.SaveChangesAsync();
+        }
+        await using var db = rdb.NewContext();
+        var r = await new IdentifiedController(db).DeleteFile(1, default);
+        Assert.IsType<BadRequestObjectResult>(r.Result);   // only untracked files deletable here
     }
 
     // Direct against the relational (SQLite) harness because DismissAll uses
