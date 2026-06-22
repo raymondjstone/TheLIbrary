@@ -123,18 +123,29 @@ public sealed class LlmIdentificationService
 
             var guess = await client.IdentifyAsync(cfg, signals, ct);
             calls++;
-            if (guess is not null && (!string.IsNullOrWhiteSpace(guess.Author) || !string.IsNullOrWhiteSpace(guess.Title)))
+            if (guess is not null)
             {
-                // Feed the guess into the scan, then let the normal assigner verify
-                // it against OpenLibrary and file it (rejecting a bad guess).
+                // Persist whatever the LLM found onto the scan row FIRST, so the data
+                // survives even if the OpenLibrary check below rejects it — the row
+                // then shows on the Identified page for manual review rather than
+                // being lost. (Existing extracted values aren't overwritten with null.)
                 if (!string.IsNullOrWhiteSpace(guess.Title)) scan.Title = Cap(guess.Title!, 500);
                 if (!string.IsNullOrWhiteSpace(guess.Author)) scan.Author = Cap(guess.Author!, 500);
+                if (!string.IsNullOrWhiteSpace(guess.Isbn) && string.IsNullOrWhiteSpace(scan.Isbn)) scan.Isbn = Cap(guess.Isbn!, 20);
                 if (!string.IsNullOrWhiteSpace(guess.Series)) scan.Series = Cap(guess.Series!, 500);
                 if (!string.IsNullOrWhiteSpace(guess.SeriesPosition)) scan.SeriesPosition = Cap(guess.SeriesPosition!, 50);
                 await db.SaveChangesAsync(ct);
 
-                var outcome = await assigner.AssignAsync(scan, ct);
-                if (outcome.Assigned) resolved++;
+                // Then let the normal assigner verify the guess against OpenLibrary
+                // and file it. If it can't be confirmed the scan is left as-is — its
+                // LLM-found title/author/ISBN stay on the Identified page.
+                var hasSignal = !string.IsNullOrWhiteSpace(scan.Isbn)
+                    || !string.IsNullOrWhiteSpace(scan.Author) || !string.IsNullOrWhiteSpace(scan.Title);
+                if (hasSignal)
+                {
+                    var outcome = await assigner.AssignAsync(scan, ct);
+                    if (outcome.Assigned) resolved++;
+                }
             }
             else await db.SaveChangesAsync(ct);
         }

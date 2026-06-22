@@ -13,7 +13,7 @@ namespace TheLibrary.Server.Services.Llm;
 public sealed record LlmSignals(
     string FileName, string? EmbeddedTitle, string? EmbeddedAuthor, string? Isbn, string? FrontMatter);
 
-public sealed record LlmGuess(string? Title, string? Author, string? Series, string? SeriesPosition, double Confidence);
+public sealed record LlmGuess(string? Title, string? Author, string? Isbn, string? Series, string? SeriesPosition, double Confidence);
 
 public sealed record LlmConfig(bool Enabled, string Provider, string? ApiKey, string Model, string BaseUrl, int MaxPerRun, int MaxPerDay)
 {
@@ -39,7 +39,8 @@ public sealed class LlmMetadataClient
         "You identify books from messy metadata. Given a filename, any embedded title/author, "
         + "an ISBN, and a snippet of the book's opening text, return the work's real Title and "
         + "Author. Return ONLY compact JSON: {\"title\":string|null,\"author\":string|null,"
-        + "\"series\":string|null,\"series_position\":string|null,\"confidence\":number}. "
+        + "\"isbn\":string|null,\"series\":string|null,\"series_position\":string|null,\"confidence\":number}. "
+        + "Include isbn only when one is clearly present in the text. "
         + "Author is a single person's full name (no roles, publishers, or 'Unknown'). "
         + "confidence is 0..1. Use null when you genuinely cannot tell — do not guess wildly.";
 
@@ -185,8 +186,8 @@ public sealed class LlmMetadataClient
             double conf = r.TryGetProperty("confidence", out var cv) && cv.ValueKind == JsonValueKind.Number ? cv.GetDouble() : 0;
             var author = Str("author");
             if (string.Equals(author, "Unknown", StringComparison.OrdinalIgnoreCase)) author = null;
-            var guess = new LlmGuess(Str("title"), author, Str("series"), Str("series_position"), conf);
-            return guess.Title is null && guess.Author is null ? null : guess;
+            var guess = new LlmGuess(Str("title"), author, Str("isbn"), Str("series"), Str("series_position"), conf);
+            return guess.Title is null && guess.Author is null && guess.Isbn is null ? null : guess;
         }
         catch (JsonException) { return null; }
     }

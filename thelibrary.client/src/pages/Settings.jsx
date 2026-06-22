@@ -1640,6 +1640,18 @@ function LlmIdentificationSection() {
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState(null)
     const [done, setDone] = useState(false)
+    const [reset, setReset] = useState(null)
+
+    const resetLlm = async () => {
+        setBusy(true); setError(null); setReset(null)
+        try {
+            const r = await fetch('/api/settings/reset-llm-attempts', { method: 'POST' })
+            if (!r.ok) throw new Error(r.statusText)
+            const d = await r.json()
+            setReset(d.cleared ?? 0)
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setBusy(false) }
+    }
 
     useEffect(() => {
         fetch('/api/settings/llm').then(r => r.ok ? r.json() : null).then(d => {
@@ -1710,9 +1722,14 @@ function LlmIdentificationSection() {
                         placeholder={cfg?.anthropicAdminKeySet ? '•••••••• (set — leave blank to keep)' : 'sk-ant-admin-… (optional, for spend)'} /></td></tr>
                 </tbody>
             </table>
-            <div style={{ marginTop: '0.6rem', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+            <div style={{ marginTop: '0.6rem', display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
                 <button onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
                 {done ? <span className="subtle">Saved.</span> : null}
+                <button className="btn-ghost" onClick={resetLlm} disabled={busy} style={{ marginLeft: 'auto' }}
+                        title="Clear the 'already tried by the LLM' marker on untracked files so the llm-identify job re-attempts them on its next run">
+                    {busy ? '…' : 'Re-attempt untracked files'}
+                </button>
+                {reset != null ? <span className="subtle">Cleared {reset} flag(s).</span> : null}
             </div>
         </>
     )

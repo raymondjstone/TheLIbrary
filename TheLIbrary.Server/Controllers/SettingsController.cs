@@ -559,11 +559,24 @@ public class SettingsController : ControllerBase
     public async Task<ResetAssignAttemptsResult> ResetAssignAttempts(CancellationToken ct)
     {
         var cleared = await _db.BookContentScans
-            .Where(c => c.AssignAttemptedAt != null || c.LlmAttemptedAt != null)
-            .ExecuteUpdateAsync(s => s
-                .SetProperty(c => c.AssignAttemptedAt, _ => (DateTime?)null)
-                .SetProperty(c => c.LlmAttemptedAt, _ => (DateTime?)null), ct);
+            .Where(c => c.AssignAttemptedAt != null)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.AssignAttemptedAt, _ => (DateTime?)null), ct);
         return new ResetAssignAttemptsResult(cleared);
+    }
+
+    public sealed record ResetLlmAttemptsResult(int Cleared);
+
+    // Clears the "LLM attempted" marker on untracked content-scan rows so the
+    // (paid) llm-identify job re-evaluates them on its next run. Use after raising
+    // the daily cap, switching provider/model, or improving the prompt — otherwise
+    // a file the LLM previously couldn't place is never re-sent.
+    [HttpPost("reset-llm-attempts")]
+    public async Task<ResetLlmAttemptsResult> ResetLlmAttempts(CancellationToken ct)
+    {
+        var cleared = await _db.BookContentScans
+            .Where(c => c.Source == "untracked" && c.LlmAttemptedAt != null)
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.LlmAttemptedAt, _ => (DateTime?)null), ct);
+        return new ResetLlmAttemptsResult(cleared);
     }
 
     public sealed record CoverHoverDto(bool Enabled, double Scale);

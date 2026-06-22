@@ -26,7 +26,7 @@ public sealed class LlmMetadataClientTests
             hitUrl = req.RequestUri!.AbsolutePath;
             Assert.True(req.Headers.Contains("x-api-key"));
             return Task.FromResult(TestHttpMessageHandler.Json(
-                """{"content":[{"type":"text","text":"{\"title\":\"Zero Sight\",\"author\":\"B. Justin Shier\",\"confidence\":0.9}"}]}"""));
+                """{"content":[{"type":"text","text":"{\"title\":\"Zero Sight\",\"author\":\"B. Justin Shier\",\"isbn\":\"9780983500001\",\"confidence\":0.9}"}]}"""));
         });
         var cfg = new LlmConfig(true, "anthropic", "k", "claude-haiku-4-5-20251001", "https://example.test", 50, 500);
 
@@ -35,6 +35,7 @@ public sealed class LlmMetadataClientTests
         Assert.Equal("/v1/messages", hitUrl);
         Assert.Equal("Zero Sight", guess!.Title);
         Assert.Equal("B. Justin Shier", guess.Author);
+        Assert.Equal("9780983500001", guess.Isbn);
     }
 
     [Fact]
