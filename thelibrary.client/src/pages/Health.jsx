@@ -60,6 +60,8 @@ export default function Health() {
                 {card('Untracked scans', h.untrackedScans, '/identified', 'warn')}
                 {card('__unknown files', h.unknownFiles, '/unknown-files', 'warn')}
                 {card('Untracked, not LLM-parsed', h.untrackedNotLlmParsed, '/schedules', 'warn')}
+                {h.llmEnabled && card(`LLM calls left today (of ${fmt(h.llmMaxPerDay)})`, h.llmCallsLeftToday, '/settings',
+                    h.llmCallsLeftToday === 0 ? 'danger' : 'default')}
                 {card('Total authors', h.totalAuthors, '/authors', 'default')}
                 {card('Empty prunable authors', h.emptyPrunableAuthors, '/authors', 'danger')}
             </div>

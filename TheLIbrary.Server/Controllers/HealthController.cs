@@ -28,7 +28,11 @@ public class HealthController : ControllerBase
         int UnmatchedFiles,
         int UntrackedScans,
         int UnknownFiles,
-        int UntrackedNotLlmParsed);
+        int UntrackedNotLlmParsed,
+        bool LlmEnabled,
+        int LlmUsedToday,
+        int LlmMaxPerDay,
+        int LlmCallsLeftToday);
 
     [HttpGet]
     public Task<HealthReport> Get(CancellationToken ct)
@@ -90,7 +94,20 @@ public class HealthController : ControllerBase
         var untrackedNotLlmParsed = await _db.BookContentScans.AsNoTracking().CountAsync(
             s => s.Source == "untracked" && s.AuthorId == null && s.Author == null && s.LlmAttemptedAt == null, ct);
 
+        // LLM "credits": the remaining daily-cap budget we enforce (the real
+        // provider account balance isn't exposed via the API key). Resets at UTC
+        // midnight; only meaningful when the LLM is enabled.
+        var llmCfg = await TheLibrary.Server.Services.Llm.LlmMetadataClient.LoadConfigAsync(_db, ct);
+        var today = DateTime.UtcNow.ToString("yyyy-MM-dd");
+        var llmUsage = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.LlmUsageDate || s.Key == AppSettingKeys.LlmUsageCount)
+            .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
+        var llmUsedToday = llmUsage.GetValueOrDefault(AppSettingKeys.LlmUsageDate) == today
+            && int.TryParse(llmUsage.GetValueOrDefault(AppSettingKeys.LlmUsageCount), out var lc) ? lc : 0;
+        var llmCallsLeft = llmCfg.Enabled ? Math.Max(0, llmCfg.MaxPerDay - llmUsedToday) : 0;
+
         return new HealthReport(totalAuthors, byStatus, bySource, byDay, emptyPrunable,
-            unmatchedFiles, untrackedScans, unknownFiles, untrackedNotLlmParsed);
+            unmatchedFiles, untrackedScans, unknownFiles, untrackedNotLlmParsed,
+            llmCfg.Enabled, llmUsedToday, llmCfg.MaxPerDay, llmCallsLeft);
     }
 }
