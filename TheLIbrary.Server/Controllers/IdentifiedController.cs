@@ -63,8 +63,15 @@ public class IdentifiedController : ControllerBase
                     || (c.Author != null && c.AuthorId == null)));
         if (authorId is int aid) q = q.Where(c => c.AuthorId == aid);
 
+        // The list is capped (Take below), and there can be tens of thousands of
+        // eligible rows — dominated by tracked author files that merely carry a
+        // series catalogue. Surface the rows that actually need a human first so
+        // they're never buried under the cap: UNTRACKED quarantine guesses, then
+        // any still-unassigned guess, then the rest — newest within each tier.
         var rows = await q
-            .OrderByDescending(c => c.ScannedAt)
+            .OrderBy(c => c.Source == "untracked" ? 0 : 1)
+            .ThenBy(c => c.AuthorId == null ? 0 : 1)
+            .ThenByDescending(c => c.ScannedAt)
             .Select(c => new
             {
                 c.Id, c.FullPath, c.Source, c.AuthorId, c.Isbn, c.Title, c.Author,

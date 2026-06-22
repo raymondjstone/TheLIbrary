@@ -58,6 +58,28 @@ public class IdentifiedControllerIntegrationTests
         Assert.Equal("2", bothy.SeriesPosition);
     }
 
+    // Untracked / unassigned guesses must surface ahead of tracked rows, so the
+    // capped list never buries the ones a human needs to action.
+    [Fact]
+    public async Task Get_Surfaces_Untracked_And_Unassigned_First()
+    {
+        using var rdb = new RelationalTestDb();
+        await using (var s = rdb.NewContext())
+        {
+            // Tracked author row, scanned most recently (would top a date-only sort).
+            s.Authors.Add(new Author { Id = 1, Name = "Auth" });
+            s.BookContentScans.AddRange(
+                new BookContentScan { Id = 1, FullPath = "/lib/Auth/x.epub", Source = "unmatched", AuthorId = 1, Series = "S", ScannedAt = DateTime.UtcNow },
+                new BookContentScan { Id = 2, FullPath = "/u/old.pdf", Source = "untracked", AuthorId = null, Author = "Marc Brandle", Title = "Two-Toed Pigeon", ScannedAt = DateTime.UtcNow.AddDays(-30) });
+            await s.SaveChangesAsync();
+        }
+        await using var db = rdb.NewContext();
+        var rows = await new IdentifiedController(db).Get(null, default);
+        // The older untracked row must come first despite the tracked row being newer.
+        Assert.Equal(2, rows[0].Id);
+        Assert.Equal("Marc Brandle", rows[0].Author);
+    }
+
     // Direct against the relational (SQLite) harness because DismissAll uses
     // ExecuteUpdate, which the in-memory factory can't translate.
     [Fact]
