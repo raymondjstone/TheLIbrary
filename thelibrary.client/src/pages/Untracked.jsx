@@ -83,6 +83,7 @@ export default function Untracked() {
     const [folderBrowser, setFolderBrowser] = useState(null)
     const [folderBrowserBusy, setFolderBrowserBusy] = useState(false)
     const [matchingPath, setMatchingPath] = useState(null)
+    const [matchUnderUnknown, setMatchUnderUnknown] = useState(false)
     const [preview, setPreview] = useState(null)
 
     const load = async () => {
@@ -416,7 +417,7 @@ export default function Untracked() {
         })
     }
 
-    const useOpenLibraryMatch = async (work) => {
+    const useOpenLibraryMatch = async (work, underUnknown = false) => {
         if (!folderBrowser) return
         setMatchingPath(folderBrowser.selectedRelativePath || folderBrowser.currentPath || `${folderBrowser.bucket}:${folderBrowser.folder}`)
         const { bucket, folder, rootPath, currentPath, isFile } = folderBrowser
@@ -436,6 +437,7 @@ export default function Untracked() {
                     authors: work.authors,
                     primaryAuthorKey: work.primaryAuthorKey,
                     primaryAuthorName: work.primaryAuthorName,
+                    unknownAuthor: underUnknown,
                 }),
             })
             if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText)
@@ -1030,6 +1032,11 @@ export default function Untracked() {
                                     <div className="subtle">Edit the book title, search OpenLibrary, then choose the exact match to use.</div>
                                     <div className="subtle">Currently searching for: {activePaneTitle}</div>
                                 </div>
+                                <label className="subtle" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                    <input type="checkbox" checked={matchUnderUnknown}
+                                           onChange={e => setMatchUnderUnknown(e.target.checked)} />
+                                    File under <strong>Unknown Author</strong> (keep the chosen book, don't use the work's author)
+                                </label>
                                 <OpenLibraryWorkSearch
                                     key={`${folderBrowser.selectedRelativePath || ''}|${folderBrowser.selectedSearchQuery || ''}`}
                                     initialQuery={folderBrowser.selectedSearchQuery || folderBrowser.folder}
@@ -1040,7 +1047,7 @@ export default function Untracked() {
                                     resultText="Choose one OpenLibrary result below. Nothing is auto-used."
                                     actionLabel="Use selected OpenLibrary match"
                                     actionBusyLabel="Matching…"
-                                    onUse={useOpenLibraryMatch} />
+                                    onUse={(work) => useOpenLibraryMatch(work, matchUnderUnknown)} />
                                 {matchingPath && <p className="subtle" style={{ margin: 0 }}>Matching and moving…</p>}
                             </div>
                         </div>

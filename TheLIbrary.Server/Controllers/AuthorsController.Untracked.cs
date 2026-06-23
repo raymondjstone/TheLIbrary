@@ -54,7 +54,10 @@ public partial class AuthorsController
         int? CoverId,
         string? Authors,
         string? PrimaryAuthorKey,
-        string? PrimaryAuthorName);
+        string? PrimaryAuthorName,
+        // When true, file the book under the catch-all "Unknown Author" instead of
+        // resolving the work's author — for files whose author can't be trusted.
+        bool UnknownAuthor = false);
 
     // Library author folders that don't match any tracked author.
     [HttpGet("~/api/unclaimed")]
@@ -258,12 +261,9 @@ public partial class AuthorsController
         if (sourcePath is null)
             return NotFound(new { error = "Selected path not found" });
 
-        var targetAuthor = await ResolveTargetAuthorAsync(
-            null,
-            body.PrimaryAuthorKey,
-            body.PrimaryAuthorName,
-            body.Authors,
-            ct);
+        var targetAuthor = body.UnknownAuthor
+            ? await _assigner.EnsureUnknownAuthorAsync(ct)
+            : await ResolveTargetAuthorAsync(null, body.PrimaryAuthorKey, body.PrimaryAuthorName, body.Authors, ct);
         if (targetAuthor is null)
             return BadRequest(new { error = "Could not determine the OpenLibrary author for this work" });
 
