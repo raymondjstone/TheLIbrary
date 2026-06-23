@@ -19,11 +19,18 @@ namespace TheLibrary.Server.Controllers;
 // FindLibraryRootForPath, ResolveUntrackedSourcePathAsync, …) unchanged.
 public partial class AuthorsController
 {
+    // One book file inside an unclaimed folder. Quarantine/unclaimed folders are
+    // flat (the file sits directly in the folder, no title subfolders), so the
+    // UI lists these as book rows and matches each one directly.
+    public sealed record UnclaimedFile(string Name, string RelativePath, string? Format);
+
     public sealed record UnclaimedFolder(
         string AuthorFolder, int FileCount, IReadOnlyList<string> RootPaths, IReadOnlyList<string> Formats,
         // Integrity-check tally across this folder's files (see BookIntegrityService):
         // Ok = passed, Damaged = failed, Unchecked = never run yet.
         int IntegrityOk, int IntegrityDamaged, int IntegrityUnchecked,
+        // The individual book files in the folder (flat), so the UI can act per book.
+        IReadOnlyList<UnclaimedFile> Files,
         // Most-recent file modified time in the folder — lets the UI surface
         // newly-arrived items at the top (the default sort).
         DateTime ModifiedAt = default);
@@ -89,6 +96,12 @@ public partial class AuthorsController
                 g.Count(f => f.IntegrityOk == true),
                 g.Count(f => f.IntegrityOk == false),
                 g.Count(f => f.IntegrityOk == null),
+                g.Where(f => !string.IsNullOrWhiteSpace(f.FullPath))
+                    .Select(f => new UnclaimedFile(
+                        Path.GetFileName(f.FullPath),
+                        Path.GetFileName(f.FullPath),   // flat: relative path is just the filename
+                        Path.GetExtension(f.FullPath).TrimStart('.').ToLowerInvariant() is { Length: > 0 } e ? e : null))
+                    .ToList(),
                 g.Max(f => f.ModifiedAt)))
             // Newest activity first so freshly-arrived folders surface at the top.
             .OrderByDescending(u => u.ModifiedAt)
