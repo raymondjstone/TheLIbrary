@@ -947,9 +947,17 @@ export default function Untracked() {
                                 )}
                                 {u.isFile && u.rootPaths?.[0] && (
                                     <button className="btn-ghost"
-                                            onClick={() => openFileMatcher(u)}
+                                            onClick={() => { setMatchUnderUnknown(false); openFileMatcher(u) }}
                                             disabled={folderBrowserBusy}>
                                         Match to book
+                                    </button>
+                                )}
+                                {u.isFile && u.rootPaths?.[0] && (
+                                    <button className="btn-ghost"
+                                            title="Pick the OpenLibrary book but file it under the catch-all 'Unknown Author'"
+                                            onClick={() => { setMatchUnderUnknown(true); openFileMatcher(u) }}
+                                            disabled={folderBrowserBusy}>
+                                        Match → Unknown Author
                                     </button>
                                 )}
                                 <button
