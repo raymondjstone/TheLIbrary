@@ -471,6 +471,23 @@ export default function Untracked() {
         finally { setBusyUnclaimed(null) }
     }
 
+    // File every item in an unclaimed folder under the catch-all "Unknown Author".
+    // Each file moves into that author's folder; a book can still be matched later.
+    const mapUnclaimedToUnknown = async (folder) => {
+        if (!window.confirm(`File all items in "${folder}" under "Unknown Author"? You can still match each to a book on OpenLibrary afterwards.`)) return
+        setBusyUnclaimed(folder)
+        setError(null)
+        try {
+            const r = await fetch(`/api/unclaimed/assign-unknown?folder=${encodeURIComponent(folder)}`, { method: 'POST' })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            if (body?.warnings?.length)
+                setError(`Mapped ${body.mapped}, but some files could not be moved:\n${body.warnings.join('\n')}`)
+            load()
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setBusyUnclaimed(null) }
+    }
+
     const discardAllUnclaimed = async () => {
         setBusyAllUnclaimed(true)
         setError(null)
@@ -818,6 +835,12 @@ export default function Untracked() {
                                                    quickAddBusy={quickAddBusy} />
                                 <button className="btn-ghost" onClick={() => setDialog({ initialQuery: u.authorFolder })}>
                                     Find on OpenLibrary &amp; add
+                                </button>
+                                <button className="btn-ghost"
+                                    disabled={busyUnclaimed === u.authorFolder}
+                                    title="File these under the catch-all 'Unknown Author' — you can still match them to books on OpenLibrary afterwards"
+                                    onClick={() => mapUnclaimedToUnknown(u.authorFolder)}>
+                                    {busyUnclaimed === u.authorFolder ? '…' : 'Map to Unknown Author'}
                                 </button>
                                 {u.rootPaths?.[0] && (
                                     <button className="btn-ghost"

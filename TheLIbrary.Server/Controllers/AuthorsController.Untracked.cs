@@ -359,6 +359,56 @@ public partial class AuthorsController
 
     // Moves all files for an untracked folder back to incoming, deletes the
     // (now-empty) author folder from the library, and removes the DB rows.
+    public sealed record AssignUnknownResult(int Mapped, IReadOnlyList<string> Warnings);
+
+    // Files every file in an unclaimed library folder under the catch-all
+    // "Unknown Author" (created on demand): each file moves into that author's
+    // folder and is linked to it (unmatched — a book can still be matched later).
+    // For folders whose real author can't be determined.
+    [HttpPost("~/api/unclaimed/assign-unknown")]
+    public async Task<ActionResult<AssignUnknownResult>> AssignUnclaimedToUnknown(
+        [FromQuery] string folder, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(folder))
+            return BadRequest(new { error = "folder is required" });
+
+        var files = await _db.LocalBookFiles
+            .Where(f => f.AuthorFolder == folder && f.AuthorId == null)
+            .ToListAsync(ct);
+        if (files.Count == 0)
+            return NotFound(new { error = $"No unclaimed files found for folder '{folder}'." });
+
+        var unknown = await _assigner.EnsureUnknownAuthorAsync(ct);
+        var warnings = new List<string>();
+        var mapped = 0;
+        foreach (var file in files)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(file.FullPath)) continue;
+            var (root, err) = await _assigner.ResolveDestinationRootAsync(file.FullPath, ct);
+            if (root is null) { warnings.Add($"{Path.GetFileName(file.FullPath)}: {err}"); continue; }
+            try
+            {
+                var finalPath = await _assigner.MoveUntrackedPathToAuthorFolderAsync(file.FullPath, root, null, unknown, ct);
+                file.AuthorId = unknown.Id;
+                file.BookId = null;
+                file.ManuallyUnmatched = false;
+                file.AuthorFolder = unknown.CalibreFolderName ?? unknown.Name;
+                file.TitleFolder = Directory.Exists(finalPath) ? Path.GetFileName(finalPath) : Path.GetFileNameWithoutExtension(finalPath);
+                file.FullPath = finalPath;
+                file.NormalizedTitle = TitleNormalizer.Normalize(file.TitleFolder);
+                file.ResetIntegrity();
+                mapped++;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                warnings.Add($"{Path.GetFileName(file.FullPath)}: {ex.Message}");
+            }
+        }
+        await _db.SaveChangesAsync(ct);
+        return Ok(new AssignUnknownResult(mapped, warnings));
+    }
+
     [HttpDelete("~/api/unclaimed")]
     public async Task<IActionResult> DiscardUnclaimed([FromQuery] string folder, CancellationToken ct)
     {

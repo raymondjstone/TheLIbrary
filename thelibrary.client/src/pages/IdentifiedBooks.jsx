@@ -122,6 +122,23 @@ export default function IdentifiedBooks() {
         }
     }
 
+    // File an untracked book under the catch-all "Unknown Author". It then shows in
+    // the Tracked section, where Find on OL can still match it to a book (keeping
+    // the Unknown Author).
+    const assignUnknown = async (id) => {
+        setBusy(prev => new Set(prev).add(id))
+        try {
+            const r = await fetch(`/api/identified/${id}/assign-unknown`, { method: 'POST' })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            load()
+        } catch (e) {
+            alert(`Failed: ${e.message}`)
+        } finally {
+            setBusy(prev => { const n = new Set(prev); n.delete(id); return n })
+        }
+    }
+
     // Permanently delete an untracked (__unknown) file from disk and drop its row.
     const deleteFile = async (id) => {
         if (!window.confirm('Permanently delete this file from disk? This cannot be undone.')) return
@@ -377,7 +394,7 @@ export default function IdentifiedBooks() {
             ) : (() => {
                 const untracked = filtered.filter(r => r.source === 'untracked')
                 const tracked   = filtered.filter(r => r.source !== 'untracked')
-                const tableProps = { busy, expanded, toggleCatalog, setPreview, apply, assignAuthor, applyCatalog, dismiss, deleteFile, setAuthorEdit, setWorkSearch }
+                const tableProps = { busy, expanded, toggleCatalog, setPreview, apply, assignAuthor, assignUnknown, applyCatalog, dismiss, deleteFile, setAuthorEdit, setWorkSearch }
                 return (
                     <>
                         <h2 style={{ marginTop: '1.5rem' }}>
@@ -444,7 +461,7 @@ export default function IdentifiedBooks() {
     )
 }
 
-function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, assignAuthor, applyCatalog, dismiss, deleteFile, setAuthorEdit, setWorkSearch }) {
+function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, assignAuthor, assignUnknown, applyCatalog, dismiss, deleteFile, setAuthorEdit, setWorkSearch }) {
     return (
         <table className="grid">
             <thead>
@@ -543,6 +560,13 @@ function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, assi
                                             title={`File this untracked book under "${r.author}" (resolves via OpenLibrary or by name)`}
                                             onClick={() => assignAuthor(r.id, r.author)}>
                                         {busy.has(r.id) ? '…' : `Assign to ${r.author}`}
+                                    </button>
+                                )}
+                                {r.source === 'untracked' && (
+                                    <button className="btn-ghost" disabled={busy.has(r.id)}
+                                            title="File under the catch-all 'Unknown Author'. You can still match it to a book on OpenLibrary afterwards (it stays under Unknown Author)."
+                                            onClick={() => assignUnknown(r.id)}>
+                                        {busy.has(r.id) ? '…' : 'Map to Unknown Author'}
                                     </button>
                                 )}
                                 <button className="btn-ghost" disabled={busy.has(r.id)}

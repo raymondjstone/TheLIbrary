@@ -550,11 +550,21 @@ public class IdentifiedController : ControllerBase
         if (string.IsNullOrWhiteSpace(body.WorkKey))
             return BadRequest(new { error = "The selected work carries no OpenLibrary key." });
 
-        var outcome = await assigner.AssignToWorkAsync(
-            row,
-            body.WorkKey, body.Title, body.FirstPublishYear, body.CoverId,
-            body.Authors, body.PrimaryAuthorKey, body.PrimaryAuthorName,
-            ct);
+        // If the file is parked under the catch-all "Unknown Author", keep it there
+        // and just attach the chosen book — the user explicitly wants the book
+        // matched without resolving/changing the author. Otherwise resolve the
+        // author from the work as usual.
+        var currentAuthorName = row.AuthorId is int caid
+            ? await _db.Authors.Where(a => a.Id == caid).Select(a => a.Name).FirstOrDefaultAsync(ct)
+            : null;
+        var outcome = currentAuthorName == UntrackedAuthorAssigner.UnknownAuthorName
+            ? await assigner.LinkBookKeepingCurrentAuthorAsync(
+                row, body.WorkKey, body.Title, body.FirstPublishYear, body.CoverId, ct)
+            : await assigner.AssignToWorkAsync(
+                row,
+                body.WorkKey, body.Title, body.FirstPublishYear, body.CoverId,
+                body.Authors, body.PrimaryAuthorKey, body.PrimaryAuthorName,
+                ct);
 
         if (!outcome.Assigned)
             return Ok(new { assigned = false, reason = outcome.Reason });
@@ -566,6 +576,25 @@ public class IdentifiedController : ControllerBase
             bookId = outcome.BookId,
             path = outcome.Path,
         });
+    }
+
+    /// <summary>
+    /// Files an untracked scan under the catch-all "Unknown Author" (created on
+    /// demand). The file moves into that author's folder and stays unmatched, so a
+    /// book can still be matched to it afterwards via Find on OL.
+    /// POST /api/identified/{id}/assign-unknown
+    /// </summary>
+    [HttpPost("{id:int}/assign-unknown")]
+    public async Task<IActionResult> AssignUnknownAuthor(
+        int id, [FromServices] UntrackedAuthorAssigner assigner, CancellationToken ct)
+    {
+        var row = await _db.BookContentScans.FirstOrDefaultAsync(c => c.Id == id, ct);
+        if (row is null) return NotFound(new { error = "Scan row not found." });
+
+        var unknown = await assigner.EnsureUnknownAuthorAsync(ct);
+        var outcome = await assigner.AssignToAuthorAsync(row, unknown, ct);
+        if (!outcome.Assigned) return BadRequest(new { error = outcome.Reason });
+        return Ok(new { assigned = true, authorId = outcome.AuthorId, authorName = outcome.AuthorName, path = outcome.Path });
     }
 
     /// <summary>Marks a guess reviewed so it leaves the list. POST /api/identified/{id}/dismiss</summary>

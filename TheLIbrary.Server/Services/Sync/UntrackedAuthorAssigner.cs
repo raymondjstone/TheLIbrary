@@ -230,6 +230,91 @@ public sealed class UntrackedAuthorAssigner
         return new UntrackedAssignOutcome(true, author.Id, author.Name, add.Book.Id, finalPath, null);
     }
 
+    // The reserved catch-all author for files whose real author can't be
+    // determined. Kept out of OpenLibrary refresh (no key, Status=NotFound) and
+    // out of pruning (CreationSource "manual"); it still owns files and can carry
+    // books linked to real OL works.
+    public const string UnknownAuthorName = "Unknown Author";
+
+    public async Task<Author> EnsureUnknownAuthorAsync(CancellationToken ct)
+    {
+        var existing = await _db.Authors.FirstOrDefaultAsync(
+            a => a.Name == UnknownAuthorName && a.OpenLibraryKey == null, ct);
+        if (existing is not null) return existing;
+
+        var author = new Author
+        {
+            Name = UnknownAuthorName,
+            CalibreFolderName = UnknownAuthorName,
+            Status = AuthorStatus.NotFound,   // never refreshed / key-resolved
+            CreationSource = "manual",        // never pruned
+        };
+        _db.Authors.Add(author);
+        await _db.SaveChangesAsync(ct);
+        return author;
+    }
+
+    // Files an untracked scan's file under a CHOSEN author (no OpenLibrary
+    // resolution, no book) — used to drop a file into the "Unknown Author" bucket.
+    // The file moves into the author's folder and is left unmatched (no book), so
+    // the row stays reviewable and a book can still be attached afterwards.
+    public async Task<UntrackedAssignOutcome> AssignToAuthorAsync(BookContentScan scan, Author author, CancellationToken ct)
+    {
+        var sourcePath = scan.FullPath;
+        if (!_fs.FileExists(sourcePath) && !_fs.DirectoryExists(sourcePath))
+            return new UntrackedAssignOutcome(false, null, null, null, null, "File no longer exists on disk.");
+
+        var (root, rootError) = await ResolveDestinationRootAsync(sourcePath, ct);
+        if (root is null)
+            return new UntrackedAssignOutcome(false, null, null, null, null, rootError);
+
+        var existingFile = await _db.LocalBookFiles.FirstOrDefaultAsync(f => f.FullPath == sourcePath, ct);
+        var file = existingFile ?? new LocalBookFile();
+        if (existingFile is null) _db.LocalBookFiles.Add(file);
+
+        var finalPath = await MoveUntrackedPathToAuthorFolderAsync(sourcePath, root, null, author, ct);
+        file.AuthorId = author.Id;
+        file.BookId = null;
+        file.ManuallyUnmatched = false;
+        file.AuthorFolder = author.CalibreFolderName ?? author.Name;
+        file.TitleFolder = Directory.Exists(finalPath) ? Path.GetFileName(finalPath) : Path.GetFileNameWithoutExtension(finalPath);
+        file.FullPath = finalPath;
+        file.NormalizedTitle = TitleNormalizer.Normalize(file.TitleFolder);
+        file.ResetIntegrity();
+
+        scan.FullPath = finalPath;
+        scan.AuthorId = author.Id;
+        scan.Source = "unmatched";
+        scan.Reviewed = false;   // keep it reviewable so a book can still be matched
+        await _db.SaveChangesAsync(ct);
+        return new UntrackedAssignOutcome(true, author.Id, author.Name, null, finalPath, null);
+    }
+
+    // Attaches a user-chosen OpenLibrary work to a file that is ALREADY filed under
+    // an author, keeping that author (no move, no re-resolution). This is what lets
+    // a file parked under "Unknown Author" still be matched to the right book on
+    // OpenLibrary without changing its author.
+    public async Task<UntrackedAssignOutcome> LinkBookKeepingCurrentAuthorAsync(
+        BookContentScan scan, string? workKey, string? title, int? firstPublishYear, int? coverId, CancellationToken ct)
+    {
+        if (scan.AuthorId is not int authorId)
+            return new UntrackedAssignOutcome(false, null, null, null, null, "File is not filed under an author yet.");
+
+        var add = await EnsureOpenLibraryBookAsync(authorId, workKey, title, firstPublishYear, coverId, owned: false, ct);
+        if (add.Error is not null)
+            return new UntrackedAssignOutcome(false, null, null, null, null, add.Error);
+
+        var file = await _db.LocalBookFiles.FirstOrDefaultAsync(f => f.FullPath == scan.FullPath, ct);
+        if (file is not null) file.BookId = add.Book!.Id;
+
+        if (!string.IsNullOrWhiteSpace(title)) scan.Title = title!.Length <= 500 ? title : title[..500];
+        scan.Reviewed = scan.SeriesCatalogJson is null;   // done unless a catalogue keeps it
+        await _db.SaveChangesAsync(ct);
+
+        var name = await _db.Authors.Where(a => a.Id == authorId).Select(a => a.Name).FirstOrDefaultAsync(ct);
+        return new UntrackedAssignOutcome(true, authorId, name, add.Book!.Id, scan.FullPath, null);
+    }
+
     // Which enabled library root should a file's author folder live under?
     // Files in the custom quarantine folder are intentionally outside every
     // library location — the primary (or first enabled) location stands in.
