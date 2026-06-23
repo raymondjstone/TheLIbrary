@@ -457,6 +457,20 @@ export default function Untracked() {
         finally { setMatchingPath(null) }
     }
 
+    // File a single book file under "Unknown Author" with NO book match required.
+    const assignFileToUnknown = async ({ bucket, folder, rootPath, relativePath }) => {
+        setError(null)
+        try {
+            const r = await fetch('/api/untracked/assign-unknown', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ bucket, folder, rootPath, relativePath: relativePath || '' }),
+            })
+            if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText)
+            await load()
+        } catch (e) { setError(String(e.message || e)) }
+    }
+
     useEffect(() => { load() }, [])
 
     const discardUnclaimed = async (folder) => {
@@ -879,9 +893,9 @@ export default function Untracked() {
                                                     Match to book
                                                 </button>
                                                 <button className="btn-ghost"
-                                                        title="Pick the OpenLibrary book but file it under the catch-all 'Unknown Author'"
-                                                        onClick={() => setBookMatch({ bucket: 'unclaimed', folder: u.authorFolder, rootPath: u.rootPaths[0], relativePath: file.relativePath, unknownAuthor: true, title: file.name.replace(/\.[^.]+$/, '') })}>
-                                                    Match → Unknown Author
+                                                        title="File under the catch-all 'Unknown Author' now — no book match needed"
+                                                        onClick={() => assignFileToUnknown({ bucket: 'unclaimed', folder: u.authorFolder, rootPath: u.rootPaths[0], relativePath: file.relativePath })}>
+                                                    Assign to Unknown Author
                                                 </button>
                                             </li>
                                         ))}
@@ -974,9 +988,9 @@ export default function Untracked() {
                                 )}
                                 {u.isFile && u.rootPaths?.[0] && (
                                     <button className="btn-ghost"
-                                            title="Pick the OpenLibrary book but file it under the catch-all 'Unknown Author'"
-                                            onClick={() => setBookMatch({ bucket: 'unknown', folder: u.authorFolder, rootPath: u.rootPaths[0], relativePath: '', unknownAuthor: true, title: u.authorFolder.replace(/\.[^.]+$/, '') })}>
-                                        Match → Unknown Author
+                                            title="File under the catch-all 'Unknown Author' now — no book match needed"
+                                            onClick={() => assignFileToUnknown({ bucket: 'unknown', folder: u.authorFolder, rootPath: u.rootPaths[0], relativePath: '' })}>
+                                        Assign to Unknown Author
                                     </button>
                                 )}
                                 <button
@@ -1104,9 +1118,12 @@ export default function Untracked() {
                             <strong>{bookMatch.unknownAuthor ? 'Match book → Unknown Author' : 'Match to a book'}</strong>
                             <button className="btn-ghost" onClick={() => setBookMatch(null)}>✕</button>
                         </div>
-                        <div className="subtle" style={{ marginBottom: '0.4rem' }}>
-                            {bookMatch.title}{bookMatch.unknownAuthor ? ' — filed under the catch-all "Unknown Author".' : ''}
-                        </div>
+                        <div className="subtle" style={{ marginBottom: '0.4rem' }}>{bookMatch.title}</div>
+                        <label className="subtle" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.4rem' }}>
+                            <input type="checkbox" checked={!!bookMatch.unknownAuthor}
+                                   onChange={e => setBookMatch({ ...bookMatch, unknownAuthor: e.target.checked })} />
+                            File under <strong>Unknown Author</strong> (keep this book, don't use the work's author)
+                        </label>
                         <OpenLibraryWorkSearch
                             initialQuery={bookMatch.title}
                             searchPlaceholder="Book title to search on OpenLibrary…"

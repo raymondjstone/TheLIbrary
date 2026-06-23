@@ -66,6 +66,40 @@ public partial class AuthorsController
         // resolving the work's author — for files whose author can't be trusted.
         bool UnknownAuthor = false);
 
+    public sealed record AssignUntrackedUnknownRequest(string Bucket, string Folder, string RootPath, string? RelativePath);
+
+    // Files a single untracked/unclaimed book file under the catch-all "Unknown
+    // Author" with NO book — no OpenLibrary match required. The file moves into the
+    // Unknown Author folder and stays unmatched (a book can be attached later).
+    [HttpPost("~/api/untracked/assign-unknown")]
+    public async Task<IActionResult> AssignUntrackedFileToUnknown(
+        [FromBody] AssignUntrackedUnknownRequest body, CancellationToken ct)
+    {
+        var sourcePath = await ResolveUntrackedSourcePathAsync(body.Bucket, body.Folder, body.RootPath, body.RelativePath, ct);
+        if (sourcePath is null) return NotFound(new { error = "Selected path not found" });
+
+        var unknown = await _assigner.EnsureUnknownAuthorAsync(ct);
+        var (destRoot, destRootError) = await _assigner.ResolveDestinationRootAsync(sourcePath, ct);
+        if (destRoot is null) return BadRequest(new { error = destRootError });
+
+        var finalPath = await _assigner.MoveUntrackedPathToAuthorFolderAsync(
+            sourcePath, destRoot, NormalizeRelativePath(body.RelativePath), unknown, ct);
+
+        var existing = await _db.LocalBookFiles.FirstOrDefaultAsync(f => f.FullPath == sourcePath, ct);
+        var file = existing ?? new LocalBookFile();
+        if (existing is null) _db.LocalBookFiles.Add(file);
+        file.AuthorId = unknown.Id;
+        file.BookId = null;
+        file.ManuallyUnmatched = false;
+        file.AuthorFolder = unknown.CalibreFolderName ?? unknown.Name;
+        file.TitleFolder = Directory.Exists(finalPath) ? Path.GetFileName(finalPath) : Path.GetFileNameWithoutExtension(finalPath);
+        file.FullPath = finalPath;
+        file.NormalizedTitle = TitleNormalizer.Normalize(file.TitleFolder);
+        file.ResetIntegrity();
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { assigned = true, path = finalPath });
+    }
+
     // Library author folders that don't match any tracked author.
     [HttpGet("~/api/unclaimed")]
     public async Task<IReadOnlyList<UnclaimedFolder>> Unclaimed(CancellationToken ct)
