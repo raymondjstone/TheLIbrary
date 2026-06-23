@@ -86,6 +86,17 @@ public sealed class AuthorRefresher
     {
         onMessage?.Invoke($"Resolving {author.Name}");
 
+        // The reserved catch-all "Unknown Author" is a placeholder, not a real
+        // person — never search OpenLibrary for it (that would assign it a bogus
+        // key and start treating it as a real author). Park it far in the future.
+        if (string.IsNullOrEmpty(author.OpenLibraryKey)
+            && string.Equals(author.Name, UntrackedAuthorAssigner.UnknownAuthorName, StringComparison.Ordinal))
+        {
+            author.NextFetchAt = new DateTime(9999, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            return new AuthorRefreshOutcome(author.Id, false, null,
+                author.Status.ToString(), author.ExclusionReason, 0, 0, author.NextFetchAt);
+        }
+
         if (string.IsNullOrEmpty(author.OpenLibraryKey))
         {
             var searchName = author.CalibreFolderName ?? author.Name;

@@ -46,6 +46,10 @@ public sealed class UnknownAuthorTests : IDisposable
             var unknown = await assigner.EnsureUnknownAuthorAsync(CancellationToken.None);
             Assert.Equal(UntrackedAuthorAssigner.UnknownAuthorName, unknown.Name);
             Assert.Equal(AuthorStatus.NotFound, unknown.Status);
+            Assert.Null(unknown.OpenLibraryKey);
+            // Parked far in the future so the refresh-works job never schedules it
+            // (it selects authors with NextFetchAt == null / due).
+            Assert.True(unknown.NextFetchAt > DateTime.UtcNow.AddYears(100));
 
             var scan = await db.BookContentScans.FirstAsync();
             var outcome = await assigner.AssignToAuthorAsync(scan, unknown, CancellationToken.None);

@@ -248,6 +248,9 @@ public sealed class UntrackedAuthorAssigner
             CalibreFolderName = UnknownAuthorName,
             Status = AuthorStatus.NotFound,   // never refreshed / key-resolved
             CreationSource = "manual",        // never pruned
+            // Far future so the refresh-works selector (which picks NextFetchAt==null)
+            // never schedules it; the refresher also hard-skips it by name.
+            NextFetchAt = new DateTime(9999, 1, 1, 0, 0, 0, DateTimeKind.Utc),
         };
         _db.Authors.Add(author);
         await _db.SaveChangesAsync(ct);
