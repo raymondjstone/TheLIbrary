@@ -1220,9 +1220,29 @@ public class BooksController : ControllerBase
     public Task<IReadOnlyList<RecentReleaseRow>> RecentReleasesAll(CancellationToken ct)
         => RecentReleasesQuery(starredOnly: false, ct);
 
+    // The releases pages collapse every edition of a title (same author + normalized
+    // title) into ONE row. Build the de-dup key the same way everywhere so the flagged
+    // set and the grouped rows line up exactly. Falls back to the raw title when
+    // NormalizedTitle is null so untitled-norm rows still group instead of standing alone.
+    private static string ReleaseGroupKey(int authorId, string? normalizedTitle, string title)
+        => $"{authorId}\0{normalizedTitle ?? title.Trim().ToLowerInvariant()}";
+
     private async Task<IReadOnlyList<RecentReleaseRow>> RecentReleasesQuery(bool starredOnly, CancellationToken ct)
     {
         var cutoffYear = DateTime.UtcNow.Year - 5;
+
+        // A title is hidden from the releases pages if ANY of its editions is flagged
+        // Suppressed or Foreign — flagging one edition takes the whole title down, so a
+        // duplicate edition that never got the flag can't leak the title back in. Built
+        // from every flagged book (no year cutoff) so an old flagged edition still
+        // suppresses a newer clean duplicate of the same title.
+        var flaggedKeys = (await _db.Books
+                .AsNoTracking()
+                .Where(b => b.Suppressed || b.Foreign)
+                .Select(b => new { b.AuthorId, b.NormalizedTitle, b.Title })
+                .ToListAsync(ct))
+            .Select(b => ReleaseGroupKey(b.AuthorId, b.NormalizedTitle, b.Title))
+            .ToHashSet();
 
         // Fetch all recent books with a simple range scan — no correlated subquery.
         // Deduplication (same title, same author → keep earliest) is done in memory.
@@ -1253,10 +1273,10 @@ public class BooksController : ControllerBase
         // 17 times. Keep the EARLIEST record — earliest added (CreatedAt; nulls
         // count as "earliest", i.e. predating tracking), then earliest published —
         // so a title we already had never resurfaces as new in a later month.
-        // Fall back to the raw title when NormalizedTitle is null so untitled-norm
-        // rows still de-duplicate instead of each standing alone.
+        // Drop the whole group when any edition of the title is flagged.
         return rows
-            .GroupBy(r => $"{r.AuthorId}\0{r.NormalizedTitle ?? r.Title.Trim().ToLowerInvariant()}")
+            .GroupBy(r => ReleaseGroupKey(r.AuthorId, r.NormalizedTitle, r.Title))
+            .Where(g => !flaggedKeys.Contains(g.Key))
             .Select(g => g
                 .OrderBy(r => r.CreatedAt ?? DateTime.MinValue)
                 .ThenBy(r => r.FirstPublishYear ?? int.MaxValue)
