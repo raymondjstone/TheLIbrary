@@ -118,6 +118,28 @@ public sealed class IncomingProcessor
             .ToListAsync(ct);
         var blacklistSet = new HashSet<string>(blacklistedNormalized, StringComparer.Ordinal);
 
+        // Resurrection guard: filenames the user has already archived. The unzip
+        // job keeps re-extracting .zip/.rar archives that are still sitting in the
+        // library, re-feeding their books into Incoming; without this, a matched
+        // re-import overwrites a copy straight back into the collection — the exact
+        // "I archived this many times and it keeps coming back" loop. Archived
+        // files are inert (see ArchivePolicy), so a re-import of one is discarded.
+        var archiveLeaf = await ArchivePolicy.LoadLeafAsync(_db, ct);
+        var archivedFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        {
+            var leafFolder = ArchivePolicy.FolderName(archiveLeaf);
+            var archivedPaths = await _db.LocalBookFiles.AsNoTracking()
+                .Where(f => f.FullPath.Contains(leafFolder))
+                .Select(f => f.FullPath)
+                .ToListAsync(ct);
+            foreach (var p in archivedPaths)
+            {
+                if (!ArchivePolicy.IsUnder(p, archiveLeaf)) continue;
+                var fn = Path.GetFileName(p);
+                if (!string.IsNullOrEmpty(fn)) archivedFileNames.Add(fn);
+            }
+        }
+
         // Build an in-memory matcher over the watchlist. The full OpenLibrary
         // catalog (millions of rows post-seed) is too big to preload — instead
         // we query it per unmatched file via LookupOpenLibraryAsync below.
@@ -434,6 +456,20 @@ public sealed class IncomingProcessor
                     }
                     else
                     {
+                        // Resurrection guard: if the user already archived this
+                        // exact file, do NOT re-file it into the collection. It's
+                        // typically re-extracted from a .zip/.rar still sitting in
+                        // the library; resurrecting it is the duplicate that "keeps
+                        // coming back". Discard the incoming copy instead.
+                        if (archivedFileNames.Contains(Path.GetFileName(file)))
+                        {
+                            skipped++;
+                            try { DeleteAndWait(file); } catch { /* best-effort; row stays archived */ }
+                            Report($"Skipped {Path.GetFileName(file)} — already archived",
+                                $"skip (already archived, not resurrecting): {file}");
+                            continue;
+                        }
+
                         matched++;
 
                         // When the author came from the folder layout, preserve

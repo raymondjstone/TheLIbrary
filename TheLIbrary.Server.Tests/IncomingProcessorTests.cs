@@ -210,6 +210,57 @@ public class IncomingProcessorTests
     }
 
     [Fact]
+    public async Task ProcessAsync_Does_Not_Resurrect_A_File_The_User_Already_Archived()
+    {
+        // The "I archived this many times and it keeps coming back" loop: the
+        // unzip job re-extracts a .rar still in the library, re-feeding the book
+        // into Incoming. A matched re-import used to overwrite a copy straight back
+        // into the collection. With an archived copy present, it must be skipped
+        // and the incoming copy discarded — never re-filed.
+        const string fileName = "Backstabbing Little Assets - Michael Todd.epub";
+        await using var db = CreateDb();
+        db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.IncomingFolder, Value = "C:\\incoming" });
+        db.LibraryLocations.Add(new LibraryLocation
+        {
+            Id = 1, Path = "C:\\library", IsPrimary = true,
+            Enabled = true, Label = "Default", CreatedAt = DateTime.UtcNow
+        });
+        db.Authors.Add(new Author
+        {
+            Id = 1, Name = "Michael Todd", CalibreFolderName = "Michael Todd",
+            OpenLibraryKey = null, Status = AuthorStatus.Active
+        });
+        // The user has already archived this exact file (default leaf __archive).
+        db.LocalBookFiles.Add(new LocalBookFile
+        {
+            Id = 1, AuthorId = 1, AuthorFolder = "Michael Todd",
+            FullPath = $"C:\\library\\__archive\\Michael Todd\\{fileName}",
+            ModifiedAt = DateTime.UtcNow
+        });
+        await db.SaveChangesAsync();
+
+        var fs = new FakeFileSystem();
+        fs.CreateDirectory("C:\\incoming");
+        fs.CreateDirectory("C:\\library");
+        fs.AddDirectoryChild("C:\\incoming", "C:\\incoming\\drop");
+        fs.AddFile($"C:\\incoming\\drop\\{fileName}");
+
+        var sut = new IncomingProcessor(db, fs, NullLogger<IncomingProcessor>.Instance);
+        var result = await sut.ProcessAsync(CancellationToken.None);
+
+        Assert.Equal(1, result.Skipped);
+        Assert.Equal(0, result.Matched);
+        // No NON-archive collection copy was created (not resurrected)…
+        Assert.DoesNotContain(fs.ExistingFiles, f =>
+            f.Contains("library", StringComparison.OrdinalIgnoreCase)
+            && !f.Contains("__archive", StringComparison.OrdinalIgnoreCase)
+            && f.EndsWith(fileName, StringComparison.OrdinalIgnoreCase));
+        // …and the incoming copy was discarded.
+        Assert.DoesNotContain(fs.ExistingFiles, f =>
+            f.Contains("incoming", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public async Task ProcessAsync_Does_Not_Backfill_OL_Key_Already_Owned_By_Another_Author()
     {
         // Regression: a tracked author with no OL key matches a file; the OL
