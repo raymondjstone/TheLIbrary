@@ -87,9 +87,9 @@ export default function UpNext() {
                                         : null}
                                 </td>
                                 <td>
-                                    <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`} target="_blank" rel="noreferrer">
+                                    <Link to={`/authors/${b.authorId}#book-${b.bookId}`}>
                                         {b.title}
-                                    </a>
+                                    </Link>
                                 </td>
                                 <td className="subtle">{b.series}{b.seriesPosition ? ` #${b.seriesPosition}` : ''}</td>
                                 <td><Link to={`/authors/${b.authorId}`}>{b.authorName}</Link></td>

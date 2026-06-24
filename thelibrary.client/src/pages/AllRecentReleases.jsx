@@ -339,10 +339,9 @@ export default function AllRecentReleases() {
                                         )}
                                     </td>
                                     <td>
-                                        <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`}
-                                            target="_blank" rel="noreferrer">
+                                        <Link to={`/authors/${b.authorId}#book-${b.id}`}>
                                             {b.title}
-                                        </a>
+                                        </Link>
                                         {b.series && (
                                             <div style={{ marginTop: '0.1rem', fontSize: '0.8em', color: 'var(--subtle)' }}>
                                                 {b.series}{b.seriesPosition ? ` #${b.seriesPosition}` : ''}

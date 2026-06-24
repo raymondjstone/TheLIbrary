@@ -475,10 +475,9 @@ export default function MissingWorks() {
                                                 </button>
                                             </td>
                                             <td>
-                                                <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`}
-                                                    target="_blank" rel="noreferrer">
+                                                <Link to={`/authors/${author.id}#book-${b.id}`}>
                                                     {b.wanted ? '★ ' : ''}{b.title}
-                                                </a>
+                                                </Link>
                                                 {b.series && <span className="subtle" style={{ marginLeft: '0.4rem', fontSize: '0.8em' }}>{b.series}</span>}
                                                 {nzbSites.length > 0 && (
                                                     <div style={{ marginTop: '0.2rem' }}>

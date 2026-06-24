@@ -481,10 +481,9 @@ function SeriesCard({ s, depth, childrenByParent, expanded, setExpanded, editing
                                                 : null}
                                         </td>
                                         <td>
-                                            <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`}
-                                                target="_blank" rel="noreferrer">
+                                            <Link to={`/authors/${b.authorId}#book-${b.id}`}>
                                                 {b.title}
-                                            </a>
+                                            </Link>
                                         </td>
                                         <td>
                                             <Link to={`/authors/${b.authorId}`}>{b.authorName}</Link>

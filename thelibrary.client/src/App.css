@@ -108,6 +108,19 @@ main section > h2:first-child { margin: 0 0 1rem; font-size: 1.3rem; font-weight
 .grid tr.starred-row { background: var(--accent-bg); }
 .grid tr.starred-row:hover { filter: brightness(0.97); }
 
+/* A book row deep-linked from another page (/authors/:id#book-:bookId). It stays
+   highlighted (accent tint + left bar) so it's obvious which item the link
+   pointed at, and flashes once on arrival to draw the eye after the scroll.
+   scroll-margin keeps the row clear of the top of the viewport. */
+.grid tr[id^="book-"] { scroll-margin-top: 5rem; }
+.grid tr.book-target > td { background: var(--accent-bg, #fff3cd); animation: book-flash 1.2s ease-out; }
+.grid tr.book-target:hover > td { filter: brightness(0.97); }
+.grid tr.book-target > td:first-child { box-shadow: inset 3px 0 0 0 var(--accent, #2563eb); }
+@keyframes book-flash {
+    0% { background: var(--accent, #2563eb); }
+    100% { background: var(--accent-bg, #fff3cd); }
+}
+
 /* Fixed-size cover slot so rows keep a uniform height whether or not a
    cover image is found. The placeholder fills the same box. */
 .cover-slot { width: 40px; height: 60px; border-radius: 3px; display: block; }

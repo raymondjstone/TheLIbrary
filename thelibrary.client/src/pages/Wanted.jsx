@@ -180,9 +180,9 @@ export default function Wanted() {
                                                     : null}
                                             </td>
                                             <td>
-                                                <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`} target="_blank" rel="noreferrer">
+                                                <Link to={`/authors/${g.authorId}#book-${b.id}`}>
                                                     {b.title}
-                                                </a>
+                                                </Link>
                                                 {nzbSites.length > 0 && (
                                                     <div style={{ marginTop: '0.2rem' }}>
                                                         {nzbLinks(b.title, g.authorName)}

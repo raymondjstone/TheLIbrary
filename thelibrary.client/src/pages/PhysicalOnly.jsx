@@ -115,10 +115,9 @@ export default function PhysicalOnly() {
                                             : null}
                                     </td>
                                     <td>
-                                        <a href={`https://openlibrary.org/works/${b.openLibraryWorkKey}`}
-                                            target="_blank" rel="noreferrer">
+                                        <Link to={`/authors/${author.id}#book-${b.id}`}>
                                             {b.title}
-                                        </a>
+                                        </Link>
                                     </td>
                                     <td>{b.firstPublishYear ?? '—'}</td>
                                     <td className="subtle">

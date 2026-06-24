@@ -626,6 +626,36 @@ export default function AuthorDetail() {
     const [sameNameFilter, setSameNameFilter] = useState({})
     const [sameNameBusy, setSameNameBusy] = useState(() => new Set())
     const [sameNameError, setSameNameError] = useState(null)
+    // Id of the book deep-linked via /authors/:id#book-:bookId — its row stays
+    // highlighted so it's obvious which item the link pointed at.
+    const [highlightId, setHighlightId] = useState(() => {
+        const h = window.location.hash
+        return h.startsWith('#book-') ? Number(h.slice('#book-'.length)) : null
+    })
+
+    // Arriving via a deep link from another page (book titles elsewhere point at
+    // /authors/:id#book-:bookId). Once this author's books have rendered, scroll
+    // the linked book into view and flash it so it's easy to spot.
+    //
+    // Cover images load lazily and have no fixed height, so rows above the target
+    // grow as their covers arrive and shove the target down after a one-shot
+    // scroll — we'd land where the row *used to be*. Re-scroll a few times over
+    // ~1s so we settle on the right row once the layout stops shifting.
+    useEffect(() => {
+        if (!data) return
+        const hash = window.location.hash
+        if (!hash || !hash.startsWith('#book-')) return
+        const elementId = hash.slice(1)
+        const timers = []
+        const settle = () => {
+            const el = document.getElementById(elementId)
+            if (el) el.scrollIntoView({ behavior: 'auto', block: 'center' })
+        }
+        for (const delay of [0, 150, 350, 650, 1000]) {
+            timers.push(setTimeout(settle, delay))
+        }
+        return () => timers.forEach(clearTimeout)
+    }, [data])
 
     const adoptSameNameFile = async (fileId) => {
         const bookId = sameNameSel[fileId]
@@ -1711,7 +1741,7 @@ export default function AuthorDetail() {
                     {positionClusters.flatMap(({ position, titleGroups }) =>
                         titleGroups.map(({ primary: b, editions }, clusterIdx) => (
                         <React.Fragment key={b.id}>
-                            <tr className={b.owned ? '' : 'missing'}>
+                            <tr id={`book-${b.id}`} className={`${b.owned ? '' : 'missing'}${b.id === highlightId ? ' book-target' : ''}`}>
                                 <td>
                                     {bookCoverSrc(b)
                                         ? <img className="cover-img" alt="" loading="lazy" src={bookCoverSrc(b)} />
@@ -1823,7 +1853,7 @@ export default function AuthorDetail() {
                                 </td>
                             </tr>
                             {editions.map(ed => (
-                                <tr key={ed.id} className={ed.owned ? 'edition' : 'edition missing'}>
+                                <tr key={ed.id} id={`book-${ed.id}`} className={`${ed.owned ? 'edition' : 'edition missing'}${ed.id === highlightId ? ' book-target' : ''}`}>
                                     <td></td>
                                     {series && <td></td>}
                                     <td style={{ paddingLeft: '2rem' }}>
@@ -1887,7 +1917,7 @@ export default function AuthorDetail() {
                     )}
                     {nullGroups.map(({ primary: b, editions }) => (
                         <React.Fragment key={b.id}>
-                            <tr className={b.owned ? '' : 'missing'}>
+                            <tr id={`book-${b.id}`} className={`${b.owned ? '' : 'missing'}${b.id === highlightId ? ' book-target' : ''}`}>
                                 <td>
                                     {bookCoverSrc(b)
                                         ? <img className="cover-img" alt="" loading="lazy" src={bookCoverSrc(b)} />
@@ -1952,7 +1982,7 @@ export default function AuthorDetail() {
                                 </td>
                             </tr>
                             {editions.map(ed => (
-                                <tr key={ed.id} className={ed.owned ? 'edition' : 'edition missing'}>
+                                <tr key={ed.id} id={`book-${ed.id}`} className={`${ed.owned ? 'edition' : 'edition missing'}${ed.id === highlightId ? ' book-target' : ''}`}>
                                     <td></td>
                                     {series && <td></td>}
                                     <td style={{ paddingLeft: '2rem' }}>
