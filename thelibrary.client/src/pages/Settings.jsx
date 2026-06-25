@@ -6,7 +6,7 @@ const NZB_EXAMPLES = [
     { name: 'NZBs.in',    urlTemplate: 'https://nzbs.in/search?q={SearchTerm}&t=7000' },
     { name: 'NZBPlanet',  urlTemplate: 'https://nzbplanet.net/search/{SearchTerm}?c=7000' },
     { name: 'NZBFinder',  urlTemplate: 'https://nzbfinder.ws/search?q={SearchTerm}&t=7020' },
-    { name: 'Z-Library',  urlTemplate: 'https://z-library.sk/s/{SearchTerm}' },
+    { name: 'Z-Library',  urlTemplate: 'https://z-library.sk/s/{SearchTerm}?languages%5B%5D=english&order=date_created' },
 ]
 
 export default function Settings() {
