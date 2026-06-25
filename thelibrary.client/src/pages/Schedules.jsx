@@ -32,6 +32,7 @@ const labels = {
     'resolve-works': 'Link author-known files to their work by ISBN (off by default)',
     'llm-identify': 'LLM identification of opaque files (paid; Claude/ChatGPT; off by default)',
     'mark-other-editions': 'Mark duplicate editions (same author + title) as "owned (other edition)" when a sibling has an ebook',
+    'mark-editions-read': 'Mark every edition (same author + title) Read once any one of them is marked Read',
 }
 
 // Reasonable-detail explanation of what each job actually does, shown in a
@@ -68,6 +69,7 @@ const descriptions = {
     'resolve-works': 'Links files that already know their author but not their specific book, using the ISBN already extracted: ISBN → OpenLibrary work (the /isbn/ edition endpoint first, then ISBN search) → ensure the book under that author. Closes the gap where the title-only matcher never consulted ISBNs. Capped 200/run; ships disabled.',
     'llm-identify': 'Last-resort, paid identification of opaque quarantined files nothing else could place. Sends the signals we already hold — filename, embedded metadata, ISBN, a snippet of the opening text — to the LLM configured in Settings (Claude or ChatGPT), then validates its guess against OpenLibrary before anything is filed. Cost is bounded by a per-run cap and a hard daily cap; ships disabled.',
     'mark-other-editions': 'Where the same author has several catalogue entries for the same title and at least one of them has an ebook file, marks every fileless sibling "Owned (other edition)" — you own the work, just a different edition than that row — so the duplicates drop off the Missing and Wanted lists. A single, reversible flag flip (untick "Other edition" on a book to undo); runs daily.',
+    'mark-editions-read': 'Where the same author has several catalogue entries for the same title and at least one is marked Read, marks every other edition Read too — reading one edition means you have read the work, whichever row carried the file. Editions already Read keep their existing read date; the rest get today\'s. Runs daily.',
 }
 
 const fmtNextRun = (iso) => {

@@ -48,6 +48,7 @@ public static class ScheduleJobIds
     public const string ResolveWorks = "resolve-works";
     public const string LlmIdentify = "llm-identify";
     public const string MarkOtherEditions = "mark-other-editions";
+    public const string MarkEditionsRead = "mark-editions-read";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
@@ -57,7 +58,8 @@ public static class ScheduleJobIds
         DedupeUnknown, DedupeAuthorFiles, PromoteManualBooks, AdoptUnknownAuthors,
         ArchiveForeign, MergeLinkedAuthors, CheckIntegrity, PruneStaleFiles,
         ContentScan, AssignAuthors, IndexFullText, PruneAuthors, DuplicateAutoArchive,
-        SeriesWatch, AutoReplaceDamaged, ResolveWorks, LlmIdentify, MarkOtherEditions
+        SeriesWatch, AutoReplaceDamaged, ResolveWorks, LlmIdentify, MarkOtherEditions,
+        MarkEditionsRead
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -148,5 +150,9 @@ public static class ScheduleJobIds
             // the Missing/Wanted lists. Pure DB flag flip and reversible, so it
             // runs daily by default.
             [MarkOtherEditions] = new() { Cron = "0 19 * * *", Enabled = true },
+            // Where one edition of a duplicate (same author + title) is marked
+            // Read, mark every other edition Read too. Pure DB flag flip, runs
+            // daily by default.
+            [MarkEditionsRead] = new() { Cron = "0 18 * * *", Enabled = true },
         };
 }

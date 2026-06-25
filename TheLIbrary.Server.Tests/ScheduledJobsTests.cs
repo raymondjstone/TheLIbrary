@@ -31,7 +31,7 @@ public class ScheduledJobsTests
             var schedules = CreateScheduleServiceWithAllJobsDisabled(dbName);
             var jobs = new ScheduledJobs(
                 null!, null!, null!, null!, null!, null!, null!, null!,
-                null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, schedules, new FakeHostLifetime(),
+                null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, schedules, new FakeHostLifetime(),
                 NullLogger<ScheduledJobs>.Instance);
 
             var entryPoints = new Func<Task>[]
@@ -67,6 +67,7 @@ public class ScheduledJobsTests
                 () => jobs.RunResolveWorks(),
                 () => jobs.RunLlmIdentify(),
                 () => jobs.RunMarkOtherEditions(),
+                () => jobs.RunMarkEditionsRead(),
             };
 
             foreach (var run in entryPoints)
@@ -129,7 +130,7 @@ public class ScheduledJobsTests
     public async Task RunWithPolling_Returns_When_Schedule_Is_Disabled_And_Not_Manual()
     {
         var lifetime = new FakeHostLifetime();
-        var jobs = new ScheduledJobs(null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, lifetime, NullLogger<ScheduledJobs>.Instance);
+        var jobs = new ScheduledJobs(null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, lifetime, NullLogger<ScheduledJobs>.Instance);
         var ran = false;
 
         await jobs.RunWithPollingForTests(
@@ -149,7 +150,7 @@ public class ScheduledJobsTests
     public async Task RunWithPolling_Waits_Then_Starts_When_Service_Becomes_Available()
     {
         var lifetime = new FakeHostLifetime();
-        var jobs = new ScheduledJobs(null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, lifetime, NullLogger<ScheduledJobs>.Instance);
+        var jobs = new ScheduledJobs(null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, lifetime, NullLogger<ScheduledJobs>.Instance);
         var attempts = 0;
         var running = true;
 
@@ -196,7 +197,7 @@ public class ScheduledJobsTests
     public async Task RunWithPolling_Gives_Up_After_Wait_Ceiling()
     {
         var lifetime = new FakeHostLifetime();
-        var jobs = new ScheduledJobs(null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, lifetime, NullLogger<ScheduledJobs>.Instance);
+        var jobs = new ScheduledJobs(null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, lifetime, NullLogger<ScheduledJobs>.Instance);
         var attempts = 0;
 
         await jobs.RunWithPollingForTests(
@@ -223,7 +224,7 @@ public class ScheduledJobsTests
         try
         {
             var lifetime = new FakeHostLifetime();
-            var jobs = new ScheduledJobs(null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, lifetime, NullLogger<ScheduledJobs>.Instance);
+            var jobs = new ScheduledJobs(null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, null!, lifetime, NullLogger<ScheduledJobs>.Instance);
 
             await jobs.RunRefreshDueWorks();
         }
