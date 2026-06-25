@@ -231,6 +231,7 @@ export default function Sync() {
                                                 { key: 'autoReplaceDamaged', label: 'Auto-replace damaged books', endpoint: '/api/jobs/auto-replace-damaged/start' },
                                                 { key: 'resolveWorks',       label: 'Resolve works by ISBN', endpoint: '/api/jobs/resolve-works/start' },
                                                 { key: 'llmIdentify',        label: 'LLM identify quarantined files', endpoint: '/api/jobs/llm-identify/start' },
+                                                { key: 'markOtherEditions',  label: 'Mark duplicate editions as owned', endpoint: '/api/jobs/mark-other-editions/start' },
                                             ]
                                             const anyJobRunning = !!jobs.activeJob
                                             return (

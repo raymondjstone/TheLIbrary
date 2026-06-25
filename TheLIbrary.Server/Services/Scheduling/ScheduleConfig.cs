@@ -47,6 +47,7 @@ public static class ScheduleJobIds
     public const string AutoReplaceDamaged = "auto-replace-damaged";
     public const string ResolveWorks = "resolve-works";
     public const string LlmIdentify = "llm-identify";
+    public const string MarkOtherEditions = "mark-other-editions";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
@@ -56,7 +57,7 @@ public static class ScheduleJobIds
         DedupeUnknown, DedupeAuthorFiles, PromoteManualBooks, AdoptUnknownAuthors,
         ArchiveForeign, MergeLinkedAuthors, CheckIntegrity, PruneStaleFiles,
         ContentScan, AssignAuthors, IndexFullText, PruneAuthors, DuplicateAutoArchive,
-        SeriesWatch, AutoReplaceDamaged, ResolveWorks, LlmIdentify
+        SeriesWatch, AutoReplaceDamaged, ResolveWorks, LlmIdentify, MarkOtherEditions
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -142,5 +143,10 @@ public static class ScheduleJobIds
             // downloads + indexer rate-limited, so it ships DISABLED — opt in on
             // the Schedules page (and configure Download automation in Settings).
             [AutoReplaceDamaged] = new() { Cron = "0 15 * * *", Enabled = false },
+            // Where one edition of a duplicate (same author + title) has an ebook,
+            // mark the fileless siblings "Owned (other edition)" so they drop off
+            // the Missing/Wanted lists. Pure DB flag flip and reversible, so it
+            // runs daily by default.
+            [MarkOtherEditions] = new() { Cron = "0 19 * * *", Enabled = true },
         };
 }

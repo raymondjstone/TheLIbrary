@@ -34,6 +34,7 @@ public class JobsController : ControllerBase
     private readonly TheLibrary.Server.Services.Download.AutoReplaceDamagedService _autoReplaceDamaged;
     private readonly WorkResolutionService _resolveWorks;
     private readonly TheLibrary.Server.Services.Llm.LlmIdentificationService _llmIdentify;
+    private readonly OtherEditionMarkerService _markOtherEditions;
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly OpenLibraryRateLimiter _rateLimiter;
@@ -65,6 +66,7 @@ public class JobsController : ControllerBase
         TheLibrary.Server.Services.Download.AutoReplaceDamagedService autoReplaceDamaged,
         WorkResolutionService resolveWorks,
         TheLibrary.Server.Services.Llm.LlmIdentificationService llmIdentify,
+        OtherEditionMarkerService markOtherEditions,
         BackgroundTaskCoordinator coordinator,
         IHostApplicationLifetime lifetime,
         OpenLibraryRateLimiter rateLimiter,
@@ -95,6 +97,7 @@ public class JobsController : ControllerBase
         _autoReplaceDamaged = autoReplaceDamaged;
         _resolveWorks = resolveWorks;
         _llmIdentify = llmIdentify;
+        _markOtherEditions = markOtherEditions;
         _coordinator = coordinator;
         _lifetime = lifetime;
         _rateLimiter = rateLimiter;
@@ -140,6 +143,7 @@ public class JobsController : ControllerBase
             autoReplaceDamaged = new { isRunning = _autoReplaceDamaged.IsRunning, message = _autoReplaceDamaged.CurrentMessage },
             resolveWorks = new { isRunning = _resolveWorks.IsRunning, message = _resolveWorks.CurrentMessage },
             llmIdentify = new { isRunning = _llmIdentify.IsRunning, message = _llmIdentify.CurrentMessage },
+            markOtherEditions = new { isRunning = _markOtherEditions.IsRunning, message = _markOtherEditions.CurrentMessage },
         });
     }
 
@@ -339,6 +343,14 @@ public class JobsController : ControllerBase
     public IActionResult StartLlmIdentify()
     {
         if (!_llmIdentify.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("mark-other-editions/start")]
+    public IActionResult StartMarkOtherEditions()
+    {
+        if (!_markOtherEditions.TryStart(_lifetime.ApplicationStopping, out var err))
             return Conflict(new { error = err });
         return Accepted();
     }

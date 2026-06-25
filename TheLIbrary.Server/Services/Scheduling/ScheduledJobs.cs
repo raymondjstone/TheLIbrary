@@ -45,6 +45,7 @@ public sealed class ScheduledJobs
     private readonly TheLibrary.Server.Services.Download.AutoReplaceDamagedService _autoReplaceDamaged;
     private readonly WorkResolutionService _resolveWorks;
     private readonly TheLibrary.Server.Services.Llm.LlmIdentificationService _llmIdentify;
+    private readonly OtherEditionMarkerService _markOtherEditions;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -76,6 +77,7 @@ public sealed class ScheduledJobs
         TheLibrary.Server.Services.Download.AutoReplaceDamagedService autoReplaceDamaged,
         WorkResolutionService resolveWorks,
         TheLibrary.Server.Services.Llm.LlmIdentificationService llmIdentify,
+        OtherEditionMarkerService markOtherEditions,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
@@ -86,7 +88,7 @@ public sealed class ScheduledJobs
         _mergeLinkedAuthors = mergeLinkedAuthors; _integrity = integrity; _pruneStaleFiles = pruneStaleFiles;
         _contentScan = contentScan; _assignAuthors = assignAuthors; _fullText = fullText; _pruneAuthors = pruneAuthors;
         _dupAutoArchive = dupAutoArchive; _seriesWatch = seriesWatch; _autoReplaceDamaged = autoReplaceDamaged; _resolveWorks = resolveWorks;
-        _llmIdentify = llmIdentify;
+        _llmIdentify = llmIdentify; _markOtherEditions = markOtherEditions;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -295,6 +297,12 @@ public sealed class ScheduledJobs
         ScheduleJobIds.LlmIdentify, manualTrigger,
         ct => _llmIdentify.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _llmIdentify.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunMarkOtherEditions(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.MarkOtherEditions, manualTrigger,
+        ct => _markOtherEditions.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _markOtherEditions.IsRunning);
 
     internal Task RunWithPollingForTests(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,
