@@ -2354,7 +2354,7 @@ trusted LAN).
   section at the bottom of the author detail page, never deleted),
   `Isbn` (ISBN-13 preferred, normalised on insert), FK to Author.
   `CreatedAt` (when the library first saw the book — drives the Recent Releases
-  by-month grouping). DB-defaulted to the insert time, **except** a book first
+  by-day grouping). DB-defaulted to the insert time, **except** a book first
   seen with a publish year already in the past is stamped 1 Jan of that publish
   year (`Book.CreatedAtForPublishYear`) so an old title can't surface as a brand-
   new release; a book published this year keeps the live insert time.

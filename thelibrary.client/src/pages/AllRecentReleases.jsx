@@ -200,34 +200,34 @@ export default function AllRecentReleases() {
         return rows
     }, [releases, searchQuery, genreFilter, minYear, maxYear])
 
-    // Group by the month a book was ADDED to the library (not its publish year) so
-    // it's obvious what is genuinely new each month — and equally obvious when
-    // nothing new has come in. Books that predate added-date tracking fall into a
-    // single "before tracking" bucket shown last.
-    const monthKey = (b) => {
+    // Group by the day a book was ADDED to the library (not its publish year) so
+    // it's obvious what arrived each day — and equally obvious when nothing new
+    // has come in. Books that predate added-date tracking fall into a single
+    // "before tracking" bucket shown last.
+    const dateKey = (b) => {
         if (!b.createdAt) return 'unknown'
         const d = new Date(b.createdAt)
-        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
     }
-    const monthLabel = (key) => {
+    const dateLabel = (key) => {
         if (key === 'unknown') return 'Added before tracking'
-        const [y, m] = key.split('-')
-        return new Date(Number(y), Number(m) - 1, 1)
-            .toLocaleString(undefined, { month: 'long', year: 'numeric' })
+        const [y, m, d] = key.split('-')
+        return new Date(Number(y), Number(m) - 1, Number(d))
+            .toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
     }
-    const byMonth = filtered
+    const byDate = filtered
         ? filtered.reduce((acc, b) => {
-            const k = monthKey(b)
+            const k = dateKey(b)
             ;(acc[k] ||= []).push(b)
             return acc
         }, {})
         : null
 
-    const months = byMonth
-        ? Object.keys(byMonth).sort((a, b) => {
+    const dates = byDate
+        ? Object.keys(byDate).sort((a, b) => {
             if (a === 'unknown') return 1
             if (b === 'unknown') return -1
-            return a < b ? 1 : -1 // newest month first
+            return a < b ? 1 : -1 // newest day first
         })
         : []
 
@@ -301,10 +301,10 @@ export default function AllRecentReleases() {
                 </p>
             )}
 
-            {months.map(key => (
+            {dates.map(key => (
                 <div key={key} style={{ marginBottom: '2rem' }}>
                     <h3 style={{ margin: '0 0 0.5rem', fontWeight: 600, fontSize: '1.05rem', color: 'var(--subtle)' }}>
-                        {monthLabel(key)} <span style={{ fontWeight: 400 }}>({byMonth[key].length})</span>
+                        {dateLabel(key)} <span style={{ fontWeight: 400 }}>({byDate[key].length})</span>
                     </h3>
                     <table className="grid">
                         <thead>
