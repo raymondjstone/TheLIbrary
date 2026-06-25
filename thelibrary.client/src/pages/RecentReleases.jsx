@@ -317,7 +317,7 @@ export default function RecentReleases() {
                             </tr>
                         </thead>
                         <tbody>
-                            {byMonth[key].map(b => (
+                            {byDate[key].map(b => (
                                 <React.Fragment key={b.id}>
                                 <tr className={b.owned ? '' : 'missing'}>
                                     <td>
