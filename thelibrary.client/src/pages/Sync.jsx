@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { JOB_CATEGORIES } from '../jobCatalog.js'
 
 const fmtBytes = (n) => {
     if (n == null) return '—'
@@ -205,58 +206,36 @@ export default function Sync() {
                         ) : null}
 
                         {jobs ? (() => {
-                                            const jobList = [
-                                                { key: 'organizer',          label: 'Organise series',       endpoint: '/api/jobs/organizer/start' },
-                                                { key: 'unzip',              label: 'Unzip archives',         endpoint: '/api/jobs/unzip/start' },
-                                                { key: 'disambiguator',      label: 'Disambiguate folders',  endpoint: '/api/jobs/disambiguator/start' },
-                                                { key: 'sameNames',          label: 'Same-name authors',     endpoint: '/api/jobs/same-names/start' },
-                                                { key: 'physicalStars',      label: 'Star physical authors', endpoint: '/api/jobs/physical-stars/start' },
-                                                { key: 'metadataCache',      label: 'Cache OL metadata',     endpoint: '/api/jobs/metadata-cache/start' },
-                                                { key: 'flattenUnknown',     label: 'Flatten __unknown',     endpoint: '/api/jobs/flatten-unknown/start' },
-                                                { key: 'dedupeUnknown',      label: 'Dedupe __unknown',      endpoint: '/api/jobs/dedupe-unknown/start' },
-                                                { key: 'dedupeAuthorFiles',  label: 'Dedupe author files',   endpoint: '/api/jobs/dedupe-author-files/start' },
-                                                { key: 'promoteManualBooks', label: 'Promote manual books',  endpoint: '/api/jobs/promote-manual-books/start' },
-                                                { key: 'adoptUnknownAuthors',label: 'Adopt unknown authors', endpoint: '/api/jobs/adopt-unknown-authors/start' },
-                                                { key: 'refreshStarred',     label: 'Refresh starred authors', endpoint: '/api/jobs/refresh-starred/start' },
-                                                { key: 'archiveForeign',     label: 'Archive foreign titles', endpoint: '/api/jobs/archive-foreign/start' },
-                                                { key: 'mergeLinkedAuthors', label: 'Merge linked authors', endpoint: '/api/jobs/merge-linked-authors/start' },
-                                                { key: 'checkIntegrity',     label: 'Check book integrity',  endpoint: '/api/jobs/check-integrity/start' },
-                                                { key: 'staleFiles',         label: 'Prune stale folder records', endpoint: '/api/jobs/prune-stale-files/start' },
-                                                { key: 'contentScan',        label: 'Identify books from content', endpoint: '/api/jobs/content-scan/start' },
-                                                { key: 'assignAuthors',      label: 'Assign untracked books to authors', endpoint: '/api/jobs/assign-authors/start' },
-                                                { key: 'fullTextIndex',      label: 'Index ebook text (full-text search)', endpoint: '/api/jobs/index-fulltext/start' },
-                                                { key: 'pruneAuthors',       label: 'Prune empty auto-created authors', endpoint: '/api/jobs/prune-authors/start' },
-                                                { key: 'dupAutoArchive',     label: 'Auto-archive duplicate copies', endpoint: '/api/jobs/duplicate-auto-archive/start' },
-                                                { key: 'seriesWatch',        label: 'Watch owned series for new volumes', endpoint: '/api/jobs/series-watch/start' },
-                                                { key: 'autoReplaceDamaged', label: 'Auto-replace damaged books', endpoint: '/api/jobs/auto-replace-damaged/start' },
-                                                { key: 'resolveWorks',       label: 'Resolve works by ISBN', endpoint: '/api/jobs/resolve-works/start' },
-                                                { key: 'llmIdentify',        label: 'LLM identify quarantined files', endpoint: '/api/jobs/llm-identify/start' },
-                                                { key: 'markOtherEditions',  label: 'Mark duplicate editions as owned', endpoint: '/api/jobs/mark-other-editions/start' },
-                                                { key: 'markEditionsRead',   label: 'Mark all editions read', endpoint: '/api/jobs/mark-editions-read/start' },
-                                            ]
                                             const anyJobRunning = !!jobs.activeJob
+                                            const statusFor = (job) => (job.statusKey ? jobs[job.statusKey] : null)
+                                            const trigger = (job) => post(job.manualEndpoint || `/api/schedules/${job.id}/run`)
+                                            const allJobs = JOB_CATEGORIES.flatMap(c => c.jobs)
                                             return (
                                                 <div className="sync-status" style={{ marginTop: '1rem' }}>
                                                     <h3>Background jobs</h3>
                                                     {jobs.activeJob ? <div><strong>Running:</strong> {jobs.activeJob}</div> : null}
-                                                    <div className="toolbar" style={{ flexWrap: 'wrap', marginBottom: '0.5rem' }}>
-                                                        {jobList.map(({ key, label, endpoint }) => {
-                                                            const j = jobs[key]
-                                                            const isRunning = j?.isRunning
-                                                            return (
-                                                                <button key={key}
-                                                                    onClick={() => post(endpoint)}
-                                                                    disabled={anyJobRunning || running}>
-                                                                    {isRunning ? `${label}…` : label}
-                                                                </button>
-                                                            )
-                                                        })}
-                                                    </div>
-                                                    {jobList.filter(j => jobs[j.key]?.isRunning || jobs[j.key]?.message).map(({ key, label }) => {
-                                                        const j = jobs[key]
+                                                    {JOB_CATEGORIES.map(cat => (
+                                                        <div key={cat.name} style={{ marginBottom: '0.5rem' }}>
+                                                            <div className="subtle" style={{ fontSize: '0.78em', fontWeight: 600, margin: '0.4rem 0 0.15rem' }}>{cat.name}</div>
+                                                            <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+                                                                {cat.jobs.map(job => {
+                                                                    const j = statusFor(job)
+                                                                    return (
+                                                                        <button key={job.label}
+                                                                            onClick={() => trigger(job)}
+                                                                            disabled={anyJobRunning || running}>
+                                                                            {j?.isRunning ? `${job.label}…` : job.label}
+                                                                        </button>
+                                                                    )
+                                                                })}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                    {allJobs.filter(job => statusFor(job)?.isRunning || statusFor(job)?.message).map(job => {
+                                                        const j = statusFor(job)
                                                         return (
-                                                            <div key={key}>
-                                                                <strong>{label}:</strong>{' '}
+                                                            <div key={job.label}>
+                                                                <strong>{job.label}:</strong>{' '}
                                                                 {j.isRunning ? <span className="running-indicator">⏳ </span> : null}
                                                                 {j.message || (j.isRunning ? 'Running…' : '')}
                                                             </div>

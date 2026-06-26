@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { JOB_CATEGORIES, JOB_CATEGORY } from '../jobCatalog.js'
 
 const labels = {
     'sync': 'Sync (Library → OpenLibrary)',
@@ -198,6 +199,27 @@ export default function Schedules() {
         return d && (d.cron !== row.cron || d.enabled !== row.enabled)
     }
 
+    // Group the jobs by category (and order them within) from the shared catalog,
+    // so the list reads sensibly instead of in raw registration order. Any job the
+    // catalog doesn't know lands in a trailing "Other" group rather than vanishing.
+    const orderIndex = {}
+    JOB_CATEGORIES.forEach((c, ci) => c.jobs.forEach((j, ji) => { if (j.id) orderIndex[j.id] = ci * 1000 + ji }))
+    const grouped = rows
+        ? (() => {
+            const gs = JOB_CATEGORIES
+                .map(c => ({
+                    name: c.name,
+                    rows: rows
+                        .filter(r => JOB_CATEGORY[r.jobId] === c.name)
+                        .sort((a, b) => (orderIndex[a.jobId] ?? 0) - (orderIndex[b.jobId] ?? 0)),
+                }))
+                .filter(g => g.rows.length > 0)
+            const other = rows.filter(r => !JOB_CATEGORY[r.jobId])
+            if (other.length) gs.push({ name: 'Other', rows: other })
+            return gs
+        })()
+        : []
+
     return (
         <section>
             <h2>Schedules</h2>
@@ -222,7 +244,14 @@ export default function Schedules() {
                         </tr>
                     </thead>
                     <tbody>
-                        {rows.map(row => {
+                        {grouped.map(group => (
+                          <React.Fragment key={group.name}>
+                            <tr>
+                                <td colSpan={5} style={{ background: 'var(--card)', fontWeight: 600, paddingTop: '0.7rem' }}>
+                                    {group.name}
+                                </td>
+                            </tr>
+                            {group.rows.map(row => {
                             const draft = drafts[row.jobId] || { cron: row.cron, enabled: row.enabled }
                             return (
                                 <React.Fragment key={row.jobId}>
@@ -272,7 +301,9 @@ export default function Schedules() {
                                     </tr>
                                 </React.Fragment>
                             )
-                        })}
+                            })}
+                          </React.Fragment>
+                        ))}
                     </tbody>
                 </table>
             )}
