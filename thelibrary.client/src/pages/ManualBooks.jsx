@@ -198,7 +198,10 @@ function GroupRows({ group, onEdit, onDelete, nzbSites, nzbLinks }) {
                         : null}</td>
                     <td>
                         {b.title}
-                        {!b.owned && nzbSites.length > 0 && (
+                        {/* Show the search links whenever there's no ebook FILE here —
+                            a manual book can be auto-flagged "owned (other edition)" yet
+                            still have nothing to read, so gate on the file, not "owned". */}
+                        {!b.hasFile && nzbSites.length > 0 && (
                             <div style={{ marginTop: '0.2rem' }}>{nzbLinks(b.title, group.authorName)}</div>
                         )}
                     </td>

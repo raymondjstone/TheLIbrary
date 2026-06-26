@@ -954,6 +954,14 @@ export default function AuthorDetail() {
         })
     }
 
+    // When to offer the external book-search links. Unowned books always get them.
+    // A MANUAL book (not on OpenLibrary) with no ebook file here also gets them
+    // even when it's flagged owned — it can be auto-marked "owned (other edition)"
+    // by the duplicate-editions job, but you still have no file for it, so the
+    // "go find it" links must stay.
+    const isManual = (b) => (b.openLibraryWorkKey ?? '').startsWith('XX')
+    const showSearch = (b) => nzbSites.length > 0 && (!b.owned || (isManual(b) && !b.hasLocalFiles))
+
     const setPriority = async (value) => {
         if (!data) return
         const previous = data.priority ?? 0
@@ -1789,7 +1797,7 @@ export default function AuthorDetail() {
                                             ))}
                                         </div>
                                     )}
-                                    {!b.owned && nzbSites.length > 0 && (
+                                    {showSearch(b) && (
                                         <div style={{ marginTop: '0.2rem' }}>
                                             {nzbLinks(b.title)}
                                         </div>
@@ -1860,7 +1868,7 @@ export default function AuthorDetail() {
                                         <span className="subtle" style={{ marginRight: '0.3rem' }}>↳</span>
                                         <WorkTitle workKey={ed.openLibraryWorkKey} title={ed.title} />
                                         <BookActions book={ed} onEdit={setEditBook} onDelete={deleteBook} />
-                                        {!ed.owned && nzbSites.length > 0 && (
+                                        {showSearch(ed) && (
                                             <div style={{ marginTop: '0.2rem' }}>
                                                 {nzbLinks(ed.title)}
                                             </div>
@@ -1951,7 +1959,7 @@ export default function AuthorDetail() {
                                             ))}
                                         </div>
                                     )}
-                                    {!b.owned && nzbSites.length > 0 && <div style={{ marginTop: '0.2rem' }}>{nzbLinks(b.title)}</div>}
+                                    {showSearch(b) && <div style={{ marginTop: '0.2rem' }}>{nzbLinks(b.title)}</div>}
                                     {b.hasLocalFiles
                                         ? <div className="subtle">
                                             <BookFiles files={b.files}
@@ -1989,7 +1997,7 @@ export default function AuthorDetail() {
                                         <span className="subtle" style={{ marginRight: '0.3rem' }}>↳</span>
                                         <WorkTitle workKey={ed.openLibraryWorkKey} title={ed.title} />
                                         <BookActions book={ed} onEdit={setEditBook} onDelete={deleteBook} />
-                                        {!ed.owned && nzbSites.length > 0 && <div style={{ marginTop: '0.2rem' }}>{nzbLinks(ed.title)}</div>}
+                                        {showSearch(ed) && <div style={{ marginTop: '0.2rem' }}>{nzbLinks(ed.title)}</div>}
                                         {ed.hasLocalFiles
                                             ? <div className="subtle">
                                                 <BookFiles files={ed.files}

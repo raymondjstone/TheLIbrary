@@ -77,7 +77,7 @@ public class BooksController : ControllerBase
     public sealed record ManualBookRow(
         int Id, string Title, int? FirstPublishYear, int? CoverId, string? CoverUrl,
         string? Series, string? SeriesPosition, int AuthorId, string AuthorName,
-        bool Owned, string OpenLibraryWorkKey);
+        bool Owned, string OpenLibraryWorkKey, bool HasFile);
 
     // Every manually-added book — synthetic "XX" work key, not (yet) on
     // OpenLibrary. Surfaces them as a group so they can be reviewed, edited
@@ -92,7 +92,8 @@ public class BooksController : ControllerBase
                 b.Id, b.Title, b.FirstPublishYear, b.CoverId, b.CoverUrl,
                 b.Series != null ? b.Series.Name : null, b.SeriesPosition,
                 b.AuthorId, b.Author.Name,
-                b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any(), b.OpenLibraryWorkKey))
+                b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any(), b.OpenLibraryWorkKey,
+                b.LocalFiles.Any()))
             .ToListAsync(ct);
     }
 
