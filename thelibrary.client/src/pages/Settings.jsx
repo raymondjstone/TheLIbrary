@@ -1493,6 +1493,7 @@ function JobLimitsSection() {
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState(null)
     const [done, setDone] = useState(false)
+    const [resetMsg, setResetMsg] = useState(null)
 
     useEffect(() => {
         fetch('/api/settings/job-limits')
@@ -1551,6 +1552,26 @@ function JobLimitsSection() {
                     {busy ? 'Saving…' : 'Save'}
                 </button>
                 {done && !dirty ? <span className="subtle">Saved.</span> : null}
+            </div>
+
+            <p className="subtle" style={{ marginTop: '0.9rem' }}>
+                <strong>Promote manual books</strong> remembers when it last checked each book on OpenLibrary and
+                always works through the oldest-checked first, so the sweep advances and survives restarts. Re-check
+                all to clear those timestamps and re-evaluate every manual book from scratch — e.g. after OpenLibrary
+                lists titles it previously couldn't find.
+            </p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <button className="btn-ghost" disabled={busy} onClick={async () => {
+                    setBusy(true); setResetMsg(null)
+                    try {
+                        const r = await fetch('/api/settings/reset-promote-checks', { method: 'POST' })
+                        if (!r.ok) throw new Error(r.statusText)
+                        const b = await r.json()
+                        setResetMsg(`Cleared ${b.cleared} check timestamp${b.cleared === 1 ? '' : 's'} — they'll be re-checked oldest-first.`)
+                    } catch (e) { setResetMsg(`Failed: ${e.message || e}`) }
+                    finally { setBusy(false) }
+                }}>Re-check all manual books on OpenLibrary</button>
+                {resetMsg ? <span className="subtle">{resetMsg}</span> : null}
             </div>
         </>
     )

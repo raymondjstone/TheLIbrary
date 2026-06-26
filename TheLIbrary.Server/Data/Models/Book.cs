@@ -117,6 +117,15 @@ public class Book
             ? new DateTime(y, 1, 1, 0, 0, 0, DateTimeKind.Utc)
             : null;
 
+    // When the promote-manual-books job last searched OpenLibrary for this (manual)
+    // book. NULL = never checked. The OL phase processes the books with the OLDEST
+    // last-check first (NULLs first), stamping this on every attempt — a persisted,
+    // restart-proof round-robin so the sweep advances through the whole backlog and
+    // eventually re-checks the not-yet-on-OL ones, instead of the old in-memory skip
+    // set that reset to id 0 on every restart. Only meaningful while OpenLibraryWorkKey
+    // is a manual ("XX") key; once promoted the row leaves the candidate set.
+    public DateTime? PromoteCheckedAt { get; set; }
+
     public int AuthorId { get; set; }
     public Author Author { get; set; } = null!;
 

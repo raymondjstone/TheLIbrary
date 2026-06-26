@@ -494,6 +494,21 @@ public class SettingsController : ControllerBase
         return body;
     }
 
+    public sealed record ResetPromoteChecksResult(int Cleared);
+
+    // Clears the "OL last-checked" timestamp on every manual book so the
+    // promote-manual-books job re-checks them all from scratch (oldest-first) over
+    // its next runs. Use after raising the per-run limit, or to force a full
+    // re-sweep when OpenLibrary has since listed titles it previously couldn't find.
+    [HttpPost("reset-promote-checks")]
+    public async Task<ResetPromoteChecksResult> ResetPromoteChecks(CancellationToken ct)
+    {
+        var cleared = await _db.Books
+            .Where(b => b.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix) && b.PromoteCheckedAt != null)
+            .ExecuteUpdateAsync(s => s.SetProperty(b => b.PromoteCheckedAt, _ => (DateTime?)null), ct);
+        return new ResetPromoteChecksResult(cleared);
+    }
+
     [HttpGet("refresh-cadence")]
     public async Task<RefreshCadenceDto> GetRefreshCadence(CancellationToken ct)
     {

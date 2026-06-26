@@ -38,13 +38,6 @@ public sealed class ManualBookPromotionService
     private volatile string? _currentMessage;
     private ManualBookPromotionSummary? _lastResult;
 
-    // Books OL didn't know on a previous attempt. They rarely appear overnight,
-    // so fresh candidates get the cap first; skipped ones retry with leftover
-    // capacity (and from scratch after a restart). In-memory only, like the
-    // assign-authors job's skip set.
-    private readonly object _skipLock = new();
-    private readonly HashSet<int> _skippedBookIds = new();
-
     public ManualBookPromotionService(
         IServiceScopeFactory scopeFactory,
         BackgroundTaskCoordinator coordinator,
@@ -99,18 +92,20 @@ public sealed class ManualBookPromotionService
         // cap), so it clears the whole duplicate backlog every run.
         var dbMerged = await MergeManualDuplicatesIntoRealBooksAsync(db, ct);
 
-        var candidateIds = await db.Books
+        var maxPerRun = await JobRunLimits.GetAsync(db, AppSettingKeys.PromoteManualBooksMaxPerRun, MaxPerRun, ct);
+
+        // Take the books whose OL check is OLDEST — NULL (never checked) sorts first
+        // ascending — and stamp PromoteCheckedAt on each as we go. Persisted, so the
+        // sweep keeps advancing across restarts and, once every book has had a turn,
+        // naturally loops back to re-check the not-yet-on-OL ones oldest-first.
+        var toAttempt = await db.Books
             .Where(b => b.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix))
-            .OrderBy(b => b.Id)
+            .OrderBy(b => b.PromoteCheckedAt)
+            .ThenBy(b => b.Id)
+            .Take(maxPerRun)
             .Select(b => b.Id)
             .ToListAsync(ct);
-
-        var maxPerRun = await JobRunLimits.GetAsync(db, AppSettingKeys.PromoteManualBooksMaxPerRun, MaxPerRun, ct);
-        List<int> previouslySkipped;
-        lock (_skipLock) previouslySkipped = candidateIds.Where(_skippedBookIds.Contains).ToList();
-        var toAttempt = candidateIds.Except(previouslySkipped).Take(maxPerRun).ToList();
-        if (toAttempt.Count < maxPerRun)
-            toAttempt.AddRange(previouslySkipped.Take(maxPerRun - toAttempt.Count));
+        var checkedAt = DateTime.UtcNow;
 
         int examined = 0, promoted = 0, notFound = 0, errors = 0;
         var merged = dbMerged; // total includes the DB-only merges above
@@ -122,6 +117,10 @@ public sealed class ManualBookPromotionService
             if (book is null || !ManualWorkKey.IsManual(book.OpenLibraryWorkKey)) continue;
 
             examined++;
+            // Stamp the attempt up front so the row rotates to the back of the queue
+            // whatever the outcome (found, not found, or error) — every code path below
+            // either saves the row or, on error, re-stamps it.
+            book.PromoteCheckedAt = checkedAt;
             _currentMessage = $"Checking {i + 1}/{toAttempt.Count}: {book.Author.Name} — {book.Title}"
                 + $" ({promoted + merged} linked)";
             try
@@ -130,7 +129,7 @@ public sealed class ManualBookPromotionService
                 if (doc is null)
                 {
                     notFound++;
-                    lock (_skipLock) _skippedBookIds.Add(book.Id);
+                    await db.SaveChangesAsync(ct); // persist the check timestamp
                     continue;
                 }
 
@@ -165,15 +164,21 @@ public sealed class ManualBookPromotionService
                         book.Title, workKey, book.Author.Name);
                 }
 
-                lock (_skipLock) _skippedBookIds.Remove(book.Id);
                 await db.SaveChangesAsync(ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)
             {
                 errors++;
+                var failedId = book.Id;
                 db.ChangeTracker.Clear();
-                _log.LogWarning(ex, "Promote-manual-books: failed on \"{Title}\" (id {Id})", book.Title, book.Id);
+                _log.LogWarning(ex, "Promote-manual-books: failed on \"{Title}\" (id {Id})", book.Title, failedId);
+                // The tracked timestamp was discarded with the tracker — stamp it
+                // directly so a persistently-failing book still rotates and can't
+                // wedge the front of the oldest-first queue.
+                try { await db.Books.Where(b => b.Id == failedId)
+                        .ExecuteUpdateAsync(s => s.SetProperty(x => x.PromoteCheckedAt, checkedAt), ct); }
+                catch (Exception ex2) { _log.LogWarning(ex2, "Promote-manual-books: could not stamp check time on id {Id}", failedId); }
             }
         }
 
@@ -235,7 +240,6 @@ public sealed class ManualBookPromotionService
                 await MergeIntoAsync(db, manual, target, ct);
                 await db.SaveChangesAsync(ct);
                 merged++;
-                lock (_skipLock) _skippedBookIds.Remove(manual.Id);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex)

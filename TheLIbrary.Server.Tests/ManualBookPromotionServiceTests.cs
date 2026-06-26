@@ -163,6 +163,43 @@ public class ManualBookPromotionServiceTests
         Assert.Equal("XX00000001W", (await verify.Books.SingleAsync()).OpenLibraryWorkKey);
     }
 
+    [Fact]
+    public async Task Checks_Oldest_First_And_Respects_The_Per_Run_Limit()
+    {
+        var dbName = NewDb();
+        var earlier = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        await using (var db = CreateDb(dbName))
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Quigley Fenwick", OpenLibraryKey = "OL1A" });
+            // Never checked (null) — must be picked first.
+            db.Books.Add(new Book
+            {
+                Id = 10, AuthorId = 1, Title = "Aaa",
+                NormalizedTitle = TitleNormalizer.Normalize("Aaa"), OpenLibraryWorkKey = "XX00000001W", Subjects = "",
+            });
+            // Already checked a while ago — must NOT be touched when the limit is 1.
+            db.Books.Add(new Book
+            {
+                Id = 11, AuthorId = 1, Title = "Bbb",
+                NormalizedTitle = TitleNormalizer.Normalize("Bbb"), OpenLibraryWorkKey = "XX00000002W",
+                PromoteCheckedAt = earlier, Subjects = "",
+            });
+            db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.PromoteManualBooksMaxPerRun, Value = "1" });
+            await db.SaveChangesAsync();
+        }
+
+        // OL returns nothing → not found, but the picked book is still stamped.
+        var sut = CreateService(dbName, """{"numFound":0,"docs":[]}""");
+        var summary = await sut.RunForTestsAsync(CancellationToken.None);
+
+        Assert.Equal(1, summary.Examined); // only one book this run (limit = 1)
+        await using var verify = CreateDb(dbName);
+        var neverBefore = await verify.Books.FirstAsync(b => b.Id == 10);
+        var checkedEarlier = await verify.Books.FirstAsync(b => b.Id == 11);
+        Assert.NotNull(neverBefore.PromoteCheckedAt);          // null one was checked first
+        Assert.Equal(earlier, checkedEarlier.PromoteCheckedAt); // older one was skipped this run
+    }
+
     private static string NewDb() => $"manual-promotion-tests-{Guid.NewGuid():N}";
 
     private static LibraryDbContext CreateDb(string name)

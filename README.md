@@ -1002,13 +1002,28 @@ Run it manually via the Sync page's **Dedupe author files** button
 
 ## Promote-manual-books job
 
-On by default, daily at 07:30. Searches OpenLibrary for every manually-
-catalogued book (synthetic `XX` work key — hand-added entries and the
-placeholder books the series builder mints) and links each one to the real
-OL work once OpenLibrary lists the title. The author-refresh job already does
-this in place for refreshed authors; this job covers everything else by
-searching per book (capped per run — OL is rate-limited — with an in-memory
-skip set so not-yet-listed books don't burn the cap every day).
+On by default, daily at 07:30. Links every manually-catalogued book (synthetic
+`XX` work key — hand-added entries and the placeholder books the series builder
+mints) to its real OL work.
+
+**Phase 0 — DB only, no OpenLibrary.** A manual placeholder that duplicates a
+real OL book already under the same author (same normalized title) is folded
+straight into that row — we already hold the canonical book, so no web search is
+needed. This is **unbounded** (no OL calls), so it clears the whole duplicate
+backlog every run regardless of the per-run cap. (On a large library the series
+builder mints these by the thousand, so this is the bulk of the work.)
+
+**Phase 1 — OpenLibrary search** for the rest (capped — OL is rate-limited; the
+cap is **Settings → Background job run limits → Promote manual books**, default
+100). Books are taken **oldest-checked first**: each manual book carries a
+persisted `Book.PromoteCheckedAt` timestamp (NULL = never checked) that is stamped
+on every attempt, so the sweep advances through the backlog, **survives restarts**
+(unlike the old in-memory skip set, which reset to the start on every restart),
+and — once every book has had a turn — loops back to re-check the not-yet-listed
+ones oldest-first. **Settings → Background job run limits** has a **Re-check all
+manual books** button (`POST /api/settings/reset-promote-checks`) that clears the
+timestamps to force a full re-sweep, e.g. after OL lists a batch of previously-
+missing titles.
 
 A match requires BOTH the title (normalized-equal or very close) and the
 author (OL key when the watchlist row has one, else normalized name) to agree
