@@ -105,11 +105,12 @@ public sealed class ManualBookPromotionService
             .Select(b => b.Id)
             .ToListAsync(ct);
 
+        var maxPerRun = await JobRunLimits.GetAsync(db, AppSettingKeys.PromoteManualBooksMaxPerRun, MaxPerRun, ct);
         List<int> previouslySkipped;
         lock (_skipLock) previouslySkipped = candidateIds.Where(_skippedBookIds.Contains).ToList();
-        var toAttempt = candidateIds.Except(previouslySkipped).Take(MaxPerRun).ToList();
-        if (toAttempt.Count < MaxPerRun)
-            toAttempt.AddRange(previouslySkipped.Take(MaxPerRun - toAttempt.Count));
+        var toAttempt = candidateIds.Except(previouslySkipped).Take(maxPerRun).ToList();
+        if (toAttempt.Count < maxPerRun)
+            toAttempt.AddRange(previouslySkipped.Take(maxPerRun - toAttempt.Count));
 
         int examined = 0, promoted = 0, notFound = 0, errors = 0;
         var merged = dbMerged; // total includes the DB-only merges above

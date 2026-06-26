@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using TheLibrary.Server.Data;
+using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.Scheduling;
 using TheLibrary.Server.Services.Sync;
@@ -84,11 +85,12 @@ public sealed class AutoReplaceDamagedService
             .Select(f => new { f.BookId, f.FullPath })
             .ToListAsync(ct);
 
+        var maxPerRun = await JobRunLimits.GetAsync(db, AppSettingKeys.AutoReplaceDamagedMaxPerRun, MaxPerRun, ct);
         var bookIds = damaged
             .Where(x => BookIntegrityChecker.IsEbook(x.FullPath))
             .Select(x => x.BookId!.Value)
             .Distinct()
-            .Take(MaxPerRun)
+            .Take(maxPerRun)
             .ToList();
 
         int attempted = 0, grabbed = 0;

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
+using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Scheduling;
 
 namespace TheLibrary.Server.Services.Sync;
@@ -82,7 +83,8 @@ public sealed class UntrackedAuthorAssignmentService
             .Select(c => c.Id)
             .ToListAsync(ct);
 
-        var toAttempt = candidateIds.Take(MaxPerRun).ToList();
+        var maxPerRun = await JobRunLimits.GetAsync(db, AppSettingKeys.AssignAuthorsMaxPerRun, MaxPerRun, ct);
+        var toAttempt = candidateIds.Take(maxPerRun).ToList();
 
         int assigned = 0, skipped = 0, failed = 0;
         for (var i = 0; i < toAttempt.Count; i++)

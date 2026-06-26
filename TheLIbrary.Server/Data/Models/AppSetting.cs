@@ -84,6 +84,15 @@ public static class AppSettingKeys
     // Unset/invalid = 200.
     public const string FullTextIndexMaxPerRun = "FullTextIndexMaxPerRun";
 
+    // Per-run caps for the other capped jobs, editable on the Settings page
+    // ("Background job run limits"). Each unset/invalid falls back to the service's
+    // own default const, so behaviour is unchanged until the user overrides it.
+    public const string PromoteManualBooksMaxPerRun = "PromoteManualBooksMaxPerRun"; // OL searches/run
+    public const string ResolveWorksMaxPerRun = "ResolveWorksMaxPerRun";             // OL lookups/run
+    public const string AssignAuthorsMaxPerRun = "AssignAuthorsMaxPerRun";           // OL lookups/run
+    public const string AutoReplaceDamagedMaxPerRun = "AutoReplaceDamagedMaxPerRun"; // indexer grabs/run
+    public const string PruneAuthorsMaxPerRun = "PruneAuthorsMaxPerRun";             // deletions/run
+
     // Extend full-text indexing beyond matched books. Both default OFF ("true"
     // to enable). UnmatchedAuthorFiles = files in an author folder not linked to
     // a Book; UnknownFiles = loose files in the __unknown quarantine.

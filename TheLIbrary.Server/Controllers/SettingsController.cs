@@ -454,6 +454,46 @@ public class SettingsController : ControllerBase
         return new RefreshLimitsDto(body.MaxAuthorsPerRun, body.MaxEarlyWhenNoneDue, body.MaxEarlyDaysAhead);
     }
 
+    public sealed record JobLimitsDto(
+        int PromoteManualBooks, int ResolveWorks, int AssignAuthors, int AutoReplaceDamaged, int PruneAuthors);
+
+    // Per-run caps for the capped background jobs that don't already have their own
+    // Settings control. Each falls back to the job's built-in default const, so an
+    // unset value behaves exactly as before.
+    [HttpGet("job-limits")]
+    public async Task<JobLimitsDto> GetJobLimits(CancellationToken ct)
+    {
+        var rows = await _db.AppSettings
+            .Where(s => s.Key == AppSettingKeys.PromoteManualBooksMaxPerRun
+                     || s.Key == AppSettingKeys.ResolveWorksMaxPerRun
+                     || s.Key == AppSettingKeys.AssignAuthorsMaxPerRun
+                     || s.Key == AppSettingKeys.AutoReplaceDamagedMaxPerRun
+                     || s.Key == AppSettingKeys.PruneAuthorsMaxPerRun)
+            .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
+        return new JobLimitsDto(
+            ReadInt(rows, AppSettingKeys.PromoteManualBooksMaxPerRun, Services.Sync.ManualBookPromotionService.MaxPerRun),
+            ReadInt(rows, AppSettingKeys.ResolveWorksMaxPerRun, Services.Sync.WorkResolutionService.MaxPerRun),
+            ReadInt(rows, AppSettingKeys.AssignAuthorsMaxPerRun, Services.Sync.UntrackedAuthorAssignmentService.MaxPerRun),
+            ReadInt(rows, AppSettingKeys.AutoReplaceDamagedMaxPerRun, Services.Download.AutoReplaceDamagedService.MaxPerRun),
+            ReadInt(rows, AppSettingKeys.PruneAuthorsMaxPerRun, Services.Sync.AuthorPruneService.MaxPerRun));
+    }
+
+    [HttpPut("job-limits")]
+    public async Task<ActionResult<JobLimitsDto>> SetJobLimits([FromBody] JobLimitsDto body, CancellationToken ct)
+    {
+        if (body.PromoteManualBooks <= 0 || body.ResolveWorks <= 0 || body.AssignAuthors <= 0
+            || body.AutoReplaceDamaged <= 0 || body.PruneAuthors <= 0)
+            return BadRequest(new { error = "Each per-run limit must be greater than zero." });
+
+        await UpsertSettingAsync(AppSettingKeys.PromoteManualBooksMaxPerRun, body.PromoteManualBooks.ToString(), ct);
+        await UpsertSettingAsync(AppSettingKeys.ResolveWorksMaxPerRun, body.ResolveWorks.ToString(), ct);
+        await UpsertSettingAsync(AppSettingKeys.AssignAuthorsMaxPerRun, body.AssignAuthors.ToString(), ct);
+        await UpsertSettingAsync(AppSettingKeys.AutoReplaceDamagedMaxPerRun, body.AutoReplaceDamaged.ToString(), ct);
+        await UpsertSettingAsync(AppSettingKeys.PruneAuthorsMaxPerRun, body.PruneAuthors.ToString(), ct);
+        await _db.SaveChangesAsync(ct);
+        return body;
+    }
+
     [HttpGet("refresh-cadence")]
     public async Task<RefreshCadenceDto> GetRefreshCadence(CancellationToken ct)
     {

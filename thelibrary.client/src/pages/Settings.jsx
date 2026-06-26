@@ -1421,6 +1421,8 @@ export default function Settings() {
 
             <DownloadAutomationSection />
 
+            <JobLimitsSection />
+
             <LlmIdentificationSection />
 
             <BackupSection />
@@ -1482,6 +1484,78 @@ export default function Settings() {
 
 // Toggle for the opt-in full-text search feature (default off). Indexing/search
 // controls live on the Search page; this is just the on/off switch.
+// Per-run caps for the paced background jobs that don't have their own dedicated
+// Settings control. Mirrors the FullTextSearchSection load/save pattern.
+function JobLimitsSection() {
+    const fallback = { promoteManualBooks: 100, resolveWorks: 200, assignAuthors: 1000, autoReplaceDamaged: 20, pruneAuthors: 5000 }
+    const [cfg, setCfg] = useState(null)
+    const [saved, setSaved] = useState(null)
+    const [busy, setBusy] = useState(false)
+    const [error, setError] = useState(null)
+    const [done, setDone] = useState(false)
+
+    useEffect(() => {
+        fetch('/api/settings/job-limits')
+            .then(r => r.ok ? r.json() : null)
+            .then(d => { setCfg(d ?? fallback); setSaved(d ?? fallback) })
+            .catch(() => { setCfg(fallback); setSaved(fallback) })
+    }, [])
+
+    const patch = (p) => { setCfg(c => ({ ...c, ...p })); setDone(false) }
+    const dirty = cfg && saved && JSON.stringify(cfg) !== JSON.stringify(saved)
+
+    const save = async () => {
+        setBusy(true); setError(null); setDone(false)
+        try {
+            const r = await fetch('/api/settings/job-limits', {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(Object.fromEntries(
+                    Object.keys(fallback).map(k => [k, Math.max(1, Number(cfg[k]) || fallback[k])]))),
+            })
+            if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(b.error || r.statusText) }
+            const body = await r.json()
+            setCfg(body); setSaved(body); setDone(true)
+        } catch (e) { setError(String(e.message || e)) }
+        finally { setBusy(false) }
+    }
+
+    const fields = [
+        ['promoteManualBooks', 'Promote manual books', 'OpenLibrary searches per run'],
+        ['resolveWorks', 'Resolve works by ISBN', 'OpenLibrary lookups per run'],
+        ['assignAuthors', 'Assign untracked books to authors', 'OpenLibrary lookups per run'],
+        ['autoReplaceDamaged', 'Auto-replace damaged books', 'indexer grabs per run'],
+        ['pruneAuthors', 'Prune empty auto-created authors', 'deletions per run'],
+    ]
+
+    return (
+        <>
+            <h2 style={{ marginTop: '1.5rem' }}>Background job run limits</h2>
+            <p className="subtle">
+                How many items each capped job processes per run. These jobs are paced (most make rate-limited
+                OpenLibrary calls), so a higher number clears a backlog faster but makes each run longer. Other
+                capped jobs (full-text index, content scan, integrity, LLM, author refresh) have their own controls.
+            </p>
+            {error ? <p className="error">{error}</p> : null}
+            {fields.map(([key, label, hint]) => (
+                <label key={key} className="subtle" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
+                    <span style={{ minWidth: '18rem' }}>{label}</span>
+                    <input type="number" min="1" max="100000" style={{ width: '7rem' }}
+                           disabled={cfg === null || busy}
+                           value={cfg?.[key] ?? fallback[key]}
+                           onChange={e => patch({ [key]: e.target.value })} />
+                    <span style={{ fontSize: '0.8em' }}>{hint}</span>
+                </label>
+            ))}
+            <div style={{ marginTop: '0.6rem', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <button onClick={save} disabled={cfg === null || busy || !dirty}>
+                    {busy ? 'Saving…' : 'Save'}
+                </button>
+                {done && !dirty ? <span className="subtle">Saved.</span> : null}
+            </div>
+        </>
+    )
+}
+
 function FullTextSearchSection() {
     const [cfg, setCfg] = useState(null)   // { enabled, maxPerRun, includeUnmatchedAuthorFiles, includeUnknownFiles }
     const [saved, setSaved] = useState(null)

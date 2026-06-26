@@ -74,7 +74,8 @@ public sealed class AuthorPruneService
             && !db.LocalBookFiles.Any(f => f.AuthorId == a.Id)
             && !db.Authors.Any(x => x.LinkedToAuthorId == a.Id));   // nobody links to it
 
-        var ids = await candidates.OrderBy(a => a.Id).Take(MaxPerRun).Select(a => a.Id).ToListAsync(ct);
+        var maxPerRun = await JobRunLimits.GetAsync(db, AppSettingKeys.PruneAuthorsMaxPerRun, MaxPerRun, ct);
+        var ids = await candidates.OrderBy(a => a.Id).Take(maxPerRun).Select(a => a.Id).ToListAsync(ct);
         if (ids.Count == 0)
         {
             _currentMessage = "Nothing to prune";

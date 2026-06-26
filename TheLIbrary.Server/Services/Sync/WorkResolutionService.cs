@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using TheLibrary.Server.Data;
+using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.IO;
 using TheLibrary.Server.Services.OpenLibrary;
 using TheLibrary.Server.Services.Scheduling;
@@ -71,6 +72,7 @@ public sealed class WorkResolutionService
             db, sp.GetRequiredService<OpenLibraryClient>(), sp.GetRequiredService<IFileSystem>());
 
         var archiveLeaf = await ArchivePolicy.LoadLeafAsync(db, ct);
+        var maxPerRun = await JobRunLimits.GetAsync(db, AppSettingKeys.ResolveWorksMaxPerRun, MaxPerRun, ct);
 
         // Author-linked, work-less files for which we extracted an ISBN. DB-only
         // selection (join the scan row by path) — no disk access on the NAS mount.
@@ -82,7 +84,7 @@ public sealed class WorkResolutionService
                   (f, s) => new { f.Id, s.Isbn, s.Title })
             .Where(x => x.Isbn != null && x.Isbn != "")
             .OrderBy(x => x.Id)
-            .Take(MaxPerRun)
+            .Take(maxPerRun)
             .ToListAsync(ct);
 
         int considered = 0, linked = 0, skipped = 0;

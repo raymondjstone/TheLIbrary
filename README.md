@@ -72,7 +72,7 @@ and wishlist.
 | Unmatched physical | `/physical-unmatched` | Editable list of physical-books-import rows that couldn't be matched; "Re-run matching" re-tries the whole list against the current library |
 | Sync | `/sync` | Live sync dashboard with phase tracking and progress |
 | Schedules | `/schedules` | Cron expressions and enabled/disabled flags for background jobs; a collapsible **"What this job does"** explainer and a per-job last-N-run history panel |
-| Settings | `/settings` | Library locations, incoming folder, custom quarantine (`__unknown`) folder override, Pushover credentials (+ "Send test"), ignored folders, blacklist, NZB sites, reMarkable pairing, book integrity check (max files per run + replacement formats), Goodreads + physical-books import |
+| Settings | `/settings` | Library locations, incoming folder, custom quarantine (`__unknown`) folder override, Pushover credentials (+ "Send test"), ignored folders, blacklist, NZB sites, reMarkable pairing, book integrity check (max files per run + replacement formats), **Background job run limits** (per-run caps for promote-manual-books, resolve-works, assign-authors, auto-replace-damaged, prune-authors — each defaults to the job's built-in cap), Goodreads + physical-books import |
 
 ## How it works
 
@@ -1406,8 +1406,9 @@ whose author can't be resolved are skipped and stay in the list; a row that carr
 its new author) so its series can then be built with the same **Build series** /
 **Build all series** action as the tracked rows. The same bulk action also runs
 as a **scheduled job** (`assign-authors`, default `*/15 * * * *`, enabled by
-default — capped at 100 rows per run so each firing stays within OpenLibrary's
-rate limit and the 15-minute schedule works through the backlog). Rows it
+default — capped per run (Settings → *Background job run limits*, default 1000)
+so each firing stays within OpenLibrary's rate limit and the 15-minute schedule
+works through the backlog). Rows it
 couldn't resolve (an unverifiable author name, a vanished file) are **durably
 marked attempted** (`BookContentScan.AssignAttemptedAt`) and skipped on every
 later run, so the job stops re-querying OpenLibrary for the same wall of
