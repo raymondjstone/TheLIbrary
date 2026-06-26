@@ -1736,6 +1736,7 @@ on every startup.
 | `disambiguate-folders` | `0 11 * * *` | Split shared-name author folders into per-OL-key folders; route files by title match |
 | `same-name-authors` | `0 */6 * * *` | Add OpenLibrary authors that share a name with one you already track — a pure DB lookup against the seeded `OpenLibraryAuthor` catalogue, no API calls |
 | `star-physical-authors` | `0 10 * * *` | Give 1 star to any author with at least one manually-owned physical book whose current star rating is 0 |
+| `star-series-coauthors` | `0 22 * * *` (**enabled** by default) | When a **starred** author writes for a series that **also** has volumes by other authors, give those co-authors **1 star** (if currently unstarred) so a shared series is followed across all its authors. Plain set-based update; only ever raises a 0 → 1 (reversible by unstarring) |
 | `cache-openlibrary-metadata` | `30 10 * * *` | Backfill missing subjects and cache large OpenLibrary covers for existing books |
 | `flatten-unknown` | `0 9 * * *` (disabled by default) | Flatten the quarantine fully: move every file under each quarantine folder up to the `__unknown` root and remove the emptied folder tree, so the quarantine is loose files only. See [the quarantine is flat](#the-__unknown-quarantine-is-flat) |
 | `dedupe-unknown` | `30 9 * * *` (disabled by default) | Delete byte-identical duplicate files inside the quarantine (size-grouped, then SHA-256-verified), keeping the shortest-path copy of each. See [Dedupe-unknown job](#dedupe-unknown-job) |

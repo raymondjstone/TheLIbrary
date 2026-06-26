@@ -47,6 +47,7 @@ public sealed class ScheduledJobs
     private readonly TheLibrary.Server.Services.Llm.LlmIdentificationService _llmIdentify;
     private readonly OtherEditionMarkerService _markOtherEditions;
     private readonly ReadEditionPropagationService _markEditionsRead;
+    private readonly SeriesCoAuthorStarService _starSeriesCoAuthors;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -80,6 +81,7 @@ public sealed class ScheduledJobs
         TheLibrary.Server.Services.Llm.LlmIdentificationService llmIdentify,
         OtherEditionMarkerService markOtherEditions,
         ReadEditionPropagationService markEditionsRead,
+        SeriesCoAuthorStarService starSeriesCoAuthors,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
@@ -91,6 +93,7 @@ public sealed class ScheduledJobs
         _contentScan = contentScan; _assignAuthors = assignAuthors; _fullText = fullText; _pruneAuthors = pruneAuthors;
         _dupAutoArchive = dupAutoArchive; _seriesWatch = seriesWatch; _autoReplaceDamaged = autoReplaceDamaged; _resolveWorks = resolveWorks;
         _llmIdentify = llmIdentify; _markOtherEditions = markOtherEditions; _markEditionsRead = markEditionsRead;
+        _starSeriesCoAuthors = starSeriesCoAuthors;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -311,6 +314,12 @@ public sealed class ScheduledJobs
         ScheduleJobIds.MarkEditionsRead, manualTrigger,
         ct => _markEditionsRead.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _markEditionsRead.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunStarSeriesCoAuthors(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.StarSeriesCoAuthors, manualTrigger,
+        ct => _starSeriesCoAuthors.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _starSeriesCoAuthors.IsRunning);
 
     internal Task RunWithPollingForTests(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,

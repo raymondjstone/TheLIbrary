@@ -15,6 +15,7 @@ const descriptions = {
     'disambiguate-folders': 'When two different authors share a folder name, splits them into distinct, correctly-named author folders so their books stop getting mixed up.',
     'same-name-authors': 'Adds OpenLibrary authors who share a name with one you own, so homonyms are catalogued and can be told apart instead of being silently merged.',
     'star-physical-authors': 'Gives a 1-star priority to authors you own only in physical form, so they are tracked for new releases alongside your ebook authors.',
+    'star-series-coauthors': 'When a starred author writes for a series that also has volumes by other authors, gives those co-authors 1 star (if not already starred) so a shared series is followed across all its authors. Additive and reversible — only ever raises a 0 to a 1.',
     'cache-openlibrary-metadata': 'Downloads and caches OpenLibrary cover images and subjects for owned books, in batches, so the UI renders covers and genres without live API calls.',
     'flatten-unknown': 'Flattens any author/title subfolders that have crept into the __unknown quarantine back into loose files (the quarantine is flat by design). Off by default.',
     'dedupe-unknown': 'Deletes byte-identical duplicate files inside the __unknown quarantine, keeping one copy per content hash. Destructive, so it ships disabled.',

@@ -49,6 +49,7 @@ public static class ScheduleJobIds
     public const string LlmIdentify = "llm-identify";
     public const string MarkOtherEditions = "mark-other-editions";
     public const string MarkEditionsRead = "mark-editions-read";
+    public const string StarSeriesCoAuthors = "star-series-coauthors";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
@@ -59,7 +60,7 @@ public static class ScheduleJobIds
         ArchiveForeign, MergeLinkedAuthors, CheckIntegrity, PruneStaleFiles,
         ContentScan, AssignAuthors, IndexFullText, PruneAuthors, DuplicateAutoArchive,
         SeriesWatch, AutoReplaceDamaged, ResolveWorks, LlmIdentify, MarkOtherEditions,
-        MarkEditionsRead
+        MarkEditionsRead, StarSeriesCoAuthors
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -154,5 +155,9 @@ public static class ScheduleJobIds
             // Read, mark every other edition Read too. Pure DB flag flip, runs
             // daily by default.
             [MarkEditionsRead] = new() { Cron = "0 18 * * *", Enabled = true },
+            // Give 1 star to the (unstarred) co-authors of any series a starred
+            // author writes for, so a shared series is followed across all its
+            // authors. Additive + reversible, so it runs daily by default.
+            [StarSeriesCoAuthors] = new() { Cron = "0 22 * * *", Enabled = true },
         };
 }

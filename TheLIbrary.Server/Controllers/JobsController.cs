@@ -36,6 +36,7 @@ public class JobsController : ControllerBase
     private readonly TheLibrary.Server.Services.Llm.LlmIdentificationService _llmIdentify;
     private readonly OtherEditionMarkerService _markOtherEditions;
     private readonly ReadEditionPropagationService _markEditionsRead;
+    private readonly SeriesCoAuthorStarService _starSeriesCoAuthors;
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly OpenLibraryRateLimiter _rateLimiter;
@@ -69,6 +70,7 @@ public class JobsController : ControllerBase
         TheLibrary.Server.Services.Llm.LlmIdentificationService llmIdentify,
         OtherEditionMarkerService markOtherEditions,
         ReadEditionPropagationService markEditionsRead,
+        SeriesCoAuthorStarService starSeriesCoAuthors,
         BackgroundTaskCoordinator coordinator,
         IHostApplicationLifetime lifetime,
         OpenLibraryRateLimiter rateLimiter,
@@ -101,6 +103,7 @@ public class JobsController : ControllerBase
         _llmIdentify = llmIdentify;
         _markOtherEditions = markOtherEditions;
         _markEditionsRead = markEditionsRead;
+        _starSeriesCoAuthors = starSeriesCoAuthors;
         _coordinator = coordinator;
         _lifetime = lifetime;
         _rateLimiter = rateLimiter;
@@ -148,6 +151,7 @@ public class JobsController : ControllerBase
             llmIdentify = new { isRunning = _llmIdentify.IsRunning, message = _llmIdentify.CurrentMessage },
             markOtherEditions = new { isRunning = _markOtherEditions.IsRunning, message = _markOtherEditions.CurrentMessage },
             markEditionsRead = new { isRunning = _markEditionsRead.IsRunning, message = _markEditionsRead.CurrentMessage },
+            starSeriesCoAuthors = new { isRunning = _starSeriesCoAuthors.IsRunning, message = _starSeriesCoAuthors.CurrentMessage },
         });
     }
 
@@ -363,6 +367,14 @@ public class JobsController : ControllerBase
     public IActionResult StartMarkEditionsRead()
     {
         if (!_markEditionsRead.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("star-series-coauthors/start")]
+    public IActionResult StartStarSeriesCoAuthors()
+    {
+        if (!_starSeriesCoAuthors.TryStart(_lifetime.ApplicationStopping, out var err))
             return Conflict(new { error = err });
         return Accepted();
     }

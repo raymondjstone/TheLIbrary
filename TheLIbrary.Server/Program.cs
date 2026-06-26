@@ -78,6 +78,7 @@ builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.SeriesOrganizerSer
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.AuthorFolderDisambiguatorService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.SameNameAuthorService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.PhysicalAuthorStarService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.SeriesCoAuthorStarService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.OtherEditionMarkerService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.ReadEditionPropagationService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnzipService>();

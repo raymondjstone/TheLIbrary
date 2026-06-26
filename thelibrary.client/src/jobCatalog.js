@@ -42,6 +42,7 @@ export const JOB_CATEGORIES = [
             { id: 'same-name-authors', label: 'Same-name authors', statusKey: 'sameNames', manualEndpoint: '/api/jobs/same-names/start' },
             { id: 'disambiguate-folders', label: 'Disambiguate folders', statusKey: 'disambiguator', manualEndpoint: '/api/jobs/disambiguator/start' },
             { id: 'star-physical-authors', label: 'Star physical authors', statusKey: 'physicalStars', manualEndpoint: '/api/jobs/physical-stars/start' },
+            { id: 'star-series-coauthors', label: 'Star series co-authors', statusKey: 'starSeriesCoAuthors', manualEndpoint: '/api/jobs/star-series-coauthors/start' },
             { id: 'adopt-unknown-authors', label: 'Adopt unknown authors', statusKey: 'adoptUnknownAuthors', manualEndpoint: '/api/jobs/adopt-unknown-authors/start' },
             { id: 'merge-linked-authors', label: 'Merge linked authors', statusKey: 'mergeLinkedAuthors', manualEndpoint: '/api/jobs/merge-linked-authors/start' },
             { id: 'prune-authors', label: 'Prune empty authors', statusKey: 'pruneAuthors', manualEndpoint: '/api/jobs/prune-authors/start' },
