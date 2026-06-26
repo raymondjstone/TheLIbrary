@@ -677,9 +677,10 @@ public partial class AuthorsController : ControllerBase
         // Shared/co-authored series: when one of THIS author's series also holds
         // volumes by OTHER authors, pull those volumes in so the FULL series shows
         // on every participating author's page — not just each author's own slice.
-        // They're tagged with OtherAuthorName and carry no file detail (DB-level
-        // owned flag only, no NAS reads); the UI renders them read-only and keeps
-        // the page's own counts/actions to this author's books.
+        // They're tagged with OtherAuthorName (the UI shows a "by …" byline and
+        // keeps the page's own counts/actions to this author's books) but otherwise
+        // go through the SAME file resolution as own books, so their local copies
+        // show inline exactly like the current author's.
         var ownSeriesIds = books
             .Where(b => b.SeriesId != null)
             .Select(b => b.SeriesId!.Value)
@@ -687,7 +688,7 @@ public partial class AuthorsController : ControllerBase
             .ToList();
         if (ownSeriesIds.Count > 0)
         {
-            var coAuthorBooks = await _db.Books.AsNoTracking()
+            var rawCoAuthor = await _db.Books.AsNoTracking()
                 .Where(b => b.SeriesId != null && ownSeriesIds.Contains(b.SeriesId.Value)
                          && !foldedIds.Contains(b.AuthorId)
                          && !b.Suppressed)
@@ -701,30 +702,38 @@ public partial class AuthorsController : ControllerBase
                     SeriesName = b.Series != null ? b.Series.Name : null, b.SeriesId,
                     SeriesPrimaryAuthorName = b.Series != null && b.Series.PrimaryAuthor != null ? b.Series.PrimaryAuthor.Name : null,
                     b.SeriesPosition,
-                    HasFiles = b.LocalFiles.Any(),
+                    Files = b.LocalFiles.Select(f => new { f.Id, f.FullPath }).ToList()
                 })
                 .ToListAsync(ct);
 
-            books.AddRange(coAuthorBooks.Select(b => new BookRow(
-                b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
-                b.ManuallyOwned || b.OwnedDifferentEdition || b.HasFiles,
-                b.ManuallyOwned,
-                b.HasFiles,
-                b.ReadStatus.ToString(),
-                b.ReadAt,
-                b.Wanted,
-                b.Subjects,
-                b.SeriesName,
-                b.SeriesPosition,
-                new List<LocalFileRow>(),
-                b.SeriesId,
-                b.SeriesPrimaryAuthorName,
-                b.CoverUrl,
-                b.AuthorId,
-                false,
-                b.Foreign,
-                b.OwnedDifferentEdition,
-                b.AuthorName)));
+            books.AddRange(rawCoAuthor.Select(b =>
+            {
+                // Same disk resolution as own books — drop phantom folder rows.
+                var realFiles = b.Files
+                    .Select(f => { var (fmts, ok) = ResolveLocalCopy(f.FullPath); return (f.Id, f.FullPath, Formats: fmts, IsReal: ok); })
+                    .Where(f => f.IsReal)
+                    .ToList();
+                return new BookRow(
+                    b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
+                    b.ManuallyOwned || b.OwnedDifferentEdition || realFiles.Count > 0,
+                    b.ManuallyOwned,
+                    realFiles.Count > 0,
+                    b.ReadStatus.ToString(),
+                    b.ReadAt,
+                    b.Wanted,
+                    b.Subjects,
+                    b.SeriesName,
+                    b.SeriesPosition,
+                    realFiles.Select(f => new LocalFileRow(f.Id, f.FullPath, f.Formats, IsUnderArchiveFolder(f.FullPath, archiveLeaf))).ToList(),
+                    b.SeriesId,
+                    b.SeriesPrimaryAuthorName,
+                    b.CoverUrl,
+                    b.AuthorId,
+                    false,
+                    b.Foreign,
+                    b.OwnedDifferentEdition,
+                    b.AuthorName);
+            }));
         }
 
         // Include orphan rows (AuthorId == null) whose library folder matches

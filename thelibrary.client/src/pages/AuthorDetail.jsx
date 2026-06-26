@@ -1486,6 +1486,16 @@ export default function AuthorDetail() {
                 <span className="subtle" style={{ marginLeft: '0.4rem', fontSize: '0.82em' }}>
                     by <Link to={`/authors/${b.authorId}`}>{b.otherAuthorName}</Link>
                 </span>
+                {b.hasLocalFiles
+                    ? <div className="subtle">
+                        <BookFiles files={b.files}
+                            rmConnected={rmConnected}
+                            sendBusyIds={sendBusyIds}
+                            onSend={sendToRemarkable}
+                            onUnmatch={unmatchFile}
+                            onPreview={openPreview} />
+                    </div>
+                    : null}
             </td>
             <td style={{ whiteSpace: 'nowrap' }}>{b.firstPublishYear ?? '—'}</td>
             <td>{ownedLabel(b)}</td>
