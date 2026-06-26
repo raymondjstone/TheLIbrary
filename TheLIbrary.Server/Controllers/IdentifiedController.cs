@@ -17,8 +17,13 @@ namespace TheLibrary.Server.Controllers;
 public class IdentifiedController : ControllerBase
 {
     private readonly LibraryDbContext _db;
+    private readonly ILogger<IdentifiedController> _log;
 
-    public IdentifiedController(LibraryDbContext db) => _db = db;
+    public IdentifiedController(LibraryDbContext db, ILogger<IdentifiedController> log)
+    {
+        _db = db;
+        _log = log;
+    }
 
     // Confidence floor for fuzzily linking a catalogue title to an owned book.
     // Both sides are already normalized (articles/punctuation stripped), so this
@@ -221,35 +226,99 @@ public class IdentifiedController : ControllerBase
         return Ok(result);
     }
 
+    public sealed record CatalogBuildFailure(int AuthorId, string AuthorName, string Reason);
+
     public sealed record ApplyCatalogAllResult(
-        int AuthorsBuilt, int SeriesCreated, int SeriesReused, int BooksLinked, int PositionsFixed, int TitlesAdded);
+        int AuthorsBuilt, int SeriesCreated, int SeriesReused, int BooksLinked, int PositionsFixed, int TitlesAdded,
+        // Chunking / progress fields so the client can drive this in safe batches
+        // (the whole library can be tens of thousands of authors — doing it in one
+        // request times out behind the reverse proxy).
+        int Processed, int Remaining, int LastAuthorId, bool Done,
+        IReadOnlyList<CatalogBuildFailure> Failures);
 
     /// <summary>
-    /// Bulk version of apply-catalog: builds series for EVERY author that has a
-    /// content catalogue. Series-only — it never touches the book-title or author
-    /// guesses. POST /api/identified/apply-catalog-all
+    /// Bulk version of apply-catalog: builds series for authors that have a content
+    /// catalogue. Series-only — it never touches the book-title or author guesses.
+    /// Processed in CHUNKS (authors ordered by id, only those with id &gt; afterAuthorId,
+    /// up to <paramref name="batch"/>) so a library with thousands of authors doesn't
+    /// blow the request timeout: the client calls this repeatedly, passing back the
+    /// previous response's LastAuthorId, until Done. Each author is built and committed
+    /// independently and wrapped in its own try/catch, so one author that can't be
+    /// built is recorded in Failures and skipped instead of aborting the whole run.
+    /// POST /api/identified/apply-catalog-all?afterAuthorId=0&amp;batch=50
     /// </summary>
     [HttpPost("apply-catalog-all")]
-    public async Task<ActionResult<ApplyCatalogAllResult>> ApplyCatalogAll(CancellationToken ct)
+    public async Task<ActionResult<ApplyCatalogAllResult>> ApplyCatalogAll(
+        [FromQuery] int afterAuthorId = 0, [FromQuery] int batch = 50, CancellationToken ct = default)
     {
-        var authorIds = await _db.BookContentScans
-            .Where(c => c.AuthorId != null && c.SeriesCatalogJson != null)
-            .Select(c => c.AuthorId!.Value).Distinct().ToListAsync(ct);
+        batch = Math.Clamp(batch, 1, 500);
 
-        int built = 0, created = 0, reused = 0, linked = 0, fixedPos = 0, added = 0;
-        foreach (var aid in authorIds)
+        var pending = await _db.BookContentScans
+            .Where(c => c.AuthorId != null && c.SeriesCatalogJson != null && c.AuthorId > afterAuthorId)
+            .Select(c => c.AuthorId!.Value).Distinct()
+            .OrderBy(id => id)
+            .ToListAsync(ct);
+
+        var slice = pending.Take(batch).ToList();
+
+        int built = 0, created = 0, reused = 0, linked = 0, fixedPos = 0, added = 0, processed = 0;
+        var lastId = afterAuthorId;
+        var failures = new List<CatalogBuildFailure>();
+
+        foreach (var aid in slice)
         {
             ct.ThrowIfCancellationRequested();
+            processed++;
+            lastId = aid;
+
             var author = await _db.Authors.FirstOrDefaultAsync(a => a.Id == aid, ct);
-            if (author is null) continue;
-            var r = await BuildSeriesForAuthorAsync(author, ct);
-            _db.ChangeTracker.Clear(); // keep the tracker from growing across authors
-            if (r is null) continue;
-            built++;
-            created += r.SeriesCreated; reused += r.SeriesReused;
-            linked += r.BooksLinked; fixedPos += r.PositionsFixed; added += r.TitlesAdded;
+            if (author is null) { _db.ChangeTracker.Clear(); continue; }
+
+            try
+            {
+                var r = await BuildSeriesForAuthorAsync(author, ct);
+                if (r is not null)
+                {
+                    built++;
+                    created += r.SeriesCreated; reused += r.SeriesReused;
+                    linked += r.BooksLinked; fixedPos += r.PositionsFixed; added += r.TitlesAdded;
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                // One author's catalogue can't be built (almost always a data clash
+                // for that author) — record why and move on rather than 500-ing the
+                // whole batch.
+                failures.Add(new CatalogBuildFailure(aid, author.Name, DescribeBuildError(ex)));
+                _log.LogWarning(ex, "apply-catalog-all: building series for author {Id} ({Name}) failed", aid, author.Name);
+            }
+            finally
+            {
+                // Always reset the tracker so a partially-built (or failed) author
+                // can't leak entities into the next one.
+                _db.ChangeTracker.Clear();
+            }
         }
-        return Ok(new ApplyCatalogAllResult(built, created, reused, linked, fixedPos, added));
+
+        var remaining = pending.Count - processed;
+        return Ok(new ApplyCatalogAllResult(
+            built, created, reused, linked, fixedPos, added,
+            processed, Math.Max(0, remaining), lastId, remaining <= 0, failures));
+    }
+
+    // Turn an exception from building one author's series into a short, plain-English
+    // reason the UI can show. DbUpdateException wraps the real provider error in its
+    // inner exception, so reach for that first.
+    private static string DescribeBuildError(Exception ex)
+    {
+        var msg = (ex as DbUpdateException)?.InnerException?.Message ?? ex.Message;
+        if (msg.Contains("duplicate key", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase))
+            return "a uniqueness conflict in the database (a series or book that clashes with one that already exists)";
+        if (msg.Contains("timeout", StringComparison.OrdinalIgnoreCase))
+            return "the database timed out building this author";
+        return msg.Length > 200 ? msg[..200] + "…" : msg;
     }
 
     // Core of apply-catalog for one author: merges every catalogue the author's

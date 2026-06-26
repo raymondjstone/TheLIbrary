@@ -84,21 +84,56 @@ export default function IdentifiedBooks() {
     const untrackedAssignable = (rows ?? []).filter(r => r.source === 'untracked' && (r.author || r.isbn || r.title)).length
 
     const [catalogBusy, setCatalogBusy] = useState(false)
-    // Build series for EVERY author with a catalogue in one go — series only,
-    // never touches the book-title or author guesses.
+    const [catalogProgress, setCatalogProgress] = useState(null)
+    // Build series for EVERY author with a catalogue — series only, never touches
+    // the book-title or author guesses. Driven in CHUNKS: the whole library can be
+    // tens of thousands of authors, so a single request would time out behind the
+    // proxy. We call the endpoint repeatedly, passing back the last author id each
+    // time, until it reports Done — and each author is built independently server-
+    // side so one that can't be built is skipped and reported, not fatal.
     const buildAllSeries = async () => {
         if (!window.confirm('Build series from the catalogues of every author listed here? This creates/updates series and slots in matching books (owned and not-yet-owned). It does not change any book-title or author guesses.')) return
         setCatalogBusy(true)
+        setCatalogProgress({ processed: 0, remaining: null })
+        const totals = { authorsBuilt: 0, seriesCreated: 0, seriesReused: 0, booksLinked: 0, positionsFixed: 0, titlesAdded: 0, processed: 0 }
+        const failures = []
         try {
-            const r = await fetch('/api/identified/apply-catalog-all', { method: 'POST' })
-            const body = await r.json().catch(() => ({}))
-            if (!r.ok) throw new Error(body.error || r.statusText)
-            alert(`Built series for ${body.authorsBuilt} author(s): created ${body.seriesCreated}, reused ${body.seriesReused}; ${body.booksLinked} owned book(s) linked, ${body.titlesAdded} not-yet-owned title(s) added, ${body.positionsFixed} position(s) corrected.`)
+            let after = 0
+            // Hard guard against an infinite loop if the server ever stops advancing.
+            for (let guard = 0; guard < 100000; guard++) {
+                const r = await fetch(`/api/identified/apply-catalog-all?afterAuthorId=${after}&batch=50`, { method: 'POST' })
+                const body = await r.json().catch(() => ({}))
+                if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`)
+
+                totals.authorsBuilt += body.authorsBuilt ?? 0
+                totals.seriesCreated += body.seriesCreated ?? 0
+                totals.seriesReused += body.seriesReused ?? 0
+                totals.booksLinked += body.booksLinked ?? 0
+                totals.positionsFixed += body.positionsFixed ?? 0
+                totals.titlesAdded += body.titlesAdded ?? 0
+                totals.processed += body.processed ?? 0
+                if (body.failures?.length) failures.push(...body.failures)
+
+                setCatalogProgress({ processed: totals.processed, remaining: body.remaining ?? null })
+
+                if (body.done) break
+                if ((body.processed ?? 0) === 0) break // no progress — stop rather than spin
+                after = body.lastAuthorId
+            }
+
+            let msg = `Built series for ${totals.authorsBuilt} author(s): created ${totals.seriesCreated}, reused ${totals.seriesReused}; ${totals.booksLinked} owned book(s) linked, ${totals.titlesAdded} not-yet-owned title(s) added, ${totals.positionsFixed} position(s) corrected.`
+            if (failures.length) {
+                const sample = failures.slice(0, 5).map(f => `• ${f.authorName}: ${f.reason}`).join('\n')
+                msg += `\n\n${failures.length} author(s) were skipped because their catalogue couldn't be built. That's per-author — it means that author's series clashed with existing data (usually a duplicate series or book), NOT that the whole operation failed. Everything above was still applied. The skipped ones:\n\n${sample}`
+                if (failures.length > 5) msg += `\n…and ${failures.length - 5} more.`
+            }
+            alert(msg)
             load()
         } catch (e) {
-            alert(`Failed: ${e.message}`)
+            alert(`Build all series stopped early: ${e.message}\n\nThis is usually a timeout or a server error on one chunk, not a problem with your data. Progress so far has already been saved — each author is committed as it's built — so you can just run it again to continue. Re-running is safe: already-built series are reused, not duplicated.`)
         } finally {
             setCatalogBusy(false)
+            setCatalogProgress(null)
         }
     }
 
@@ -368,7 +403,9 @@ export default function IdentifiedBooks() {
                 <div className="toolbar">
                     <button onClick={buildAllSeries} disabled={catalogBusy}
                             title="Build series from every listed author's catalogue at once — series only, leaves book-title and author guesses alone">
-                        {catalogBusy ? 'Building…' : 'Build all series'}
+                        {catalogBusy
+                            ? `Building… ${catalogProgress?.processed ?? 0} done${catalogProgress?.remaining != null ? `, ${catalogProgress.remaining} left` : ''}`
+                            : 'Build all series'}
                     </button>
                     <span className="subtle">Applies every series catalogue below (across all authors). Doesn't touch book-title or author guesses.</span>
                 </div>

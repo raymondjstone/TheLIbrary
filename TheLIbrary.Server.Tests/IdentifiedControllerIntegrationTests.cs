@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using TheLibrary.Server.Controllers;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
@@ -75,7 +76,7 @@ public class IdentifiedControllerIntegrationTests
             await s.SaveChangesAsync();
         }
         await using var db = rdb.NewContext();
-        var rows = await new IdentifiedController(db).Get(null, default);
+        var rows = await new IdentifiedController(db, NullLogger<IdentifiedController>.Instance).Get(null, default);
         // The older untracked row must come first despite the tracked row being newer.
         Assert.Equal(2, rows[0].Id);
         Assert.Equal("Marc Brandle", rows[0].Author);
@@ -101,7 +102,7 @@ public class IdentifiedControllerIntegrationTests
             await s.SaveChangesAsync();
         }
         await using var db = rdb.NewContext();
-        var ids = (await new IdentifiedController(db).Get(null, default)).Select(r => r.Id).ToHashSet();
+        var ids = (await new IdentifiedController(db, NullLogger<IdentifiedController>.Instance).Get(null, default)).Select(r => r.Id).ToHashSet();
         Assert.DoesNotContain(1, ids);   // author-only hidden
         Assert.Contains(2, ids);         // title shown
         Assert.Contains(3, ids);         // catalogue shown
@@ -125,7 +126,7 @@ public class IdentifiedControllerIntegrationTests
         }
         await using (var db = rdb.NewContext())
         {
-            var r = await new IdentifiedController(db).DeleteFile(1, default);
+            var r = await new IdentifiedController(db, NullLogger<IdentifiedController>.Instance).DeleteFile(1, default);
             Assert.IsType<OkObjectResult>(r.Result);
         }
 
@@ -146,7 +147,7 @@ public class IdentifiedControllerIntegrationTests
             await s.SaveChangesAsync();
         }
         await using var db = rdb.NewContext();
-        var r = await new IdentifiedController(db).DeleteFile(1, default);
+        var r = await new IdentifiedController(db, NullLogger<IdentifiedController>.Instance).DeleteFile(1, default);
         Assert.IsType<BadRequestObjectResult>(r.Result);   // only untracked files deletable here
     }
 
@@ -167,7 +168,7 @@ public class IdentifiedControllerIntegrationTests
         }
         await using (var db = rdb.NewContext())
         {
-            var result = await new IdentifiedController(db).DismissAll(null, default);
+            var result = await new IdentifiedController(db, NullLogger<IdentifiedController>.Instance).DismissAll(null, default);
             Assert.Equal(2, result.Dismissed);
         }
         await using var v = rdb.NewContext();
@@ -399,6 +400,48 @@ public class IdentifiedControllerIntegrationTests
         Assert.Contains("Saga A", names);
         Assert.Contains("Saga B", names);
         Assert.Equal(2, await db.Series.Where(s => s.PrimaryAuthorId == 1).CountAsync() + await db.Series.Where(s => s.PrimaryAuthorId == 2).CountAsync());
+    }
+
+    [Fact]
+    public async Task ApplyCatalogAll_Processes_In_Chunks_Reporting_Progress()
+    {
+        using var factory = new LibraryApiFactory();
+        var cat1 = System.Text.Json.JsonSerializer.Serialize(new[]
+        {
+            new { Series = "Saga A", Genre = (string?)null, Titles = new[] { "A One" } },
+        });
+        var cat2 = System.Text.Json.JsonSerializer.Serialize(new[]
+        {
+            new { Series = "Saga B", Genre = (string?)null, Titles = new[] { "B One" } },
+        });
+
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Author One" });
+            db.Authors.Add(new Author { Id = 2, Name = "Author Two" });
+            db.BookContentScans.AddRange(
+                new BookContentScan { Id = 5, FullPath = "/b/1.epub", Source = "unmatched", AuthorId = 1, SeriesCatalogJson = cat1, ScannedAt = DateTime.UtcNow },
+                new BookContentScan { Id = 6, FullPath = "/b/2.epub", Source = "unmatched", AuthorId = 2, SeriesCatalogJson = cat2, ScannedAt = DateTime.UtcNow });
+        });
+
+        using var client = factory.CreateClient();
+
+        // First chunk: one author, more remaining, not done.
+        var resp1 = await client.PostAsync("/api/identified/apply-catalog-all?afterAuthorId=0&batch=1", null);
+        var b1 = await resp1.Content.ReadFromJsonAsync<IdentifiedController.ApplyCatalogAllResult>();
+        Assert.Equal(1, b1!.AuthorsBuilt);
+        Assert.Equal(1, b1.Processed);
+        Assert.Equal(1, b1.Remaining);
+        Assert.False(b1.Done);
+        Assert.Equal(1, b1.LastAuthorId);
+
+        // Second chunk, resuming after the first author: builds the rest, done.
+        var resp2 = await client.PostAsync($"/api/identified/apply-catalog-all?afterAuthorId={b1.LastAuthorId}&batch=1", null);
+        var b2 = await resp2.Content.ReadFromJsonAsync<IdentifiedController.ApplyCatalogAllResult>();
+        Assert.Equal(1, b2!.AuthorsBuilt);
+        Assert.Equal(0, b2.Remaining);
+        Assert.True(b2.Done);
+        Assert.Empty(b2.Failures);
     }
 
     [Fact]

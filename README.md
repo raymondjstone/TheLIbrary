@@ -1343,7 +1343,15 @@ button only appears when the file is linked to an author. `POST
 /api/identified/{id}/apply-catalog`. A page-level **Build all series** button does
 the same for **every** author listed at once (`POST
 /api/identified/apply-catalog-all`) — series only; it never touches the book-title
-or author guesses.
+or author guesses. Because the whole library can be tens of thousands of authors,
+this runs in **chunks** (the client calls the endpoint repeatedly with
+`afterAuthorId`/`batch`, showing live progress, until the response says `Done`) so
+it can't blow the reverse-proxy request timeout. Each author is built and
+committed **independently** inside its own try/catch: one author whose catalogue
+clashes with existing data is recorded in `Failures` (with a plain-English reason)
+and skipped, instead of aborting the whole run — and the final dialog reports how
+many were skipped and why. Re-running is safe (already-built series are reused),
+so an interrupted run just continues where it left off.
 
 Guesses are written to a `BookContentScan` row and surfaced on the **Identified
 Books** page (`/identified`) for you to review. A row only appears when it adds
