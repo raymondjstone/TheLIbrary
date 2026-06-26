@@ -293,6 +293,12 @@ public sealed class AuthorRefresher
                 manual.NormalizedTitle = normTitle;
                 if (doc.FirstPublishYear is not null) manual.FirstPublishYear = ClampPublishYear(doc.FirstPublishYear);
                 if (doc.CoverId is not null) manual.CoverId = doc.CoverId;
+                // The placeholder carried the mint date (when the series builder
+                // created it). Now that we know the real publish year, re-date a
+                // PAST-year book to 1 Jan of that year so it doesn't masquerade as a
+                // new release; leave a this-year/unknown one on its live date.
+                if (Book.CreatedAtForPublishYear(manual.FirstPublishYear) is { } promotedDate)
+                    manual.CreatedAt = promotedDate;
                 if (string.IsNullOrEmpty(manual.Subjects)) manual.Subjects = BuildSubjects(doc.Subject);
                 if (manual.SeriesId is null && seriesName is not null)
                     manual.SeriesId = (await FindOrCreateSeriesAsync(seriesName, author.Id, ct)).Id;

@@ -158,6 +158,12 @@ public sealed class ManualBookPromotionService
                     }
                     if (doc.FirstPublishYear is not null) book.FirstPublishYear = doc.FirstPublishYear;
                     if (doc.CoverId is not null) book.CoverId = doc.CoverId;
+                    // Re-date a PAST-year book to 1 Jan of its publish year so it
+                    // doesn't surface as a new release (the manual row kept the date
+                    // from when it was hand-added / minted as a placeholder); leave a
+                    // this-year/unknown one on its live date.
+                    if (Book.CreatedAtForPublishYear(book.FirstPublishYear) is { } promotedDate)
+                        book.CreatedAt = promotedDate;
                     promoted++;
                     _log.LogInformation(
                         "Promote-manual-books: linked \"{Title}\" to OL work {Key} for {Author}",

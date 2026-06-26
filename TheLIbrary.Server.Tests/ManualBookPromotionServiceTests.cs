@@ -52,6 +52,7 @@ public class ManualBookPromotionServiceTests
         Assert.True(book.ManuallyOwned);                  // ownership kept
         Assert.Equal(1999, book.FirstPublishYear);        // OL fields refreshed
         Assert.Equal(42, book.CoverId);
+        Assert.Equal(new DateTime(1999, 1, 1, 0, 0, 0, DateTimeKind.Utc), book.CreatedAt); // past-year → re-dated, not "today"
     }
 
     [Fact]
