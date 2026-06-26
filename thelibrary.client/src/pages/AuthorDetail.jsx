@@ -982,7 +982,7 @@ export default function AuthorDetail() {
     const markAllMissingWanted = async () => {
         if (!data) return
         const missingIds = data.books
-            .filter(b => !b.owned && !b.wanted)
+            .filter(b => !b.owned && !b.wanted && !b.otherAuthorName)
             .map(b => b.id)
         if (!missingIds.length) return
         setMarkingAllWanted(true)
@@ -1393,10 +1393,15 @@ export default function AuthorDetail() {
 
     // Suppressed books are rendered in a dedicated section at the very bottom
     // so they're still toggleable but don't clutter the main list.
+    // This author's OWN books (everything except read-only volumes pulled in from a
+    // co-author of a shared series). Counts, the owned-only filter, bulk actions and
+    // the file-matching pickers all use ownBooks; the series rendering uses the full
+    // set so a shared series shows every author's volumes.
+    const ownBooks = data.books.filter(b => !b.otherAuthorName)
     const ownedFiltered = ownedOnly ? data.books.filter(b => b.owned) : data.books
     const visibleBooks = ownedFiltered.filter(b => !b.suppressed)
-    const suppressedBooks = ownedFiltered.filter(b => b.suppressed)
-    const ownedCount = data.books.filter(b => b.owned).length
+    const suppressedBooks = ownedFiltered.filter(b => b.suppressed && !b.otherAuthorName)
+    const ownedCount = ownBooks.filter(b => b.owned).length
 
     // Series suggestions for the datalist: all series where this author is primary
     // or secondary, plus any series already on books on this page. Typing a name
@@ -1463,6 +1468,32 @@ export default function AuthorDetail() {
         if (status === 'Dnf') return '✗'
         return ''
     }
+
+    // A volume from a CO-AUTHOR of a shared series — rendered read-only so the full
+    // series shows on this author's page, with a byline linking to that author's own
+    // page (where it can be edited/owned). No per-book controls here.
+    const renderCoAuthorRow = (b, series, position, clusterIdx) => (
+        <tr key={b.id} id={`book-${b.id}`}
+            className={`other-author${b.owned ? '' : ' missing'}${b.id === highlightId ? ' book-target' : ''}`}>
+            <td>{bookCoverSrc(b)
+                ? <img className="cover-img" alt="" loading="lazy" src={bookCoverSrc(b)} />
+                : null}</td>
+            {series && <td style={{ textAlign: 'center', fontWeight: 600, fontSize: '0.85rem', color: 'var(--subtle)', whiteSpace: 'nowrap' }}>
+                {position != null ? (clusterIdx === 0 ? `#${position}` : <span style={{ opacity: 0.35 }}>#{position}</span>) : ''}
+            </td>}
+            <td>
+                <WorkTitle workKey={b.openLibraryWorkKey} title={b.title} />
+                <span className="subtle" style={{ marginLeft: '0.4rem', fontSize: '0.82em' }}>
+                    by <Link to={`/authors/${b.authorId}`}>{b.otherAuthorName}</Link>
+                </span>
+            </td>
+            <td style={{ whiteSpace: 'nowrap' }}>{b.firstPublishYear ?? '—'}</td>
+            <td>{ownedLabel(b)}</td>
+            <td><span title={b.readStatus}>{readStatusIcon(b.readStatus)}</span></td>
+            <td></td>
+            <td></td>
+        </tr>
+    )
 
     const goBack = () => {
         if (window.history.length > 1) navigate(-1)
@@ -1701,7 +1732,7 @@ export default function AuthorDetail() {
                         + Add book
                     </button>
                 )}
-                {data.books.some(b => !b.owned && !b.wanted) && (
+                {ownBooks.some(b => !b.owned && !b.wanted) && (
                     <button className="btn-ghost"
                             disabled={markingAllWanted}
                             onClick={markAllMissingWanted}
@@ -1717,7 +1748,7 @@ export default function AuthorDetail() {
                         Send all unread to reMarkable
                     </button>
                 )}
-                <span className="count">{ownedCount} owned / {data.books.length} total</span>
+                <span className="count">{ownedCount} owned / {ownBooks.length} total</span>
             </div>
             {refreshError && <p className="error">Refresh failed: {refreshError}</p>}
             {sendError && <p className="error">Send failed: {sendError}</p>}
@@ -1747,7 +1778,9 @@ export default function AuthorDetail() {
                 </thead>
                 <tbody>
                     {positionClusters.flatMap(({ position, titleGroups }) =>
-                        titleGroups.map(({ primary: b, editions }, clusterIdx) => (
+                        titleGroups.map(({ primary: b, editions }, clusterIdx) => {
+                        if (b.otherAuthorName) return renderCoAuthorRow(b, series, position, clusterIdx)
+                        return (
                         <React.Fragment key={b.id}>
                             <tr id={`book-${b.id}`} className={`${b.owned ? '' : 'missing'}${b.id === highlightId ? ' book-target' : ''}`}>
                                 <td>
@@ -1921,9 +1954,11 @@ export default function AuthorDetail() {
                                 </tr>
                             ))}
                         </React.Fragment>
-                    ))
+                    )})
                     )}
-                    {nullGroups.map(({ primary: b, editions }) => (
+                    {nullGroups.map(({ primary: b, editions }) => {
+                        if (b.otherAuthorName) return renderCoAuthorRow(b, series, undefined, undefined)
+                        return (
                         <React.Fragment key={b.id}>
                             <tr id={`book-${b.id}`} className={`${b.owned ? '' : 'missing'}${b.id === highlightId ? ' book-target' : ''}`}>
                                 <td>
@@ -2025,7 +2060,7 @@ export default function AuthorDetail() {
                                 </tr>
                             ))}
                         </React.Fragment>
-                    ))}
+                    )})}
                 </tbody>
             </table>
                 </div>
@@ -2033,7 +2068,7 @@ export default function AuthorDetail() {
 
             <UnmatchedFilesSection
                 unmatchedLocal={data.unmatchedLocal}
-                books={data.books}
+                books={ownBooks}
                 matchError={matchError}
                 matchBusyIds={matchBusyIds}
                 returnBusyIds={returnBusyIds}
@@ -2059,7 +2094,7 @@ export default function AuthorDetail() {
 
             <SameNameUnmatchedSection
                 groups={data.sameNameUnmatched ?? []}
-                books={data.books}
+                books={ownBooks}
                 error={sameNameError}
                 busyIds={sameNameBusy}
                 sel={sameNameSel} setSel={setSameNameSel}

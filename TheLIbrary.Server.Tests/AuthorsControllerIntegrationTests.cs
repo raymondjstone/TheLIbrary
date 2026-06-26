@@ -1465,6 +1465,32 @@ public class AuthorsControllerIntegrationTests
         Assert.Equal(new[] { 50 }, ids); // only the real ebook file
     }
 
+    [Fact]
+    public async Task Author_Detail_Includes_CoAuthor_Volumes_For_A_Shared_Series()
+    {
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Author One" });
+            db.Authors.Add(new Author { Id = 2, Name = "Author Two" });
+            db.Series.Add(new Series { Id = 5, Name = "Shared Saga", NormalizedName = "shared saga", PrimaryAuthorId = 1 });
+            db.Books.Add(new Book { Id = 10, AuthorId = 1, Title = "Vol One", NormalizedTitle = "vol one", OpenLibraryWorkKey = "OL1W", SeriesId = 5, SeriesPosition = "1", Subjects = "" });
+            db.Books.Add(new Book { Id = 11, AuthorId = 2, Title = "Vol Two", NormalizedTitle = "vol two", OpenLibraryWorkKey = "OL2W", SeriesId = 5, SeriesPosition = "2", Subjects = "" });
+            // A standalone book by author 2, NOT in the shared series — must not leak in.
+            db.Books.Add(new Book { Id = 12, AuthorId = 2, Title = "Solo", NormalizedTitle = "solo", OpenLibraryWorkKey = "OL3W", Subjects = "" });
+        });
+        using var client = factory.CreateClient();
+
+        var detail = await client.GetFromJsonAsync<AuthorsController.AuthorDetail>("/api/authors/1");
+
+        var own = detail!.Books.Single(b => b.Id == 10);
+        var co = detail.Books.Single(b => b.Id == 11);
+        Assert.Null(own.OtherAuthorName);                 // this author's own book
+        Assert.Equal("Author Two", co.OtherAuthorName);   // co-author volume, tagged
+        Assert.Equal(5, co.SeriesId);
+        Assert.DoesNotContain(detail.Books, b => b.Id == 12); // unrelated book stays out
+    }
+
     private static async Task SeedAsync(LibraryApiFactory factory, Action<LibraryDbContext> seed)
     {
         using var scope = factory.Services.CreateScope();

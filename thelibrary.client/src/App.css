@@ -108,6 +108,11 @@ main section > h2:first-child { margin: 0 0 1rem; font-size: 1.3rem; font-weight
 .grid tr.starred-row { background: var(--accent-bg); }
 .grid tr.starred-row:hover { filter: brightness(0.97); }
 
+/* A co-author's volume in a shared series, shown read-only on this author's page
+   (the "by …" byline links to that author). Tinted so it reads as context. */
+.grid tr.other-author > td { background: var(--card); }
+.grid tr.other-author:hover > td { filter: brightness(0.98); }
+
 /* A book row deep-linked from another page (/authors/:id#book-:bookId). It stays
    highlighted (accent tint + left bar) so it's obvious which item the link
    pointed at, and flashes once on arrival to draw the eye after the scroll.

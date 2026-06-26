@@ -435,7 +435,12 @@ public partial class AuthorsController : ControllerBase
         int AuthorId = 0,
         bool Suppressed = false,
         bool Foreign = false,
-        bool OwnedDifferentEdition = false);
+        bool OwnedDifferentEdition = false,
+        // Set only for books pulled in from a CO-AUTHOR of a shared series (so the
+        // full series shows on every participating author's page). null = this
+        // page's own book. The UI renders these read-only and excludes them from
+        // the page's own counts/actions.
+        string? OtherAuthorName = null);
 
     public sealed record LocalFileRow(int Id, string FullPath, IReadOnlyList<string> Formats, bool Archived);
 
@@ -668,6 +673,59 @@ public partial class AuthorsController : ControllerBase
                 b.OwnedDifferentEdition
             );
         }).ToList();
+
+        // Shared/co-authored series: when one of THIS author's series also holds
+        // volumes by OTHER authors, pull those volumes in so the FULL series shows
+        // on every participating author's page — not just each author's own slice.
+        // They're tagged with OtherAuthorName and carry no file detail (DB-level
+        // owned flag only, no NAS reads); the UI renders them read-only and keeps
+        // the page's own counts/actions to this author's books.
+        var ownSeriesIds = books
+            .Where(b => b.SeriesId != null)
+            .Select(b => b.SeriesId!.Value)
+            .Distinct()
+            .ToList();
+        if (ownSeriesIds.Count > 0)
+        {
+            var coAuthorBooks = await _db.Books.AsNoTracking()
+                .Where(b => b.SeriesId != null && ownSeriesIds.Contains(b.SeriesId.Value)
+                         && !foldedIds.Contains(b.AuthorId)
+                         && !b.Suppressed)
+                .OrderBy(b => b.Series!.Name).ThenBy(b => b.SeriesPosition)
+                    .ThenBy(b => b.FirstPublishYear ?? int.MaxValue).ThenBy(b => b.Title)
+                .Select(b => new
+                {
+                    b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.CoverUrl, b.OpenLibraryWorkKey,
+                    b.AuthorId, AuthorName = b.Author.Name, b.ManuallyOwned, b.OwnedDifferentEdition,
+                    b.ReadStatus, b.ReadAt, b.Wanted, b.Subjects, b.Foreign,
+                    SeriesName = b.Series != null ? b.Series.Name : null, b.SeriesId,
+                    SeriesPrimaryAuthorName = b.Series != null && b.Series.PrimaryAuthor != null ? b.Series.PrimaryAuthor.Name : null,
+                    b.SeriesPosition,
+                    HasFiles = b.LocalFiles.Any(),
+                })
+                .ToListAsync(ct);
+
+            books.AddRange(coAuthorBooks.Select(b => new BookRow(
+                b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
+                b.ManuallyOwned || b.OwnedDifferentEdition || b.HasFiles,
+                b.ManuallyOwned,
+                b.HasFiles,
+                b.ReadStatus.ToString(),
+                b.ReadAt,
+                b.Wanted,
+                b.Subjects,
+                b.SeriesName,
+                b.SeriesPosition,
+                new List<LocalFileRow>(),
+                b.SeriesId,
+                b.SeriesPrimaryAuthorName,
+                b.CoverUrl,
+                b.AuthorId,
+                false,
+                b.Foreign,
+                b.OwnedDifferentEdition,
+                b.AuthorName)));
+        }
 
         // Include orphan rows (AuthorId == null) whose library folder matches
         // any of the folded authors by name or recorded folder. Happens when the
