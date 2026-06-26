@@ -10,6 +10,7 @@ import { bookCoverSrc } from '../bookCover.js'
 export default function ManualBooks() {
     const [rows, setRows] = useState(null)
     const [error, setError] = useState(null)
+    const [nzbSites, setNzbSites] = useState([])
     const [editBook, setEditBook] = useState(null)
     const [titleFilter, setTitleFilter] = useState('')
     const [authorFilter, setAuthorFilter] = useState('')
@@ -25,6 +26,34 @@ export default function ManualBooks() {
             .catch(e => { setError(String(e)); setRows([]) })
     }
     useEffect(() => { load() }, [])
+
+    // External book-search links (Z-Library, NZB indexers, …) — the same options
+    // an OpenLibrary book gets in the other lists. A manual book isn't on OL, so
+    // these searches are the main way to actually go and find it.
+    useEffect(() => {
+        fetch('/api/nzb-sites')
+            .then(r => r.ok ? r.json() : [])
+            .then(sites => setNzbSites(sites.filter(s => s.active)))
+            .catch(() => {})
+    }, [])
+
+    const nzbLinks = (title, authorName) => {
+        if (!nzbSites.length) return null
+        const enc = s => encodeURIComponent(s)
+        const searchTerm = `${authorName} ${title}`.trim()
+        return nzbSites.map(site => {
+            const url = site.urlTemplate
+                .replace('{Title}', enc(title))
+                .replace('{Author}', enc(authorName))
+                .replace('{SearchTerm}', enc(searchTerm))
+            return (
+                <a key={site.id} href={url} target="_blank" rel="noreferrer"
+                    style={{ fontSize: '0.8em', marginRight: '0.4rem', whiteSpace: 'nowrap' }}>
+                    {site.name}
+                </a>
+            )
+        })
+    }
 
     const deleteBook = async (book) => {
         if (!confirm(`Delete "${book.title}"? Any local files linked to it become unmatched.`)) return
@@ -131,7 +160,8 @@ export default function ManualBooks() {
                     </thead>
                     <tbody>
                         {groups.map(g => (
-                            <GroupRows key={g.authorId} group={g} onEdit={setEditBook} onDelete={deleteBook} />
+                            <GroupRows key={g.authorId} group={g} onEdit={setEditBook} onDelete={deleteBook}
+                                       nzbSites={nzbSites} nzbLinks={nzbLinks} />
                         ))}
                         {groups.length === 0 && (
                             <tr><td colSpan={6} className="subtle">No manual books match the filters.</td></tr>
@@ -150,7 +180,7 @@ export default function ManualBooks() {
     )
 }
 
-function GroupRows({ group, onEdit, onDelete }) {
+function GroupRows({ group, onEdit, onDelete, nzbSites, nzbLinks }) {
     return (
         <>
             <tr>
@@ -166,7 +196,12 @@ function GroupRows({ group, onEdit, onDelete }) {
                     <td>{bookCoverSrc(b)
                         ? <img className="cover-img" alt="" loading="lazy" src={bookCoverSrc(b)} />
                         : null}</td>
-                    <td>{b.title}</td>
+                    <td>
+                        {b.title}
+                        {!b.owned && nzbSites.length > 0 && (
+                            <div style={{ marginTop: '0.2rem' }}>{nzbLinks(b.title, group.authorName)}</div>
+                        )}
+                    </td>
                     <td>{b.firstPublishYear ?? '—'}</td>
                     <td>{b.series
                         ? `${b.series}${b.seriesPosition ? ` #${b.seriesPosition}` : ''}`
