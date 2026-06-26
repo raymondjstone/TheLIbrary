@@ -129,16 +129,19 @@ public class DamagedController : ControllerBase
             .ToListAsync(ct);
         var count = paths.Count(BookIntegrityChecker.IsEbook);
 
-        // Backlog: files still awaiting a first/again integrity check — the same
+        // Backlog: files still awaiting a first/again integrity check — the EXACT
         // candidate predicate the job uses (book/author-linked, stamp missing or
-        // stale, not archived). A fast SQL COUNT; the job's in-memory ebook filter
-        // trims a little off this, so treat it as an upper bound for the gauge.
+        // stale, not archived, AND an ebook format the job actually checks). The
+        // ebook filter matters: without it the count also includes folder-pointer
+        // rows, cover images, .opf metadata and unsupported formats the job can
+        // never stamp, so the gauge would never reach zero however often it ran.
         var backlog = await _db.LocalBookFiles.AsNoTracking()
             .Where(f => f.BookId != null || f.AuthorId != null)
             .Where(f => f.IntegrityCheckedSize == null
                      || f.IntegrityCheckedSize != f.SizeBytes
                      || f.IntegrityCheckedModified != f.ModifiedAt)
             .Where(ArchivedFilesController.NotUnderArchive(archiveLeaf))
+            .Where(BookIntegrityService.CheckableEbookFile)
             .CountAsync(ct);
         return new JobStatus(_integrity.IsRunning, _integrity.CurrentMessage, count, backlog);
     }

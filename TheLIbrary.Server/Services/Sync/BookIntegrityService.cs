@@ -24,6 +24,21 @@ public sealed class BookIntegrityService
 {
     public const int DefaultMaxBooksPerRun = 200;
 
+    // EF-translatable "this LocalBookFile is an ebook format the integrity job
+    // checks" — the same extensions as BookIntegrityChecker.EbookExtensions, as an
+    // explicit OR of EndsWith so EF emits SQL LIKEs. Shared by the candidate query
+    // AND the Damaged page's backlog gauge so the gauge counts ONLY files the job
+    // can actually clear — not folder-pointer rows, cover images, .opf metadata,
+    // .pdb/.prc/.azw4 and the like, which otherwise sat in the count forever.
+    public static readonly System.Linq.Expressions.Expression<Func<LocalBookFile, bool>> CheckableEbookFile =
+        f => f.FullPath.EndsWith(".epub") || f.FullPath.EndsWith(".pdf")
+          || f.FullPath.EndsWith(".mobi") || f.FullPath.EndsWith(".azw")
+          || f.FullPath.EndsWith(".azw3") || f.FullPath.EndsWith(".fb2")
+          || f.FullPath.EndsWith(".cbz") || f.FullPath.EndsWith(".cbr")
+          || f.FullPath.EndsWith(".lit") || f.FullPath.EndsWith(".djvu")
+          || f.FullPath.EndsWith(".doc") || f.FullPath.EndsWith(".docx")
+          || f.FullPath.EndsWith(".rtf") || f.FullPath.EndsWith(".txt");
+
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly BookIntegrityChecker _checker;
@@ -143,14 +158,8 @@ public sealed class BookIntegrityService
             .Where(f => (f.BookId != null || f.AuthorId != null)
                 && (f.IntegrityCheckedSize == null
                     || f.IntegrityCheckedSize != f.SizeBytes
-                    || f.IntegrityCheckedModified != f.ModifiedAt)
-                && (f.FullPath.EndsWith(".epub") || f.FullPath.EndsWith(".pdf")
-                    || f.FullPath.EndsWith(".mobi") || f.FullPath.EndsWith(".azw")
-                    || f.FullPath.EndsWith(".azw3") || f.FullPath.EndsWith(".fb2")
-                    || f.FullPath.EndsWith(".cbz") || f.FullPath.EndsWith(".cbr")
-                    || f.FullPath.EndsWith(".lit") || f.FullPath.EndsWith(".djvu")
-                    || f.FullPath.EndsWith(".doc") || f.FullPath.EndsWith(".docx")
-                    || f.FullPath.EndsWith(".rtf") || f.FullPath.EndsWith(".txt")));
+                    || f.IntegrityCheckedModified != f.ModifiedAt))
+            .Where(CheckableEbookFile);
 
         // Priority order: unarchived before archived (an archived copy is already
         // out of the live library, so its health matters least), and within each
