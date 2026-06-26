@@ -92,6 +92,13 @@ public sealed class ManualBookPromotionService
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
         var ol = scope.ServiceProvider.GetRequiredService<OpenLibraryClient>();
 
+        // Phase 0 — DB only, no OpenLibrary. A manual placeholder that duplicates a
+        // real OL book already under the same author (the series builder mints these)
+        // doesn't need a web search to resolve: we already hold the canonical row, so
+        // fold it straight in. Unbounded (no OL calls → not subject to the per-run
+        // cap), so it clears the whole duplicate backlog every run.
+        var dbMerged = await MergeManualDuplicatesIntoRealBooksAsync(db, ct);
+
         var candidateIds = await db.Books
             .Where(b => b.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix))
             .OrderBy(b => b.Id)
@@ -104,7 +111,8 @@ public sealed class ManualBookPromotionService
         if (toAttempt.Count < MaxPerRun)
             toAttempt.AddRange(previouslySkipped.Take(MaxPerRun - toAttempt.Count));
 
-        int examined = 0, promoted = 0, merged = 0, notFound = 0, errors = 0;
+        int examined = 0, promoted = 0, notFound = 0, errors = 0;
+        var merged = dbMerged; // total includes the DB-only merges above
         for (var i = 0; i < toAttempt.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
@@ -168,13 +176,77 @@ public sealed class ManualBookPromotionService
             }
         }
 
-        var remaining = Math.Max(0, candidateIds.Count - promoted - merged);
+        var remaining = await db.Books
+            .CountAsync(b => b.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix), ct);
         var summary = new ManualBookPromotionSummary(examined, promoted, merged, notFound, errors, remaining);
         _log.LogInformation(
-            "Promote-manual-books job done — examined {Examined}, promoted {Promoted}, merged {Merged}, not on OL {NotFound}, errors {Errors}, remaining {Remaining}",
-            examined, promoted, merged, notFound, errors, remaining);
-        _currentMessage = $"Done — {promoted} promoted, {merged} merged, {notFound} not on OL yet, {remaining} manual book(s) remaining";
+            "Promote-manual-books job done — examined {Examined}, promoted {Promoted}, merged {Merged} ({DbMerged} from DB), not on OL {NotFound}, errors {Errors}, remaining {Remaining}",
+            examined, promoted, merged, dbMerged, notFound, errors, remaining);
+        _currentMessage = $"Done — {promoted} promoted, {merged} merged ({dbMerged} from DB matches), {notFound} not on OL yet, {remaining} manual book(s) remaining";
         return summary;
+    }
+
+    // DB-only pass (no OpenLibrary): fold every manual placeholder that duplicates a
+    // real OL book already under the same author (same normalized title) into that
+    // real row. The series builder mints these placeholders when it can't match a
+    // catalogue title to an existing book, so they pile up as duplicates that the
+    // OL-search path is far too slow (capped, rate-limited) to ever clear. Here we
+    // already hold the canonical row, so no web call is needed.
+    private async Task<int> MergeManualDuplicatesIntoRealBooksAsync(LibraryDbContext db, CancellationToken ct)
+    {
+        _currentMessage = "Merging manual duplicates of existing books (no OL needed)";
+
+        var manualIds = await db.Books
+            .Where(m => m.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix)
+                     && m.NormalizedTitle != null && m.NormalizedTitle != ""
+                     && db.Books.Any(o => o.AuthorId == m.AuthorId
+                                       && o.NormalizedTitle == m.NormalizedTitle
+                                       && o.Id != m.Id
+                                       && !o.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix)))
+            .OrderBy(m => m.Id)
+            .Select(m => m.Id)
+            .ToListAsync(ct);
+
+        var merged = 0;
+        for (var i = 0; i < manualIds.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            if ((i & 255) == 0 && i > 0)
+                _currentMessage = $"Merging manual duplicates of existing books… {i}/{manualIds.Count}";
+
+            var manual = await db.Books.FirstOrDefaultAsync(b => b.Id == manualIds[i], ct);
+            if (manual is null || !ManualWorkKey.IsManual(manual.OpenLibraryWorkKey)
+                || string.IsNullOrEmpty(manual.NormalizedTitle))
+            { db.ChangeTracker.Clear(); continue; }
+
+            // Canonical target: a non-manual same-title row under this author,
+            // preferring one that actually has a file, then the oldest (lowest id).
+            var target = await db.Books
+                .Where(o => o.AuthorId == manual.AuthorId && o.NormalizedTitle == manual.NormalizedTitle
+                         && o.Id != manual.Id && !o.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix))
+                .OrderByDescending(o => o.LocalFiles.Any())
+                .ThenBy(o => o.Id)
+                .FirstOrDefaultAsync(ct);
+            if (target is null) { db.ChangeTracker.Clear(); continue; }
+
+            try
+            {
+                await MergeIntoAsync(db, manual, target, ct);
+                await db.SaveChangesAsync(ct);
+                merged++;
+                lock (_skipLock) _skippedBookIds.Remove(manual.Id);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "Promote-manual-books: DB-merge of \"{Title}\" (id {Id}) failed", manual.Title, manual.Id);
+            }
+            finally { db.ChangeTracker.Clear(); }
+        }
+
+        if (merged > 0)
+            _log.LogInformation("Promote-manual-books: DB-merged {Count} manual duplicate(s) into existing OL books with no OL search", merged);
+        return merged;
     }
 
     // Searches OL for the book's title + author and returns the doc only when
@@ -231,6 +303,8 @@ public sealed class ManualBookPromotionService
             target.ManuallyOwned = true;
             target.ManuallyOwnedAt = manual.ManuallyOwnedAt ?? DateTime.UtcNow;
         }
+        if (manual.OwnedDifferentEdition && !target.OwnedDifferentEdition)
+            target.OwnedDifferentEdition = true;
         if (target.ReadStatus == ReadStatus.Unread && manual.ReadStatus != ReadStatus.Unread)
         {
             target.ReadStatus = manual.ReadStatus;

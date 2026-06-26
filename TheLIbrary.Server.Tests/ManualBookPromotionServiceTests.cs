@@ -100,6 +100,42 @@ public class ManualBookPromotionServiceTests
     }
 
     [Fact]
+    public async Task Merges_Manual_Duplicate_From_DB_Without_Any_OL_Search()
+    {
+        var dbName = NewDb();
+        await using (var db = CreateDb(dbName))
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Quigley Fenwick", OpenLibraryKey = "OL1A" });
+            // Real OL row already under the author (e.g. from the author refresh).
+            db.Books.Add(new Book
+            {
+                Id = 20, AuthorId = 1, Title = "The Glimmer Quest",
+                NormalizedTitle = TitleNormalizer.Normalize("The Glimmer Quest"), OpenLibraryWorkKey = "OL9W", Subjects = "",
+            });
+            // Manual placeholder duplicate the series builder minted.
+            db.Books.Add(new Book
+            {
+                Id = 10, AuthorId = 1, Title = "The Glimmer Quest",
+                NormalizedTitle = TitleNormalizer.Normalize("The Glimmer Quest"), OpenLibraryWorkKey = "XX00000001W",
+                OwnedDifferentEdition = true, Subjects = "",
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // OL returns NOTHING — the merge must still happen, purely from the DB.
+        var sut = CreateService(dbName, """{"numFound":0,"docs":[]}""");
+        var summary = await sut.RunForTestsAsync(CancellationToken.None);
+
+        Assert.Equal(1, summary.Merged);
+        Assert.Equal(0, summary.Promoted);
+        Assert.Equal(0, summary.Remaining);
+        await using var verify = CreateDb(dbName);
+        var book = await verify.Books.SingleAsync();      // manual row gone
+        Assert.Equal(20, book.Id);
+        Assert.True(book.OwnedDifferentEdition);           // ownership signal carried over
+    }
+
+    [Fact]
     public async Task Does_Not_Promote_When_The_Search_Hit_Is_Another_Authors_Work()
     {
         var dbName = NewDb();
