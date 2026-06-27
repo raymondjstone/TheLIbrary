@@ -97,6 +97,34 @@ public class BooksController : ControllerBase
             .ToListAsync(ct);
     }
 
+    public sealed record TitleSearchRow(
+        int Id, string Title, int? FirstPublishYear, int? CoverId, string OpenLibraryWorkKey,
+        int AuthorId, string AuthorName, string? Series, string? SeriesPosition, bool Owned, bool IsManual);
+
+    // Find books by part of their title — a plain case-insensitive substring match
+    // on the displayed title, prefix matches first, capped. Backs the "Find a Book"
+    // page. GET /api/books/title-search?q=...
+    [HttpGet("title-search")]
+    public async Task<IReadOnlyList<TitleSearchRow>> TitleSearch([FromQuery] string? q, CancellationToken ct)
+    {
+        var term = (q ?? string.Empty).Trim();
+        if (term.Length < 2) return Array.Empty<TitleSearchRow>();
+
+        return await _db.Books.AsNoTracking()
+            .Where(b => b.Title.Contains(term))
+            .OrderBy(b => b.Title.StartsWith(term) ? 0 : 1)   // prefix matches first
+            .ThenBy(b => b.Title)
+            .ThenBy(b => b.Author.Name)
+            .Take(200)
+            .Select(b => new TitleSearchRow(
+                b.Id, b.Title, b.FirstPublishYear, b.CoverId, b.OpenLibraryWorkKey,
+                b.AuthorId, b.Author.Name,
+                b.Series != null ? b.Series.Name : null, b.SeriesPosition,
+                b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any(),
+                b.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix)))
+            .ToListAsync(ct);
+    }
+
     public sealed class SetCoverRequest : IValidatableObject
     {
         [StringLength(1024)]

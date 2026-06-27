@@ -46,6 +46,7 @@ and wishlist.
 
 | Page | Route | Purpose |
 |------|-------|---------|
+| Find a Book | `/find` | Find any book by **part of its title** — a live (debounced) case-insensitive substring search over every catalogue title, prefix matches first. Each result links to the book on its author's page (and shows author, series, year, owned). Shareable via `?q=`. Backed by `GET /api/books/title-search` |
 | Search | `/search` | Full-text search across the text of your matched ebooks (opt-in). Shows index progress with a "run indexing now" button (a background batch) and a clear control, then returns books with a matching snippet. Off until enabled in Settings |
 | Home | `/` | Landing dashboard: cover art plus live **stat cards** (wanted, damaged copies, untracked folders, unknown files, authors due for refresh, releases this year, files added this week, owned/missing/active counts) that link straight into the page that acts on each. Backed by the cheap count-only `/api/dashboard` endpoint. This is the default route (replaced the old redirect to the author list) |
 | Authors | `/authors` | Full watchlist with filter, sort, pagination, A–Z jump index, per-row selection, bulk status (Active / Pending / Excluded), author merge, and a per-row **Refresh OL data** button that re-fetches that author's works from OpenLibrary |

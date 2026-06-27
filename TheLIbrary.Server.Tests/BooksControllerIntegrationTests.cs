@@ -93,6 +93,33 @@ public class BooksControllerIntegrationTests
     }
 
     [Fact]
+    public async Task TitleSearch_Substring_Match_Prefix_First()
+    {
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Author" });
+            db.Books.AddRange(
+                new Book { Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL1W", Title = "The Dragon Reborn", NormalizedTitle = "dragon reborn" },
+                new Book { Id = 11, AuthorId = 1, OpenLibraryWorkKey = "OL2W", Title = "Dragonflight", NormalizedTitle = "dragonflight" },
+                new Book { Id = 12, AuthorId = 1, OpenLibraryWorkKey = "OL3W", Title = "Unrelated", NormalizedTitle = "unrelated" });
+        });
+
+        using var client = factory.CreateClient();
+        // Case matches the seeded titles — the in-memory test provider is
+        // case-sensitive; on SQL Server the LIKE is case-insensitive by collation.
+        var rows = await client.GetFromJsonAsync<List<BooksController.TitleSearchRow>>("/api/books/title-search?q=Dragon");
+
+        Assert.Equal(2, rows!.Count);                 // both "Dragon" titles, not "Unrelated"
+        Assert.Equal(11, rows[0].Id);                 // prefix match ("Dragonflight") first
+        Assert.DoesNotContain(rows, r => r.Id == 12);
+
+        // Too-short query returns nothing.
+        var none = await client.GetFromJsonAsync<List<BooksController.TitleSearchRow>>("/api/books/title-search?q=d");
+        Assert.Empty(none!);
+    }
+
+    [Fact]
     public async Task SetCover_Clears_CoverUrl_When_Empty_String_Posted()
     {
         using var factory = new LibraryApiFactory();

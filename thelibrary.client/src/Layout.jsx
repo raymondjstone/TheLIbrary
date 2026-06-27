@@ -10,6 +10,7 @@ export default function Layout() {
                 <Link to="/" className="brand">The Library</Link>
                 <nav>
                     <NavLink to="/" end>Home</NavLink>
+                    <NavLink to="/find">Find a Book</NavLink>
                     <NavLink to="/search">Search</NavLink>
 
                     <span className="nav-group-label">Browse</span>

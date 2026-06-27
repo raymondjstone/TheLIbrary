@@ -22,6 +22,7 @@ import SeriesCompletion from './pages/SeriesCompletion.jsx'
 import Collections from './pages/Collections.jsx'
 import Genre from './pages/Genre.jsx'
 import Search from './pages/Search.jsx'
+import TitleSearch from './pages/TitleSearch.jsx'
 import Health from './pages/Health.jsx'
 import Wanted from './pages/Wanted.jsx'
 import PhysicalUnmatched from './pages/PhysicalUnmatched.jsx'
@@ -56,6 +57,7 @@ createRoot(document.getElementById('root')).render(
                     <Route path="collections" element={<Collections />} />
                     <Route path="genre/:genre" element={<Genre />} />
                     <Route path="search" element={<Search />} />
+                    <Route path="find" element={<TitleSearch />} />
                     <Route path="health" element={<Health />} />
                     <Route path="sync" element={<Sync />} />
                     <Route path="schedules" element={<Schedules />} />
