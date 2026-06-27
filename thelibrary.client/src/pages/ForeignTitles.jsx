@@ -231,7 +231,8 @@ export default function ForeignTitles() {
             {scanResult && (
                 <p className="subtle">
                     Scanned {scanResult.scanned} book{scanResult.scanned === 1 ? '' : 's'},
-                    flagged {scanResult.flagged} new as foreign.
+                    flagged {scanResult.flagged} new as foreign
+                    {scanResult.unflagged > 0 ? `, and un-flagged ${scanResult.unflagged} English title${scanResult.unflagged === 1 ? '' : 's'} that were wrongly marked foreign` : ''}.
                 </p>
             )}
 

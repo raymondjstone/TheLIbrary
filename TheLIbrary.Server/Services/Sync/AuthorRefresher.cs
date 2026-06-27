@@ -323,15 +323,19 @@ public sealed class AuthorRefresher
             // English edition, so flag (and suppress) it. When OL has no
             // language data at all (very common), fall back to the title guesser
             // so clearly non-English titles are still caught.
+            // A title that clearly READS as English is never flagged foreign — not
+            // even when OpenLibrary's per-work language array (aggregated over every
+            // edition of a classic) lacks "eng". That array was flagging English
+            // works like "Aristotle's Politics and the Athenian Constitution" just
+            // because the work also has Greek/Latin editions.
+            var titleGuess = TitleLanguageGuesser.Classify(doc.Title);
             bool isForeign;
-            if (doc.Language is { Count: > 0 } langs)
-            {
+            if (titleGuess == TitleLanguageGuesser.Guess.English)
+                isForeign = false;
+            else if (doc.Language is { Count: > 0 } langs)
                 isForeign = !langs.Any(l => string.Equals(l, "eng", StringComparison.OrdinalIgnoreCase));
-            }
             else
-            {
-                isForeign = TitleLanguageGuesser.IsLikelyNonEnglish(doc.Title);
-            }
+                isForeign = titleGuess == TitleLanguageGuesser.Guess.NonEnglish;
 
             var clampedYear = ClampPublishYear(doc.FirstPublishYear);
             _db.Books.Add(new Book

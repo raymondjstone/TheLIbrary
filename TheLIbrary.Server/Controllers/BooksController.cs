@@ -345,12 +345,17 @@ public class BooksController : ControllerBase
             .ToListAsync(ct);
     }
 
-    public sealed record ForeignScanResult(int Scanned, int Flagged);
+    public sealed record ForeignScanResult(int Scanned, int Flagged, int Unflagged);
 
-    // Runs the title-language guesser over every book not already flagged
-    // foreign and flags (+ suppresses) the ones it is confident are not in
-    // English. Conservative by design: ambiguous titles are left untouched, and
-    // books the user has confirmed English are permanently skipped.
+    // Runs the title-language guesser over the library in BOTH directions:
+    //  • flags (+ suppresses) not-yet-foreign books whose title is confidently
+    //    non-English;
+    //  • UN-flags (+ un-suppresses) currently-foreign books whose title clearly
+    //    reads as English — these are mostly the OpenLibrary-language false
+    //    positives (a classic flagged because its work also has Greek/Latin
+    //    editions, e.g. "Aristotle's Politics and the Athenian Constitution").
+    // Conservative: ambiguous titles are left untouched, and a book the user has
+    // explicitly confirmed (English or Foreign) is never overridden.
     [HttpPost("foreign/scan")]
     public async Task<ActionResult<ForeignScanResult>> ScanForeign(CancellationToken ct)
     {
@@ -373,7 +378,30 @@ public class BooksController : ControllerBase
                     .SetProperty(b => b.Suppressed, true), ct);
         }
 
-        return Ok(new ForeignScanResult(candidates.Count, flagIds.Count));
+        // A clear English-function-word title is DECISIVE for English (the guesser's
+        // strongest signal), so it overrides even a ConfirmedForeign flag — those
+        // were almost always set by a bulk "confirm all", not a real per-book review,
+        // and are exactly the false positives the user is seeing. Reset the review
+        // so the book returns to the normal views.
+        var unflagIds = (await _db.Books
+                .Where(b => b.Foreign)
+                .Select(b => new { b.Id, b.Title })
+                .ToListAsync(ct))
+            .Where(b => TitleLanguageGuesser.Classify(b.Title) == TitleLanguageGuesser.Guess.English)
+            .Select(b => b.Id)
+            .ToList();
+
+        if (unflagIds.Count > 0)
+        {
+            await _db.Books
+                .Where(b => unflagIds.Contains(b.Id))
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(b => b.Foreign, false)
+                    .SetProperty(b => b.Suppressed, false)
+                    .SetProperty(b => b.LanguageReview, LanguageReview.None), ct);
+        }
+
+        return Ok(new ForeignScanResult(candidates.Count, flagIds.Count, unflagIds.Count));
     }
 
     public sealed record SeriesRequest(string? SeriesName, string? Position);
