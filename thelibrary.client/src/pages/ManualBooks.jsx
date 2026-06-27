@@ -9,6 +9,10 @@ import { bookCoverSrc } from '../bookCover.js'
 // these to OpenLibrary automatically once OL lists the title.
 const PAGE_SIZE = 100
 
+// Filter-box style: full width of its column, padding included in the width so it
+// never overflows the cell and overlaps a neighbour.
+const filterInput = { width: '100%', boxSizing: 'border-box', padding: '0.2rem 0.4rem' }
+
 export default function ManualBooks() {
     const [data, setData] = useState(null)   // { rows, total, page, pageSize }
     const [loading, setLoading] = useState(false)
@@ -139,23 +143,25 @@ export default function ManualBooks() {
                         </tr>
                         <tr>
                             <th></th>
-                            <th>
-                                <input value={titleFilter} onChange={e => setFilter(setTitleFilter)(e.target.value)}
-                                       placeholder="Filter title…" style={{ width: '95%', padding: '0.2rem 0.4rem' }} />
-                                {' '}
-                                <input value={authorFilter} onChange={e => setFilter(setAuthorFilter)(e.target.value)}
-                                       placeholder="Filter author…" style={{ width: '40%', padding: '0.2rem 0.4rem', marginTop: '0.25rem' }} />
+                            <th style={{ verticalAlign: 'top' }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                                    <input value={titleFilter} onChange={e => setFilter(setTitleFilter)(e.target.value)}
+                                           placeholder="Filter title…" style={filterInput} />
+                                    <input value={authorFilter} onChange={e => setFilter(setAuthorFilter)(e.target.value)}
+                                           placeholder="Filter author…" style={filterInput} />
+                                </div>
                             </th>
-                            <th>
+                            <th style={{ verticalAlign: 'top' }}>
                                 <input value={yearFilter} onChange={e => setFilter(setYearFilter)(e.target.value)}
-                                       placeholder="Year…" style={{ width: '5rem', padding: '0.2rem 0.4rem' }} />
+                                       placeholder="Year…" style={{ ...filterInput, width: '5rem' }} />
                             </th>
-                            <th>
+                            <th style={{ verticalAlign: 'top' }}>
                                 <input value={seriesFilter} onChange={e => setFilter(setSeriesFilter)(e.target.value)}
-                                       placeholder="Filter series…" style={{ width: '95%', padding: '0.2rem 0.4rem' }} />
+                                       placeholder="Filter series…" style={filterInput} />
                             </th>
-                            <th>
-                                <select value={ownedFilter} onChange={e => setFilter(setOwnedFilter)(e.target.value)}>
+                            <th style={{ verticalAlign: 'top' }}>
+                                <select value={ownedFilter} onChange={e => setFilter(setOwnedFilter)(e.target.value)}
+                                        style={{ ...filterInput, width: 'auto' }}>
                                     <option value="">All</option>
                                     <option value="yes">Yes</option>
                                     <option value="no">No</option>
