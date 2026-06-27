@@ -102,6 +102,15 @@ public sealed class ManualBookService
         };
         _db.Books.Add(book);
         await _db.SaveChangesAsync(ct);
+
+        // Record the hand-add to the activity log (book.Id is now assigned).
+        var seriesText = seriesId is not null ? $" · {seriesName!.Trim()}{(string.IsNullOrWhiteSpace(seriesPosition) ? "" : $" #{seriesPosition.Trim()}")}" : "";
+        var yearText = firstPublishYear is int yy ? $" ({yy})" : "";
+        Services.ActivityLogger.Record(_db, "manual-add",
+            $"Added manual book \"{cleanTitle}\" by {author.Name}{seriesText}{yearText}{(owned ? " · owned" : "")}",
+            "user", book.Id);
+        await _db.SaveChangesAsync(ct);
+
         return new Result(book, null, false);
     }
 }

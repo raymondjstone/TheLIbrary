@@ -111,6 +111,13 @@ public class AuthorsControllerIntegrationTests
         Assert.StartsWith("XX", book.OpenLibraryWorkKey, StringComparison.Ordinal);
         Assert.Equal("Manual Title", book.Title);
         Assert.True(book.ManuallyOwned);
+
+        // The hand-add is recorded on the activity log, linked to the new book.
+        var activity = Assert.Single(db.ActivityLog.Where(a => a.Action == "manual-add"));
+        Assert.Equal(book.Id, activity.BookId);
+        Assert.Equal("user", activity.Source);
+        Assert.Contains("Manual Title", activity.Detail);
+        Assert.Contains("Author", activity.Detail);
     }
 
     [Fact]

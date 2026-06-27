@@ -125,6 +125,7 @@ public sealed class ManualBookPromotionService
                 + $" ({promoted + merged} linked)";
             try
             {
+                var oldTitle = book.Title;
                 var doc = await FindOpenLibraryWorkAsync(ol, book, ct);
                 if (doc is null)
                 {
@@ -141,6 +142,9 @@ public sealed class ManualBookPromotionService
                 {
                     await MergeIntoAsync(db, book, existing, ct);
                     merged++;
+                    Services.ActivityLogger.Record(db, "promote-manual",
+                        $"Merged manual \"{oldTitle}\" into existing OpenLibrary work {workKey} for {book.Author.Name}",
+                        "promote-manual-books", existing.Id);
                     _log.LogInformation(
                         "Promote-manual-books: merged manual \"{Title}\" into existing OL work {Key} for {Author}",
                         book.Title, workKey, book.Author.Name);
@@ -165,6 +169,9 @@ public sealed class ManualBookPromotionService
                     if (Book.CreatedAtForPublishYear(book.FirstPublishYear) is { } promotedDate)
                         book.CreatedAt = promotedDate;
                     promoted++;
+                    Services.ActivityLogger.Record(db, "promote-manual",
+                        $"Promoted manual \"{oldTitle}\" to OpenLibrary work {workKey} for {book.Author.Name}",
+                        "promote-manual-books", book.Id);
                     _log.LogInformation(
                         "Promote-manual-books: linked \"{Title}\" to OL work {Key} for {Author}",
                         book.Title, workKey, book.Author.Name);

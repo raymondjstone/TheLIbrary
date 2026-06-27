@@ -29,7 +29,8 @@ export default function Activity() {
                 <button className="btn-ghost" onClick={load}>Refresh</button>
             </div>
             <p className="subtle" style={{ marginTop: '-0.4rem', maxWidth: '60rem' }}>
-                Recent archive / delete / auto-archive actions — what moved, when, and what triggered it.
+                Recent library actions — files archived / deleted, manual books added, and manual books
+                promoted to OpenLibrary — what changed, when, and what triggered it.
             </p>
 
             {error && <p className="error">{error}</p>}

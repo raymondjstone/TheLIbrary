@@ -287,6 +287,7 @@ public sealed class AuthorRefresher
             var manual = PickManualToPromote(manualBooks, normTitle);
             if (manual is not null)
             {
+                var oldManualTitle = manual.Title;
                 manualBooks.Remove(manual);
                 manual.OpenLibraryWorkKey = workKey;
                 manual.Title = doc.Title!;
@@ -305,6 +306,9 @@ public sealed class AuthorRefresher
                 if (manual.SeriesPosition is null && seriesPos is not null)
                     manual.SeriesPosition = seriesPos;
                 promoted++;
+                Services.ActivityLogger.Record(_db, "promote-manual",
+                    $"Promoted manual entry \"{oldManualTitle}\" to OpenLibrary work {workKey} for {author.Name}",
+                    "author-refresh", manual.Id);
                 onMessage?.Invoke($"Linked manual entry \"{manual.Title}\" to OpenLibrary work {workKey}");
                 continue;
             }
