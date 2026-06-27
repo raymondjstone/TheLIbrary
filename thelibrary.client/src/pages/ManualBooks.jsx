@@ -7,8 +7,11 @@ import { bookCoverSrc } from '../bookCover.js'
 // with a filter box per column, so they can be reviewed, edited or removed
 // without hunting through authors. The daily promote-manual-books job links
 // these to OpenLibrary automatically once OL lists the title.
+const PAGE_SIZE = 100
+
 export default function ManualBooks() {
-    const [rows, setRows] = useState(null)
+    const [data, setData] = useState(null)   // { rows, total, page, pageSize }
+    const [loading, setLoading] = useState(false)
     const [error, setError] = useState(null)
     const [nzbSites, setNzbSites] = useState([])
     const [editBook, setEditBook] = useState(null)
@@ -17,15 +20,35 @@ export default function ManualBooks() {
     const [yearFilter, setYearFilter] = useState('')
     const [seriesFilter, setSeriesFilter] = useState('')
     const [ownedFilter, setOwnedFilter] = useState('')
+    const [page, setPage] = useState(1)
 
+    // A large library has 100k+ manual books, so the list is filtered + PAGED
+    // server-side. Filters are debounced and any filter change resets to page 1.
     const load = () => {
-        setError(null)
-        fetch('/api/books/manual')
+        setLoading(true); setError(null)
+        const p = new URLSearchParams()
+        if (titleFilter.trim()) p.set('title', titleFilter.trim())
+        if (authorFilter.trim()) p.set('author', authorFilter.trim())
+        if (yearFilter.trim()) p.set('year', yearFilter.trim())
+        if (seriesFilter.trim()) p.set('series', seriesFilter.trim())
+        if (ownedFilter) p.set('owned', ownedFilter)
+        p.set('page', String(page))
+        p.set('pageSize', String(PAGE_SIZE))
+        fetch(`/api/books/manual?${p}`)
             .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
-            .then(setRows)
-            .catch(e => { setError(String(e)); setRows([]) })
+            .then(setData)
+            .catch(e => { setError(String(e)); setData({ rows: [], total: 0 }) })
+            .finally(() => setLoading(false))
     }
-    useEffect(() => { load() }, [])
+
+    useEffect(() => {
+        const t = setTimeout(load, 300)
+        return () => clearTimeout(t)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [titleFilter, authorFilter, yearFilter, seriesFilter, ownedFilter, page])
+
+    // Changing any filter jumps back to the first page.
+    const setFilter = (setter) => (v) => { setter(v); setPage(1) }
 
     // External book-search links (Z-Library, NZB indexers, …) — the same options
     // an OpenLibrary book gets in the other lists. A manual book isn't on OL, so
@@ -60,34 +83,19 @@ export default function ManualBooks() {
         try {
             const r = await fetch(`/api/books/${book.id}`, { method: 'DELETE' })
             if (!r.ok) throw new Error(r.statusText)
-            setRows(prev => prev.filter(b => b.id !== book.id))
+            load()   // refetch the current page
         } catch (e) {
             alert(`Delete failed: ${e.message}`)
         }
     }
 
-    const filtered = useMemo(() => {
-        if (!rows) return null
-        const t = titleFilter.trim().toLowerCase()
-        const a = authorFilter.trim().toLowerCase()
-        const y = yearFilter.trim()
-        const s = seriesFilter.trim().toLowerCase()
-        return rows.filter(b => {
-            if (t && !b.title.toLowerCase().includes(t)) return false
-            if (a && !b.authorName.toLowerCase().includes(a)) return false
-            if (y && !String(b.firstPublishYear ?? '').includes(y)) return false
-            if (s && !(`${b.series ?? ''} ${b.seriesPosition ?? ''}`.toLowerCase().includes(s))) return false
-            if (ownedFilter === 'yes' && !b.owned) return false
-            if (ownedFilter === 'no' && b.owned) return false
-            return true
-        })
-    }, [rows, titleFilter, authorFilter, yearFilter, seriesFilter, ownedFilter])
+    const rows = data?.rows ?? null
 
-    // Group by author, authors alphabetically, titles alphabetically inside.
+    // Group the current PAGE's rows by author (alphabetical, titles inside).
     const groups = useMemo(() => {
-        if (!filtered) return null
+        if (!rows) return null
         const byAuthor = new Map()
-        for (const b of filtered) {
+        for (const b of rows) {
             if (!byAuthor.has(b.authorId)) byAuthor.set(b.authorId, { authorId: b.authorId, authorName: b.authorName, books: [] })
             byAuthor.get(b.authorId).books.push(b)
         }
@@ -95,18 +103,19 @@ export default function ManualBooks() {
         list.sort((x, y2) => x.authorName.localeCompare(y2.authorName))
         for (const g of list) g.books.sort((x, y2) => x.title.localeCompare(y2.title))
         return list
-    }, [filtered])
+    }, [rows])
 
-    const anyFilter = titleFilter || authorFilter || yearFilter || seriesFilter || ownedFilter
+    const total = data?.total ?? 0
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
     return (
         <section>
             <div className="toolbar">
                 <h2 style={{ margin: 0, fontWeight: 600 }}>Manual Books</h2>
                 <span className="count" style={{ color: 'var(--subtle)', marginLeft: 'auto' }}>
-                    {filtered ? `${filtered.length}${anyFilter && rows ? ` of ${rows.length}` : ''} book${filtered.length === 1 ? '' : 's'}` : ''}
+                    {data ? `${total.toLocaleString()} book${total === 1 ? '' : 's'}` : ''}
                 </span>
-                <button className="btn-ghost" onClick={load}>Refresh</button>
+                <button className="btn-ghost" onClick={load} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
             </div>
             <p className="subtle">
                 Books added by hand — not (yet) on OpenLibrary. The daily
@@ -115,12 +124,9 @@ export default function ManualBooks() {
             </p>
 
             {error && <p className="error">{error}</p>}
-            {rows === null && !error && <p className="subtle">Loading…</p>}
-            {rows !== null && rows.length === 0 && !error && (
-                <p className="subtle">No manually-added books.</p>
-            )}
 
-            {rows !== null && rows.length > 0 && (
+            {data && (
+                <>
                 <table className="grid">
                     <thead>
                         <tr>
@@ -134,22 +140,22 @@ export default function ManualBooks() {
                         <tr>
                             <th></th>
                             <th>
-                                <input value={titleFilter} onChange={e => setTitleFilter(e.target.value)}
+                                <input value={titleFilter} onChange={e => setFilter(setTitleFilter)(e.target.value)}
                                        placeholder="Filter title…" style={{ width: '95%', padding: '0.2rem 0.4rem' }} />
                                 {' '}
-                                <input value={authorFilter} onChange={e => setAuthorFilter(e.target.value)}
+                                <input value={authorFilter} onChange={e => setFilter(setAuthorFilter)(e.target.value)}
                                        placeholder="Filter author…" style={{ width: '40%', padding: '0.2rem 0.4rem', marginTop: '0.25rem' }} />
                             </th>
                             <th>
-                                <input value={yearFilter} onChange={e => setYearFilter(e.target.value)}
+                                <input value={yearFilter} onChange={e => setFilter(setYearFilter)(e.target.value)}
                                        placeholder="Year…" style={{ width: '5rem', padding: '0.2rem 0.4rem' }} />
                             </th>
                             <th>
-                                <input value={seriesFilter} onChange={e => setSeriesFilter(e.target.value)}
+                                <input value={seriesFilter} onChange={e => setFilter(setSeriesFilter)(e.target.value)}
                                        placeholder="Filter series…" style={{ width: '95%', padding: '0.2rem 0.4rem' }} />
                             </th>
                             <th>
-                                <select value={ownedFilter} onChange={e => setOwnedFilter(e.target.value)}>
+                                <select value={ownedFilter} onChange={e => setFilter(setOwnedFilter)(e.target.value)}>
                                     <option value="">All</option>
                                     <option value="yes">Yes</option>
                                     <option value="no">No</option>
@@ -159,15 +165,24 @@ export default function ManualBooks() {
                         </tr>
                     </thead>
                     <tbody>
-                        {groups.map(g => (
+                        {(groups ?? []).map(g => (
                             <GroupRows key={g.authorId} group={g} onEdit={setEditBook} onDelete={deleteBook}
                                        nzbSites={nzbSites} nzbLinks={nzbLinks} />
                         ))}
-                        {groups.length === 0 && (
-                            <tr><td colSpan={6} className="subtle">No manual books match the filters.</td></tr>
+                        {(groups?.length ?? 0) === 0 && (
+                            <tr><td colSpan={6} className="subtle">{loading ? 'Loading…' : 'No manual books match the filters.'}</td></tr>
                         )}
                     </tbody>
                 </table>
+
+                {total > PAGE_SIZE && (
+                    <div className="toolbar" style={{ marginTop: '0.6rem', alignItems: 'center' }}>
+                        <button className="btn-ghost" disabled={page <= 1 || loading} onClick={() => setPage(p => Math.max(1, p - 1))}>← Prev</button>
+                        <span className="subtle">Page {page} of {totalPages.toLocaleString()}</span>
+                        <button className="btn-ghost" disabled={page >= totalPages || loading} onClick={() => setPage(p => Math.min(totalPages, p + 1))}>Next →</button>
+                    </div>
+                )}
+                </>
             )}
 
             {editBook && (

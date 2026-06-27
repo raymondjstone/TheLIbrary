@@ -79,15 +79,35 @@ public class BooksController : ControllerBase
         string? Series, string? SeriesPosition, int AuthorId, string AuthorName,
         bool Owned, string OpenLibraryWorkKey, bool HasFile);
 
-    // Every manually-added book — synthetic "XX" work key, not (yet) on
-    // OpenLibrary. Surfaces them as a group so they can be reviewed, edited
-    // or deleted from one place.
+    public sealed record ManualBooksPage(IReadOnlyList<ManualBookRow> Rows, int Total, int Page, int PageSize);
+
+    // Manually-added books (synthetic "XX" work key, not yet on OpenLibrary),
+    // filtered + PAGED server-side — a large library can have 100k+ of these, so
+    // returning them all made the Manual Books page crawl. Filters mirror the page's
+    // per-column boxes; ordered by author then title for stable paging.
     [HttpGet("manual")]
-    public async Task<IReadOnlyList<ManualBookRow>> Manual(CancellationToken ct)
+    public async Task<ManualBooksPage> Manual(
+        [FromQuery] string? title = null, [FromQuery] string? author = null, [FromQuery] string? year = null,
+        [FromQuery] string? series = null, [FromQuery] string? owned = null,
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 100, CancellationToken ct = default)
     {
-        return await _db.Books.AsNoTracking()
-            .Where(b => b.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix))
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 500);
+
+        var q = _db.Books.AsNoTracking()
+            .Where(b => b.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix));
+
+        if (!string.IsNullOrWhiteSpace(title)) q = q.Where(b => b.Title.Contains(title));
+        if (!string.IsNullOrWhiteSpace(author)) q = q.Where(b => b.Author.Name.Contains(author));
+        if (!string.IsNullOrWhiteSpace(year) && int.TryParse(year, out var yr)) q = q.Where(b => b.FirstPublishYear == yr);
+        if (!string.IsNullOrWhiteSpace(series)) q = q.Where(b => b.Series != null && b.Series.Name.Contains(series));
+        if (owned == "yes") q = q.Where(b => b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any());
+        else if (owned == "no") q = q.Where(b => !(b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any()));
+
+        var total = await q.CountAsync(ct);
+        var rows = await q
             .OrderBy(b => b.Author.Name).ThenBy(b => b.Title)
+            .Skip((page - 1) * pageSize).Take(pageSize)
             .Select(b => new ManualBookRow(
                 b.Id, b.Title, b.FirstPublishYear, b.CoverId, b.CoverUrl,
                 b.Series != null ? b.Series.Name : null, b.SeriesPosition,
@@ -95,6 +115,7 @@ public class BooksController : ControllerBase
                 b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any(), b.OpenLibraryWorkKey,
                 b.LocalFiles.Any()))
             .ToListAsync(ct);
+        return new ManualBooksPage(rows, total, page, pageSize);
     }
 
     public sealed record TitleSearchRow(

@@ -85,9 +85,10 @@ public class BooksControllerIntegrationTests
         });
 
         using var client = factory.CreateClient();
-        var rows = await client.GetFromJsonAsync<List<BooksController.ManualBookRow>>("/api/books/manual");
+        var result = await client.GetFromJsonAsync<BooksController.ManualBooksPage>("/api/books/manual");
 
-        var row = Assert.Single(rows!);
+        Assert.Equal(1, result!.Total);
+        var row = Assert.Single(result.Rows);
         Assert.Equal(10, row.Id);
         Assert.True(row.Owned);
     }
