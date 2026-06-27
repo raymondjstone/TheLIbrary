@@ -1240,9 +1240,9 @@ public class BooksController : ControllerBase
         var flaggedKeys = (await _db.Books
                 .AsNoTracking()
                 .Where(b => b.Suppressed || b.Foreign)
-                .Select(b => new { b.AuthorId, b.NormalizedTitle, b.Title })
+                .Select(b => new { CanonicalAuthorId = b.Author.LinkedToAuthorId ?? b.AuthorId, b.NormalizedTitle, b.Title })
                 .ToListAsync(ct))
-            .Select(b => ReleaseGroupKey(b.AuthorId, b.NormalizedTitle, b.Title))
+            .Select(b => ReleaseGroupKey(b.CanonicalAuthorId, b.NormalizedTitle, b.Title))
             .ToHashSet();
 
         // Fetch all recent books with a simple range scan — no correlated subquery.
@@ -1261,9 +1261,15 @@ public class BooksController : ControllerBase
             .Select(b => new
             {
                 b.Id, b.Title, b.NormalizedTitle, b.FirstPublishYear, b.CoverId,
-                b.OpenLibraryWorkKey, b.AuthorId, b.Subjects, b.CreatedAt, b.SeriesPosition,
+                b.OpenLibraryWorkKey, b.Subjects, b.CreatedAt, b.SeriesPosition,
                 SeriesName = b.Series != null ? b.Series.Name : null,
-                AuthorName = b.Author.Name, AuthorPriority = b.Author.Priority,
+                // Resolve a linked (alternate/pen-name) author to its CANONICAL so a
+                // book catalogued under two records of the same person (e.g. two
+                // "Terry Brooks" the user has linked) collapses to ONE release row
+                // instead of showing once per record.
+                AuthorId = b.Author.LinkedToAuthorId ?? b.AuthorId,
+                AuthorName = b.Author.LinkedTo != null ? b.Author.LinkedTo.Name : b.Author.Name,
+                AuthorPriority = b.Author.Priority,
                 Owned = b.ManuallyOwned || b.OwnedDifferentEdition || b.LocalFiles.Any(),
                 ReadStatusStr = b.ReadStatus.ToString(),
             })

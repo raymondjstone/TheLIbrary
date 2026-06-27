@@ -401,7 +401,7 @@ public partial class AuthorsController : ControllerBase
         bool RecommendationRejected = false);
 
     // A link suggestion: another author whose name resembles this one.
-    public sealed record SimilarAuthor(int Id, string Name, string? OpenLibraryKey, string Status, double Score);
+    public sealed record SimilarAuthor(int Id, string Name, string? OpenLibraryKey, string Status, double Score, int Priority);
 
     // One same-name author's unmatched files, for the "other authors with this
     // name" section. Grouped so the UI can collapse/expand per author.
@@ -686,12 +686,21 @@ public partial class AuthorsController : ControllerBase
             .Select(b => b.SeriesId!.Value)
             .Distinct()
             .ToList();
+        // Work keys this author already has, so a co-author that's really a DUPLICATE
+        // record of the same person (same OL work catalogued twice — e.g. two
+        // unlinked "Terry Brooks") doesn't make every shared volume appear twice.
+        var ownWorkKeys = books.Select(b => b.OpenLibraryWorkKey).ToHashSet();
         if (ownSeriesIds.Count > 0)
         {
             var rawCoAuthor = await _db.Books.AsNoTracking()
                 .Where(b => b.SeriesId != null && ownSeriesIds.Contains(b.SeriesId.Value)
                          && !foldedIds.Contains(b.AuthorId)
-                         && !b.Suppressed)
+                         && !b.Suppressed
+                         // A "co-author" with the SAME NAME, or carrying a work this
+                         // author already has, is the same person catalogued twice —
+                         // not a genuine co-author — so don't list their volumes again.
+                         && b.Author.Name != a.Name
+                         && !ownWorkKeys.Contains(b.OpenLibraryWorkKey))
                 .OrderBy(b => b.Series!.Name).ThenBy(b => b.SeriesPosition)
                     .ThenBy(b => b.FirstPublishYear ?? int.MaxValue).ThenBy(b => b.Title)
                 .Select(b => new
@@ -829,7 +838,7 @@ public partial class AuthorsController : ControllerBase
                          || a.Name.EndsWith(" " + lastTok)
                          || a.Name.StartsWith(firstTok + " ")))
             .OrderBy(a => a.Id)
-            .Select(a => new { a.Id, a.Name, a.OpenLibraryKey, a.Status })
+            .Select(a => new { a.Id, a.Name, a.OpenLibraryKey, a.Status, a.Priority })
             .Take(2000)
             .ToListAsync(ct);
         if (candidates.Count == 0) return Array.Empty<SimilarAuthor>();
@@ -851,7 +860,7 @@ public partial class AuthorsController : ControllerBase
             .OrderByDescending(x => x.Score)
             .ThenBy(x => x.c.Name, StringComparer.OrdinalIgnoreCase)
             .Take(15)
-            .Select(x => new SimilarAuthor(x.c.Id, x.c.Name, x.c.OpenLibraryKey, x.c.Status.ToString(), Math.Round(x.Score, 3)))
+            .Select(x => new SimilarAuthor(x.c.Id, x.c.Name, x.c.OpenLibraryKey, x.c.Status.ToString(), Math.Round(x.Score, 3), x.c.Priority))
             .ToList();
     }
 

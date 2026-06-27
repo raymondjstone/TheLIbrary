@@ -57,27 +57,36 @@ public sealed class SeriesCoAuthorStarService
 
     // Pure selection logic, mirrored by the DB query, exposed for unit tests:
     // unstarred authors who have a book in a series that also holds a book by a
-    // starred author.
+    // starred author OF A DIFFERENT NAME (a same-name "co-author" is the same person
+    // catalogued twice — a duplicate record — not a genuine collaborator).
     internal static IReadOnlyList<int> PickCoAuthorIdsToStar(
-        IReadOnlyList<(int Id, int Priority)> authors,
+        IReadOnlyList<(int Id, string Name, int Priority)> authors,
         IReadOnlyList<(int AuthorId, int? SeriesId)> books)
     {
-        var priorityById = authors.ToDictionary(a => a.Id, a => a.Priority);
+        var byId = authors.ToDictionary(a => a.Id, a => a);
 
-        // Series that have at least one volume by a starred author.
-        var starredSeries = books
-            .Where(b => b.SeriesId != null
-                     && priorityById.TryGetValue(b.AuthorId, out var p) && p >= 1)
-            .Select(b => b.SeriesId!.Value)
-            .ToHashSet();
+        // For each series, the distinct names of STARRED authors in it.
+        var starredNamesBySeries = new Dictionary<int, HashSet<string>>();
+        foreach (var b in books)
+        {
+            if (b.SeriesId is int sid && byId.TryGetValue(b.AuthorId, out var au) && au.Priority >= 1)
+            {
+                if (!starredNamesBySeries.TryGetValue(sid, out var set))
+                    starredNamesBySeries[sid] = set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                set.Add(au.Name);
+            }
+        }
 
-        return books
-            .Where(b => b.SeriesId != null && starredSeries.Contains(b.SeriesId.Value)
-                     && priorityById.TryGetValue(b.AuthorId, out var p) && p == 0)
-            .Select(b => b.AuthorId)
-            .Distinct()
-            .OrderBy(id => id)
-            .ToList();
+        var result = new SortedSet<int>();
+        foreach (var b in books)
+        {
+            if (b.SeriesId is not int sid) continue;
+            if (!byId.TryGetValue(b.AuthorId, out var au) || au.Priority != 0) continue;
+            if (starredNamesBySeries.TryGetValue(sid, out var names)
+                && names.Any(n => !string.Equals(n, au.Name, StringComparison.OrdinalIgnoreCase)))
+                result.Add(b.AuthorId);
+        }
+        return result.ToList();
     }
 
     private async Task<SeriesCoAuthorStarSummary> RunAsync(CancellationToken ct)
@@ -93,7 +102,12 @@ public sealed class SeriesCoAuthorStarService
         var targetIds = await db.Authors
             .Where(a => a.Priority == 0
                 && db.Books.Any(b => b.AuthorId == a.Id && b.SeriesId != null
-                    && db.Books.Any(o => o.SeriesId == b.SeriesId && o.Author.Priority >= 1)))
+                    // The starred author sharing the series must have a DIFFERENT
+                    // name — a same-name "co-author" is just this author catalogued
+                    // twice (a duplicate OL record), not a genuine collaborator, so
+                    // starring it only duplicates the books in every list.
+                    && db.Books.Any(o => o.SeriesId == b.SeriesId
+                        && o.Author.Priority >= 1 && o.Author.Name != a.Name)))
             .Select(a => a.Id)
             .ToListAsync(ct);
 

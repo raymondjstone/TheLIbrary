@@ -1606,7 +1606,7 @@ export default function AuthorDetail() {
                                        onChange={() => toggleSimilar(s.id)} />
                                 <Link to={`/authors/${s.id}`} onClick={e => e.stopPropagation()}>{s.name}</Link>
                                 <span className="subtle" style={{ fontSize: '0.8em' }}>
-                                    {s.openLibraryKey ? `${s.openLibraryKey} · ` : ''}{s.status} · match {s.score.toFixed(2)}
+                                    {s.openLibraryKey ? `${s.openLibraryKey} · ` : ''}{s.status} · match {s.score.toFixed(2)} · {s.priority > 0 ? `★ ${s.priority}` : 'no stars'}
                                 </span>
                             </label>
                         ))}
