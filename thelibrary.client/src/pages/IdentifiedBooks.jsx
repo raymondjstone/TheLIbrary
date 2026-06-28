@@ -265,6 +265,32 @@ export default function IdentifiedBooks() {
         }
     }
 
+    // Add the row's identified author as a MANUAL author (one OpenLibrary may not
+    // list yet). After this the row's "Assign to …" resolves to them by name.
+    const addManualAuthor = async (id, authorName) => {
+        const name = (authorName || '').trim()
+        if (!name) return
+        setBusy(prev => new Set(prev).add(id))
+        try {
+            const r = await fetch('/api/authors', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name })
+            })
+            const body = await r.json().catch(() => ({}))
+            if (r.status === 409 && body.authorId) {
+                alert(`"${name}" is already in the library — use "Assign to ${name}" to file this book under them.`)
+                return
+            }
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            alert(`Added "${name}" as a manual author. Use "Assign to ${name}" to file this book under them.`)
+        } catch (e) {
+            alert(`Add author failed: ${e.message || e}`)
+        } finally {
+            setBusy(prev => { const n = new Set(prev); n.delete(id); return n })
+        }
+    }
+
     const [assignAllBusy, setAssignAllBusy] = useState(false)
     const [assignAllProgress, setAssignAllProgress] = useState(null) // { assigned, skipped, failed }
     // Bulk "Assign all untracked books to authors": one click attempts EVERY
@@ -613,6 +639,13 @@ function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, assi
                                             title={`File this untracked book under "${r.author}" (resolves via OpenLibrary or by name)`}
                                             onClick={() => assignAuthor(r.id, r.author)}>
                                         {busy.has(r.id) ? '…' : `Assign to ${r.author}`}
+                                    </button>
+                                )}
+                                {r.source === 'untracked' && r.author && (
+                                    <button className="btn-ghost" disabled={busy.has(r.id)}
+                                            title={`Add "${r.author}" to the library as a manual author (for people OpenLibrary doesn't list yet). They're linked to OpenLibrary automatically once it lists them.`}
+                                            onClick={() => addManualAuthor(r.id, r.author)}>
+                                        {busy.has(r.id) ? '…' : `+ Add author “${r.author}”`}
                                     </button>
                                 )}
                                 {r.source === 'untracked' && (
