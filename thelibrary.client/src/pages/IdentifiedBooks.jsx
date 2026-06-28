@@ -245,47 +245,58 @@ export default function IdentifiedBooks() {
     // Aim 2: assign an untracked __unknown file to its author. Resolves the
     // author from the guess (OpenLibrary, else by name), moves the file into that
     // author's folder, and tracks it as one of their unmatched files.
-    const assignAuthor = async (id, authorName) => {
-        if (!window.confirm(`File this untracked book under "${authorName}"? It moves into that author's folder and becomes one of their unmatched files.`)) return
+    const assignAuthor = async (id) => {
+        // Inline feedback only — no confirm/alert (a browser that suppresses page
+        // dialogs would make a confirm-gated button silently do nothing).
         setBusy(prev => new Set(prev).add(id))
+        setError(null)
         try {
             const r = await fetch(`/api/identified/${id}/assign-author`, { method: 'POST' })
             const body = await r.json().catch(() => ({}))
             if (!r.ok) throw new Error(body.error || r.statusText)
-            if (!body.assigned) { alert(body.reason || 'Could not assign.'); return }
-            alert(`Filed under ${body.authorName}${body.bookId ? ' and matched to a book' : ''}.`)
+            if (!body.assigned) throw new Error(body.reason || 'Could not file the book under that author.')
             // Reload rather than drop the row: when the file carries a series
             // catalogue it stays (now tagged with its author) so its series can be
             // built with the same Build-series action as the tracked rows.
             load()
         } catch (e) {
-            alert(`Failed: ${e.message}`)
+            setError(String(e.message || e))
         } finally {
             setBusy(prev => { const n = new Set(prev); n.delete(id); return n })
         }
     }
 
     // Add the row's identified author as a MANUAL author (one OpenLibrary may not
-    // list yet). After this the row's "Assign to …" resolves to them by name.
+    // list yet) AND file this untracked book under them — in one go. Uses INLINE
+    // feedback only (no alert/confirm): on success the row leaves the list; on
+    // failure the message shows at the top. (Browsers that suppress page dialogs
+    // would otherwise make alert/confirm-based buttons silently no-op.)
     const addManualAuthor = async (id, authorName) => {
         const name = (authorName || '').trim()
         if (!name) return
         setBusy(prev => new Set(prev).add(id))
+        setError(null)
         try {
-            const r = await fetch('/api/authors', {
+            // 1. Create the manual author. A 409 (already in the library) is fine —
+            //    we just go on to file the book under the existing one.
+            const ar = await fetch('/api/authors', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name })
             })
-            const body = await r.json().catch(() => ({}))
-            if (r.status === 409 && body.authorId) {
-                alert(`"${name}" is already in the library — use "Assign to ${name}" to file this book under them.`)
-                return
+            if (!ar.ok && ar.status !== 409) {
+                const b = await ar.json().catch(() => ({}))
+                throw new Error(b.error || `Add author failed (HTTP ${ar.status})`)
             }
-            if (!r.ok) throw new Error(body.error || r.statusText)
-            alert(`Added "${name}" as a manual author. Use "Assign to ${name}" to file this book under them.`)
+            // 2. File this untracked book under them (server prefers the hand-added
+            //    author of the exact name).
+            const sr = await fetch(`/api/identified/${id}/assign-author`, { method: 'POST' })
+            const sb = await sr.json().catch(() => ({}))
+            if (!sr.ok) throw new Error(sb.error || `Filing the book failed (HTTP ${sr.status})`)
+            if (sb.assigned === false) throw new Error(sb.reason || 'Could not file the book under that author.')
+            load() // success — the row moves out of the untracked list
         } catch (e) {
-            alert(`Add author failed: ${e.message || e}`)
+            setError(`“${name}”: ${e.message || e}`)
         } finally {
             setBusy(prev => { const n = new Set(prev); n.delete(id); return n })
         }
@@ -637,15 +648,15 @@ function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, assi
                                 {r.source === 'untracked' && r.author && (
                                     <button disabled={busy.has(r.id)}
                                             title={`File this untracked book under "${r.author}" (resolves via OpenLibrary or by name)`}
-                                            onClick={() => assignAuthor(r.id, r.author)}>
+                                            onClick={() => assignAuthor(r.id)}>
                                         {busy.has(r.id) ? '…' : `Assign to ${r.author}`}
                                     </button>
                                 )}
                                 {r.source === 'untracked' && r.author && (
                                     <button className="btn-ghost" disabled={busy.has(r.id)}
-                                            title={`Add "${r.author}" to the library as a manual author (for people OpenLibrary doesn't list yet). They're linked to OpenLibrary automatically once it lists them.`}
+                                            title={`Add "${r.author}" to the library as a manual author (for people OpenLibrary doesn't list yet) and file this book under them.`}
                                             onClick={() => addManualAuthor(r.id, r.author)}>
-                                        {busy.has(r.id) ? '…' : `+ Add author “${r.author}”`}
+                                        {busy.has(r.id) ? '…' : `+ Add author “${r.author}” & file here`}
                                     </button>
                                 )}
                                 {r.source === 'untracked' && (
