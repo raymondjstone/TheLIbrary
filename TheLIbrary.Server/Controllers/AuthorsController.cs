@@ -1886,6 +1886,20 @@ public partial class AuthorsController : ControllerBase
         var scan = await _db.BookContentScans.FirstOrDefaultAsync(c => c.Id == scanId, ct);
         if (scan is null) return NotFound(new { error = "Scan not found." });
 
+        // The file is already gone (moved/assigned/deleted out of band) — the scan row
+        // is stale. Drop it (and any leftover quarantine-index entry) so it leaves the
+        // Identified / Tracked lists. There's nothing to file. Reported as "assigned"
+        // so the client just refreshes the row away.
+        if (!_fs.FileExists(scan.FullPath) && !_fs.DirectoryExists(scan.FullPath))
+        {
+            var staleIndex = await _db.UnknownFiles.Where(u => u.FullPath == scan.FullPath).ToListAsync(ct);
+            _db.UnknownFiles.RemoveRange(staleIndex);
+            _db.BookContentScans.Remove(scan);
+            await _db.SaveChangesAsync(ct);
+            return Ok(new AssignAuthorResult(true, null, null, null, scan.FullPath,
+                "The file was already gone — removed the stale row."));
+        }
+
         bool assigned = false;
         int? authorId = null, bookId = null;
         string? authorName = null, path = null, reason = null;

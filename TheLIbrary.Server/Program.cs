@@ -180,6 +180,14 @@ if (!skipStartupTasks)
         var schedules = scope.ServiceProvider.GetRequiredService<ScheduleService>();
         await schedules.ClearFailedJobsAsync();
         await schedules.ApplyAllAsync();
+
+        // Kick off a catch-up pass on startup: bring in new files (incoming), rebuild
+        // the quarantine index (reprocess-unknown), then run the main sync. They queue
+        // on the single worker + coordinator and run one at a time; the normal cron
+        // schedules (applied above) continue as usual afterwards.
+        schedules.TriggerNow(ScheduleJobIds.Incoming);
+        schedules.TriggerNow(ScheduleJobIds.ReprocessUnknown);
+        schedules.TriggerNow(ScheduleJobIds.Sync);
     }
 }
 

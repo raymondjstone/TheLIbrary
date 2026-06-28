@@ -1036,6 +1036,27 @@ public class AuthorsControllerIntegrationTests
     }
 
     [Fact]
+    public async Task AssignUntrackedAuthor_Removes_The_Stale_Row_When_The_File_Is_Gone()
+    {
+        using var factory = new LibraryApiFactory();
+        // A path that was never created on disk — the file is "gone".
+        var missingPath = Path.Combine(Path.GetTempPath(), $"thelibrary-gone-{Guid.NewGuid():N}.epub");
+        await SeedAsync(factory, db => db.BookContentScans.Add(new BookContentScan
+        {
+            Id = 9, FullPath = missingPath, Source = "untracked", Author = "Some Author", ScannedAt = DateTime.UtcNow,
+        }));
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsync("/api/identified/9/assign-author", null);
+        var body = await resp.Content.ReadFromJsonAsync<AuthorsController.AssignAuthorResult>();
+
+        Assert.True(body!.Assigned);   // reported handled so the client drops the row
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        Assert.Null(await db.BookContentScans.FindAsync(9));   // stale row removed
+    }
+
+    [Fact]
     public async Task AddAuthor_Rejects_Blacklisted_Name_When_Name_Is_Provided()
     {
         using var factory = new LibraryApiFactory();
