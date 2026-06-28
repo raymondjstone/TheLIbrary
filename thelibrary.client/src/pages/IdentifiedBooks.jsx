@@ -267,25 +267,6 @@ export default function IdentifiedBooks() {
         }
     }
 
-    // Add the row's guessed author as a MANUAL author AND file this untracked book
-    // under them — one server call (same shape as the other row actions, which is
-    // why this finally behaves like them). Inline feedback only: the row leaves the
-    // list on success; any problem shows at the top.
-    const addManualAuthor = async (id) => {
-        setBusy(prev => new Set(prev).add(id))
-        setError(null)
-        try {
-            const r = await fetch(`/api/identified/${id}/add-manual-author`, { method: 'POST' })
-            const body = await r.json().catch(() => ({}))
-            if (!r.ok) throw new Error(body.error || r.statusText)
-            if (body.assigned === false) throw new Error(body.reason || 'Could not file the book under that author.')
-            load()
-        } catch (e) {
-            setError(String(e.message || e))
-        } finally {
-            setBusy(prev => { const n = new Set(prev); n.delete(id); return n })
-        }
-    }
 
     const [assignAllBusy, setAssignAllBusy] = useState(false)
     const [assignAllProgress, setAssignAllProgress] = useState(null) // { assigned, skipped, failed }
@@ -640,7 +621,21 @@ function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, assi
                                 {r.source === 'untracked' && r.author && (
                                     <button className="btn-ghost" disabled={busy.has(r.id)}
                                             title={`Add "${r.author}" to the library as a manual author (for people OpenLibrary doesn't list yet) and file this book under them.`}
-                                            onClick={() => addManualAuthor(r.id)}>
+                                            onClick={async () => {
+                                                setBusy(prev => new Set(prev).add(r.id))
+                                                setError(null)
+                                                try {
+                                                    const resp = await fetch(`/api/identified/${r.id}/add-manual-author`, { method: 'POST' })
+                                                    const b = await resp.json().catch(() => ({}))
+                                                    if (!resp.ok) throw new Error(b.error || resp.statusText)
+                                                    if (b.assigned === false) throw new Error(b.reason || 'Could not file the book under that author.')
+                                                    load()
+                                                } catch (e) {
+                                                    setError(String(e.message || e))
+                                                } finally {
+                                                    setBusy(prev => { const n = new Set(prev); n.delete(r.id); return n })
+                                                }
+                                            }}>
                                         {busy.has(r.id) ? '…' : `+ Add author “${r.author}” & file here`}
                                     </button>
                                 )}
