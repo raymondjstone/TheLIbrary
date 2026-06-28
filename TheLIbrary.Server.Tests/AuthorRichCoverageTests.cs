@@ -19,7 +19,7 @@ public sealed class AuthorRichCoverageTests : IDisposable
     public void Dispose() { try { Directory.Delete(_root, recursive: true); } catch { } }
 
     private static AuthorsController NewController(LibraryDbContext db)
-        => new(db, ol: null!, refresher: null!, manualBooks: null!, fs: new SystemFileSystem(),
+        => new(db, ol: null!, refresher: null!, manualBooks: null!, manualAuthors: null!, fs: new SystemFileSystem(),
             log: NullLogger<AuthorsController>.Instance, converter: null!, contentScan: null!,
             assigner: null!, lifetime: null!);
 

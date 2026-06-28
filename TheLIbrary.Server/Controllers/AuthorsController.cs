@@ -20,6 +20,7 @@ public partial class AuthorsController : ControllerBase
     private readonly OpenLibraryClient _ol;
     private readonly AuthorRefresher _refresher;
     private readonly ManualBookService _manualBooks;
+    private readonly ManualAuthorService _manualAuthors;
     private readonly IFileSystem _fs;
     private readonly ILogger<AuthorsController> _log;
     private readonly CalibreConverter _converter;
@@ -32,6 +33,7 @@ public partial class AuthorsController : ControllerBase
         OpenLibraryClient ol,
         AuthorRefresher refresher,
         ManualBookService manualBooks,
+        ManualAuthorService manualAuthors,
         IFileSystem fs,
         ILogger<AuthorsController> log,
         CalibreConverter converter,
@@ -43,6 +45,7 @@ public partial class AuthorsController : ControllerBase
         _ol = ol;
         _refresher = refresher;
         _manualBooks = manualBooks;
+        _manualAuthors = manualAuthors;
         _fs = fs;
         _log = log;
         _converter = converter;
@@ -1476,20 +1479,39 @@ public partial class AuthorsController : ControllerBase
 
     public sealed class AddAuthorRequest
     {
-        [Required]
+        // Optional: when omitted/blank the author is added by hand (manual) from
+        // Name alone. Nullable so an ApiController model-bind doesn't 400 a
+        // name-only manual add.
         [StringLength(64)]
-        public string OpenLibraryKey { get; init; } = "";
+        public string? OpenLibraryKey { get; init; }
 
         [StringLength(512)]
         public string? Name { get; init; }
     }
 
-    // Adds an author to the watchlist from an OpenLibrary key.
-    // If Name is omitted we resolve it via OL search.
+    // Adds an author to the watchlist. With an OpenLibrary key it's tracked from
+    // that key (Name resolved via OL if omitted). With NO key — just a name — it's
+    // added by hand: a person OL doesn't list yet gets a synthetic "XX…A" key and
+    // is promoted in place by the promote-manual-books job once OL lists them.
     [HttpPost]
     public async Task<ActionResult<AuthorListItem>> Add([FromBody] AddAuthorRequest body, CancellationToken ct)
     {
-        var key = body.OpenLibraryKey.Trim();
+        var key = (body.OpenLibraryKey ?? "").Trim();
+
+        // No OL key → hand-added (manual) author.
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            var manual = await _manualAuthors.CreateAsync(body.Name, ct);
+            if (manual.Error is not null)
+                return manual.Conflict
+                    ? Conflict(new { error = manual.Error, authorId = manual.Author?.Id })
+                    : BadRequest(new { error = manual.Error });
+            var a = manual.Author!;
+            return Ok(new AuthorListItem(
+                a.Id, a.Name, a.CalibreFolderName, a.OpenLibraryKey,
+                a.Status.ToString(), a.ExclusionReason, a.Priority, 0, 0, 0, 0, a.LastSyncedAt));
+        }
+
         // Accept "/authors/OL1234A" or "OL1234A".
         if (key.StartsWith("/authors/", StringComparison.OrdinalIgnoreCase))
             key = key[("/authors/".Length)..];

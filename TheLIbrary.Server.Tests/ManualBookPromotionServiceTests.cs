@@ -201,6 +201,61 @@ public class ManualBookPromotionServiceTests
         Assert.Equal(earlier, checkedEarlier.PromoteCheckedAt); // older one was skipped this run
     }
 
+    [Fact]
+    public async Task Promotes_Manual_Author_On_Exact_Name_Match_Swapping_In_The_Real_Key()
+    {
+        var dbName = NewDb();
+        await using (var db = CreateDb(dbName))
+        {
+            db.Authors.Add(new Author
+            {
+                Id = 1, Name = "Quigley Fenwick", OpenLibraryKey = "XX00000001A",
+                Status = AuthorStatus.Active, CreationSource = "manual",
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // OL author search now lists them — highest work_count match wins.
+        var sut = CreateService(dbName, """
+            {"numFound":1,"docs":[{"key":"OL77A","name":"Quigley Fenwick","work_count":12}]}
+            """);
+        var summary = await sut.RunForTestsAsync(CancellationToken.None);
+
+        Assert.Equal(1, summary.AuthorsPromoted);
+        Assert.Equal(0, summary.AuthorsRemaining);
+        await using var verify = CreateDb(dbName);
+        var author = await verify.Authors.SingleAsync();
+        Assert.Equal("OL77A", author.OpenLibraryKey);   // real key swapped in
+        Assert.Null(author.NextFetchAt);                 // due → refresher populates it
+        Assert.Equal(AuthorStatus.Active, author.Status);
+    }
+
+    [Fact]
+    public async Task Leaves_Manual_Author_When_No_OL_Name_Matches()
+    {
+        var dbName = NewDb();
+        await using (var db = CreateDb(dbName))
+        {
+            db.Authors.Add(new Author
+            {
+                Id = 1, Name = "Quigley Fenwick", OpenLibraryKey = "XX00000001A",
+                Status = AuthorStatus.Active, CreationSource = "manual",
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // A different person comes back — must NOT rebind the manual author.
+        var sut = CreateService(dbName, """
+            {"numFound":1,"docs":[{"key":"OL999A","name":"Someone Entirely Else","work_count":40}]}
+            """);
+        var summary = await sut.RunForTestsAsync(CancellationToken.None);
+
+        Assert.Equal(0, summary.AuthorsPromoted);
+        Assert.Equal(1, summary.AuthorsRemaining);
+        await using var verify = CreateDb(dbName);
+        Assert.Equal("XX00000001A", (await verify.Authors.SingleAsync()).OpenLibraryKey);
+    }
+
     private static string NewDb() => $"manual-promotion-tests-{Guid.NewGuid():N}";
 
     private static LibraryDbContext CreateDb(string name)

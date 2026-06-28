@@ -23,7 +23,7 @@ public sealed class MiscCoverageTests : IDisposable
         => new(db, httpFactory: null!, new SystemFileSystem());
 
     private static AuthorsController Authors(LibraryDbContext db)
-        => new(db, ol: null!, refresher: null!, manualBooks: null!, fs: new SystemFileSystem(),
+        => new(db, ol: null!, refresher: null!, manualBooks: null!, manualAuthors: null!, fs: new SystemFileSystem(),
             log: NullLogger<AuthorsController>.Instance, converter: null!, contentScan: null!,
             assigner: null!, lifetime: null!);
 

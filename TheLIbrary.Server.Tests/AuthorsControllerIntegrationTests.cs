@@ -121,6 +121,37 @@ public class AuthorsControllerIntegrationTests
     }
 
     [Fact]
+    public async Task Add_Without_OpenLibraryKey_Creates_An_Active_Manual_Author()
+    {
+        using var factory = new LibraryApiFactory();
+        using var client = factory.CreateClient();
+
+        // No openLibraryKey field at all → hand-added (manual) author.
+        var response = await client.PostAsJsonAsync("/api/authors", new { name = "Quentin Q. Manual" });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        var author = Assert.Single(db.Authors.Where(a => a.Name == "Quentin Q. Manual"));
+        Assert.StartsWith("XX", author.OpenLibraryKey, StringComparison.Ordinal);
+        Assert.EndsWith("A", author.OpenLibraryKey, StringComparison.Ordinal); // author key, not a work key
+        Assert.Equal(AuthorStatus.Active, author.Status);   // behaves like a normal author
+        Assert.Equal("manual", author.CreationSource);
+        Assert.Single(db.ActivityLog.Where(a => a.Action == "manual-author-add"));
+    }
+
+    [Fact]
+    public async Task Add_Manual_Author_Conflicts_With_An_Existing_Same_Name()
+    {
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db => db.Authors.Add(new Author { Id = 1, Name = "Already Here" }));
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync("/api/authors", new { name = "Already Here" });
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+    }
+
+    [Fact]
     public async Task AddOpenLibraryBook_Creates_Work_For_Author()
     {
         using var factory = new LibraryApiFactory();

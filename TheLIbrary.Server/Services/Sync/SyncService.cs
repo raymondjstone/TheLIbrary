@@ -1204,9 +1204,12 @@ public sealed class SyncService
                 // successfully refreshed, so an out-of-band NextFetchAt (e.g.
                 // a linked/collision deferral) must not hide them from the run.
                 var authorIds = await db.Authors
-                    .Where(a => a.Status == AuthorStatus.Pending
+                    // Manually-added authors carry a synthetic "XX…A" key OL can't
+                    // resolve — they're promoted by the promote pass, never OL-refreshed.
+                    .Where(a => (a.OpenLibraryKey == null || !a.OpenLibraryKey.StartsWith("XX"))
+                             && (a.Status == AuthorStatus.Pending
                              || a.NextFetchAt == null
-                             || a.NextFetchAt <= now)
+                             || a.NextFetchAt <= now))
                     .OrderByDescending(a => a.Status == AuthorStatus.Pending) // Pending first
                     .ThenBy(a => a.NextFetchAt.HasValue) // then nulls
                     .ThenBy(a => a.NextFetchAt)
@@ -1228,7 +1231,8 @@ public sealed class SyncService
                         : (DateTime?)null;
 
                     var earlyQuery = db.Authors
-                        .Where(a => a.NextFetchAt > now && a.Status != AuthorStatus.Pending);
+                        .Where(a => a.NextFetchAt > now && a.Status != AuthorStatus.Pending
+                                 && (a.OpenLibraryKey == null || !a.OpenLibraryKey.StartsWith("XX")));
 
                     if (earlyDeadline.HasValue)
                         earlyQuery = earlyQuery.Where(a => a.NextFetchAt <= earlyDeadline.Value);

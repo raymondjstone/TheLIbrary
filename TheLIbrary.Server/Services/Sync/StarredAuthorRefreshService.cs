@@ -67,7 +67,10 @@ public sealed class StarredAuthorRefreshService
         var refresher = scope.ServiceProvider.GetRequiredService<AuthorRefresher>();
 
         var authorIds = await db.Authors
-            .Where(a => a.Priority >= 1)
+            // Skip manually-added authors (synthetic "XX…A" key) — OL can't refresh
+            // them; the promote pass swaps in a real key first.
+            .Where(a => a.Priority >= 1
+                     && (a.OpenLibraryKey == null || !a.OpenLibraryKey.StartsWith("XX")))
             .OrderBy(a => a.Name)
             .Select(a => a.Id)
             .ToListAsync(ct);

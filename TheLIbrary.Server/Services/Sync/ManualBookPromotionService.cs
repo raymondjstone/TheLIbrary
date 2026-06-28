@@ -7,7 +7,8 @@ using TheLibrary.Server.Services.Scheduling;
 namespace TheLibrary.Server.Services.Sync;
 
 public sealed record ManualBookPromotionSummary(
-    int Examined, int Promoted, int Merged, int NotFound, int Errors, int Remaining);
+    int Examined, int Promoted, int Merged, int NotFound, int Errors, int Remaining,
+    int AuthorsExamined = 0, int AuthorsPromoted = 0, int AuthorsRemaining = 0);
 
 // Scheduled job: searches OpenLibrary for every manually-catalogued book
 // (synthetic "XX" work key — hand-added entries and the placeholder books the
@@ -197,12 +198,111 @@ public sealed class ManualBookPromotionService
 
         var remaining = await db.Books
             .CountAsync(b => b.OpenLibraryWorkKey.StartsWith(ManualWorkKey.Prefix), ct);
-        var summary = new ManualBookPromotionSummary(examined, promoted, merged, notFound, errors, remaining);
+
+        // ---- Part two: promote manually-added AUTHORS (synthetic "XX…A" keys) ----
+        var (authorsExamined, authorsPromoted, authorsRemaining) = await PromoteManualAuthorsAsync(db, ol, maxPerRun, ct);
+
+        var summary = new ManualBookPromotionSummary(examined, promoted, merged, notFound, errors, remaining,
+            authorsExamined, authorsPromoted, authorsRemaining);
         _log.LogInformation(
-            "Promote-manual-books job done — examined {Examined}, promoted {Promoted}, merged {Merged} ({DbMerged} from DB), not on OL {NotFound}, errors {Errors}, remaining {Remaining}",
-            examined, promoted, merged, dbMerged, notFound, errors, remaining);
-        _currentMessage = $"Done — {promoted} promoted, {merged} merged ({dbMerged} from DB matches), {notFound} not on OL yet, {remaining} manual book(s) remaining";
+            "Promote-manual job done — books: examined {Examined}, promoted {Promoted}, merged {Merged} ({DbMerged} from DB), not on OL {NotFound}, errors {Errors}, remaining {Remaining}; authors: examined {AuthorsExamined}, promoted {AuthorsPromoted}, remaining {AuthorsRemaining}",
+            examined, promoted, merged, dbMerged, notFound, errors, remaining, authorsExamined, authorsPromoted, authorsRemaining);
+        _currentMessage = $"Done — books: {promoted} promoted, {merged} merged, {notFound} not on OL yet, {remaining} remaining; "
+            + $"authors: {authorsPromoted} promoted, {authorsRemaining} remaining";
         return summary;
+    }
+
+    // Searches OpenLibrary for every manually-added author (synthetic "XX…A" key)
+    // and, on a confident name match, swaps in the real OL key and marks the author
+    // due so the next author-refresh fully populates it. Oldest-attempted-first,
+    // reusing NextFetchAt as the rotation cursor (these rows are excluded from the
+    // OL refresh, so the field is free to use here). A match requires the OL author
+    // name (or an alternate) to NORMALIZE-EQUAL the manual name — never a fuzzy or
+    // partial hit, so a manual author can't be rebound to the wrong person.
+    private async Task<(int Examined, int Promoted, int Remaining)> PromoteManualAuthorsAsync(
+        LibraryDbContext db, OpenLibraryClient ol, int maxPerRun, CancellationToken ct)
+    {
+        _currentMessage = "Promoting manual authors";
+        var toAttempt = await db.Authors
+            .Where(a => a.OpenLibraryKey != null
+                     && a.OpenLibraryKey.StartsWith(ManualAuthorKey.Prefix)
+                     && a.OpenLibraryKey.EndsWith("A"))
+            .OrderBy(a => a.NextFetchAt == null ? 0 : 1)   // never-attempted first
+            .ThenBy(a => a.NextFetchAt)                      // then least-recently
+            .ThenBy(a => a.Id)
+            .Take(maxPerRun)
+            .Select(a => a.Id)
+            .ToListAsync(ct);
+
+        int examined = 0, promoted = 0;
+        var checkedAt = DateTime.UtcNow;
+        foreach (var aid in toAttempt)
+        {
+            ct.ThrowIfCancellationRequested();
+            var author = await db.Authors.FirstOrDefaultAsync(a => a.Id == aid, ct);
+            if (author is null || !ManualAuthorKey.IsManual(author.OpenLibraryKey)) continue;
+
+            examined++;
+            _currentMessage = $"Checking author {examined}/{toAttempt.Count}: {author.Name}";
+            author.NextFetchAt = checkedAt;   // rotate to the back whatever the outcome
+            try
+            {
+                var match = await FindOpenLibraryAuthorAsync(ol, author.Name, ct);
+                if (match?.Key is not null)
+                {
+                    var realKey = match.Key.Split('/').Last();
+                    // Don't collide with a row that already holds this OL key — leave
+                    // the manual author for the user to link/merge by hand instead.
+                    var taken = await db.Authors.AnyAsync(a => a.Id != author.Id && a.OpenLibraryKey == realKey, ct);
+                    if (!taken)
+                    {
+                        author.OpenLibraryKey = realKey;
+                        author.NextFetchAt = null;   // due now → author-refresh populates it
+                        promoted++;
+                        Services.ActivityLogger.Record(db, "promote-manual-author",
+                            $"Promoted manual author \"{author.Name}\" to OpenLibrary author {realKey}",
+                            "promote-manual-books");
+                        _log.LogInformation(
+                            "Promote-manual: linked manual author \"{Name}\" to OL author {Key}", author.Name, realKey);
+                    }
+                    else
+                    {
+                        _log.LogInformation(
+                            "Promote-manual: OL author {Key} for \"{Name}\" already owned by another row — left for manual link",
+                            realKey, author.Name);
+                    }
+                }
+                await db.SaveChangesAsync(ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                db.ChangeTracker.Clear();
+                _log.LogWarning(ex, "Promote-manual: failed on author \"{Name}\" (id {Id})", author.Name, aid);
+                try { await db.Authors.Where(a => a.Id == aid).ExecuteUpdateAsync(s => s.SetProperty(x => x.NextFetchAt, checkedAt), ct); }
+                catch (Exception ex2) { _log.LogWarning(ex2, "Promote-manual: could not stamp check time on author id {Id}", aid); }
+            }
+        }
+
+        var remaining = await db.Authors.CountAsync(a => a.OpenLibraryKey != null
+            && a.OpenLibraryKey.StartsWith(ManualAuthorKey.Prefix) && a.OpenLibraryKey.EndsWith("A"), ct);
+        return (examined, promoted, remaining);
+    }
+
+    // Best confident OL author match for a manual name: the OL name or an alternate
+    // must NORMALIZE-EQUAL the manual name; among those the highest work_count wins.
+    private static async Task<AuthorSearchDoc?> FindOpenLibraryAuthorAsync(
+        OpenLibraryClient ol, string name, CancellationToken ct)
+    {
+        var search = await ol.SearchAuthorsAsync(name, ct);
+        if (search?.Docs is not { Count: > 0 } docs) return null;
+        var target = TitleNormalizer.NormalizeAuthor(name);
+        return docs
+            .Where(d => d.Key is not null
+                && (TitleNormalizer.NormalizeAuthor(d.Name ?? "") == target
+                    || (d.AlternateNames?.Any(n => TitleNormalizer.NormalizeAuthor(n) == target) ?? false)))
+            .OrderByDescending(d => d.WorkCount ?? 0)
+            .FirstOrDefault();
     }
 
     // DB-only pass (no OpenLibrary): fold every manual placeholder that duplicates a

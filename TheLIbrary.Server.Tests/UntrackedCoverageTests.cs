@@ -30,7 +30,7 @@ public sealed class UntrackedCoverageTests : IDisposable
     }
 
     private static AuthorsController NewController(LibraryDbContext db)
-        => new(db, ol: null!, refresher: null!, manualBooks: null!, fs: new SystemFileSystem(),
+        => new(db, ol: null!, refresher: null!, manualBooks: null!, manualAuthors: null!, fs: new SystemFileSystem(),
             log: NullLogger<AuthorsController>.Instance, converter: null!, contentScan: null!,
             assigner: null!, lifetime: null!);
 

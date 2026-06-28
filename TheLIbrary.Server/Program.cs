@@ -62,6 +62,7 @@ builder.Services.AddSingleton<TheLibrary.Server.Services.Incoming.IncomingServic
 builder.Services.AddScoped<TheLibrary.Server.Services.AuthorUpdates.AuthorUpdateProcessor>();
 builder.Services.AddScoped<TheLibrary.Server.Services.Sync.AuthorRefresher>();
 builder.Services.AddScoped<TheLibrary.Server.Services.Sync.ManualBookService>();
+builder.Services.AddScoped<TheLibrary.Server.Services.Sync.ManualAuthorService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.AuthorPruneService>();
 builder.Services.AddScoped<TheLibrary.Server.Services.Download.NzbGrabService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Search.FullTextSearchService>();

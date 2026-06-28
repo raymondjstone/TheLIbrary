@@ -86,6 +86,15 @@ public sealed class AuthorRefresher
     {
         onMessage?.Invoke($"Resolving {author.Name}");
 
+        // A manually-added author carries a synthetic "XX…A" key — OpenLibrary has
+        // no such record, so never fetch it (that 404s and would wrongly mark the
+        // author NotFound). It stays Active and is handled by the promote pass,
+        // which swaps in the real OL key once OL is found to list them. The refresh
+        // selection queries also exclude these; this is the backstop.
+        if (ManualAuthorKey.IsManual(author.OpenLibraryKey))
+            return new AuthorRefreshOutcome(author.Id, false, null,
+                author.Status.ToString(), author.ExclusionReason, 0, 0, author.NextFetchAt);
+
         // The reserved catch-all "Unknown Author" is a placeholder, not a real
         // person — never search OpenLibrary for it (that would assign it a bogus
         // key and start treating it as a real author). Park it far in the future.
@@ -440,6 +449,14 @@ public sealed class AuthorRefresher
         // how the library was bleeding into the quarantine — OpenLibrary
         // returning no recent works says nothing about books already on disk.
         else if (await _db.LocalBookFiles.AnyAsync(f => f.AuthorId == author.Id, ct))
+        {
+            author.Status = AuthorStatus.Active;
+            author.ExclusionReason = null;
+        }
+        // A hand-added author is one the user explicitly wants — like a starred
+        // author, it's never excluded by the no-English-works / publication-date
+        // rules, even after it's been promoted from its synthetic key to a real one.
+        else if (string.Equals(author.CreationSource, "manual", StringComparison.Ordinal))
         {
             author.Status = AuthorStatus.Active;
             author.ExclusionReason = null;

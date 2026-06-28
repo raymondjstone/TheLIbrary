@@ -54,7 +54,7 @@ public sealed class OlDirectCoverageTests : IDisposable
         var ol = NewOl();
         var fs = new SystemFileSystem();
         var assigner = new UntrackedAuthorAssigner(db, ol, fs);
-        return new AuthorsController(db, ol, refresher: null!, manualBooks: null!, fs: fs,
+        return new AuthorsController(db, ol, refresher: null!, manualBooks: null!, manualAuthors: null!, fs: fs,
             log: NullLogger<AuthorsController>.Instance, converter: null!, contentScan: null!,
             assigner: assigner, lifetime: null!);
     }

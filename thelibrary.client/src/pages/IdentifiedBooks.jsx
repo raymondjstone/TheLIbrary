@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import BookPreview from '../components/BookPreview.jsx'
 import OpenLibraryWorkSearch from '../components/OpenLibraryWorkSearch.jsx'
+import AddAuthorDialog from './AddAuthorDialog.jsx'
 
 const fileStem = (path) => {
     const name = (path ?? '').split(/[\\/]/).pop() ?? ''
@@ -27,6 +28,8 @@ function rowSearchText(r) {
 // can confirm whether the guess is right before anything acts on it.
 export default function IdentifiedBooks() {
     const [params] = useSearchParams()
+    const navigate = useNavigate()
+    const [addAuthor, setAddAuthor] = useState(false)
     const authorId = params.get('author')
     const [rows, setRows] = useState(null)
     const [error, setError] = useState(null)
@@ -359,6 +362,19 @@ export default function IdentifiedBooks() {
                 Check each one and <strong>Dismiss</strong> once reviewed.
                 {authorId && <> Filtered to author #{authorId}. <Link to="/identified">Show all</Link></>}
             </p>
+
+            {/* When a file's author isn't in the library yet, add them by hand here,
+                then match the file to them. */}
+            <div className="toolbar" style={{ marginBottom: '0.75rem' }}>
+                <button onClick={() => setAddAuthor(true)}>+ Add author</button>
+                <span className="subtle">Author not in the library yet? Add them, then match their files.</span>
+            </div>
+
+            {addAuthor && (
+                <AddAuthorDialog
+                    onAdded={(a) => { setAddAuthor(false); if (a?.id) navigate(`/authors/${a.id}`) }}
+                    onClose={() => setAddAuthor(false)} />
+            )}
 
             {rows !== null && rows.length > 0 && (
                 <div className="toolbar" style={{ marginBottom: '0.75rem' }}>
