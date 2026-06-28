@@ -106,26 +106,41 @@ public sealed class UntrackedAuthorAssigner
             }
         }
 
-        // 1. Try OpenLibrary (ISBN, else title + author) — best author + a book.
         Author? author = null;
         Book? book = null;
-        WorkSearchResponse? search = null;
-        if (!string.IsNullOrWhiteSpace(searchIsbn))
-            search = await _ol.SearchByIsbnAsync(searchIsbn, ct);
-        if ((search?.Docs is null || search.Docs.Count == 0) && !string.IsNullOrWhiteSpace(searchTitle))
-            search = await _ol.SearchWorksAsync(searchTitle!, searchAuthor, ct);
-        var doc = search?.Docs?.FirstOrDefault();
-        if (doc is not null && !string.IsNullOrWhiteSpace(doc.Key))
+
+        // 0. If the user has HAND-ADDED an author with exactly this name (e.g. via the
+        //    Identified page's per-row "Add author" for this very file), file under
+        //    THAT author — never let an OL title search rebind the file to a different
+        //    person. This is what makes "Assign to <name>" use the manual author the
+        //    user just created, even when OpenLibrary doesn't list them.
+        if (!string.IsNullOrWhiteSpace(searchAuthor))
+            author = await _db.Authors.FirstOrDefaultAsync(
+                a => a.Name == searchAuthor!.Trim()
+                  && a.CreationSource == "manual"
+                  && a.LinkedToAuthorId == null, ct);
+
+        // 1. Try OpenLibrary (ISBN, else title + author) — best author + a book.
+        if (author is null)
         {
-            author = await ResolveTargetAuthorAsync(
-                null, doc.AuthorKeys?.FirstOrDefault(),
-                doc.AuthorNames?.FirstOrDefault(),
-                doc.AuthorNames is { Count: > 0 } ? string.Join(", ", doc.AuthorNames) : null, ct);
-            if (author is not null)
+            WorkSearchResponse? search = null;
+            if (!string.IsNullOrWhiteSpace(searchIsbn))
+                search = await _ol.SearchByIsbnAsync(searchIsbn, ct);
+            if ((search?.Docs is null || search.Docs.Count == 0) && !string.IsNullOrWhiteSpace(searchTitle))
+                search = await _ol.SearchWorksAsync(searchTitle!, searchAuthor, ct);
+            var doc = search?.Docs?.FirstOrDefault();
+            if (doc is not null && !string.IsNullOrWhiteSpace(doc.Key))
             {
-                var add = await EnsureOpenLibraryBookAsync(
-                    author.Id, doc.Key, doc.Title, doc.FirstPublishYear, doc.CoverId, owned: false, ct);
-                book = add.Book; // a book-creation hiccup shouldn't block the author assignment
+                author = await ResolveTargetAuthorAsync(
+                    null, doc.AuthorKeys?.FirstOrDefault(),
+                    doc.AuthorNames?.FirstOrDefault(),
+                    doc.AuthorNames is { Count: > 0 } ? string.Join(", ", doc.AuthorNames) : null, ct);
+                if (author is not null)
+                {
+                    var add = await EnsureOpenLibraryBookAsync(
+                        author.Id, doc.Key, doc.Title, doc.FirstPublishYear, doc.CoverId, owned: false, ct);
+                    book = add.Book; // a book-creation hiccup shouldn't block the author assignment
+                }
             }
         }
 
