@@ -1899,6 +1899,29 @@ public partial class AuthorsController : ControllerBase
         }
     }
 
+    // Adds the row's GUESSED author as a hand-added (manual) author and files this
+    // untracked file under them — in one call (no OpenLibrary needed). For people OL
+    // doesn't list yet. POST /api/identified/{scanId}/add-manual-author
+    [HttpPost("~/api/identified/{scanId:int}/add-manual-author")]
+    public async Task<ActionResult<AssignAuthorResult>> AddManualAuthorAndAssign(int scanId, CancellationToken ct)
+    {
+        var scan = await _db.BookContentScans.FirstOrDefaultAsync(c => c.Id == scanId, ct);
+        if (scan is null) return NotFound(new { error = "Scan not found." });
+        if (string.IsNullOrWhiteSpace(scan.Author))
+            return Ok(new AssignAuthorResult(false, null, null, null, null,
+                "This row has no guessed author to add."));
+
+        // Create the manual author, or reuse an existing one of the same name.
+        var made = await _manualAuthors.CreateAsync(scan.Author, ct);
+        var author = made.Author;   // populated on success AND on the "already exists" conflict
+        if (author is null)
+            return Ok(new AssignAuthorResult(false, null, null, null, null,
+                made.Error ?? "Could not create the author."));
+
+        var r = await _assigner.AssignToAuthorAsync(scan, author, ct);
+        return Ok(new AssignAuthorResult(r.Assigned, r.AuthorId, r.AuthorName, r.BookId, r.Path, r.Reason));
+    }
+
     public sealed record AssignAuthorsAllResult(int Assigned, int Skipped, int Failed, int Remaining, int? LastId);
 
     // Bulk version of assign-author: files every untracked row that has something to

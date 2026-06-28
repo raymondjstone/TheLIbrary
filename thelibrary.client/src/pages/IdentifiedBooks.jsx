@@ -165,13 +165,14 @@ export default function IdentifiedBooks() {
     // the Unknown Author).
     const assignUnknown = async (id) => {
         setBusy(prev => new Set(prev).add(id))
+        setError(null)
         try {
             const r = await fetch(`/api/identified/${id}/assign-unknown`, { method: 'POST' })
             const body = await r.json().catch(() => ({}))
             if (!r.ok) throw new Error(body.error || r.statusText)
             load()
         } catch (e) {
-            alert(`Failed: ${e.message}`)
+            setError(String(e.message || e))
         } finally {
             setBusy(prev => { const n = new Set(prev); n.delete(id); return n })
         }
@@ -266,37 +267,21 @@ export default function IdentifiedBooks() {
         }
     }
 
-    // Add the row's identified author as a MANUAL author (one OpenLibrary may not
-    // list yet) AND file this untracked book under them — in one go. Uses INLINE
-    // feedback only (no alert/confirm): on success the row leaves the list; on
-    // failure the message shows at the top. (Browsers that suppress page dialogs
-    // would otherwise make alert/confirm-based buttons silently no-op.)
-    const addManualAuthor = async (id, authorName) => {
-        const name = (authorName || '').trim()
-        if (!name) return
+    // Add the row's guessed author as a MANUAL author AND file this untracked book
+    // under them — one server call (same shape as the other row actions, which is
+    // why this finally behaves like them). Inline feedback only: the row leaves the
+    // list on success; any problem shows at the top.
+    const addManualAuthor = async (id) => {
         setBusy(prev => new Set(prev).add(id))
         setError(null)
         try {
-            // 1. Create the manual author. A 409 (already in the library) is fine —
-            //    we just go on to file the book under the existing one.
-            const ar = await fetch('/api/authors', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name })
-            })
-            if (!ar.ok && ar.status !== 409) {
-                const b = await ar.json().catch(() => ({}))
-                throw new Error(b.error || `Add author failed (HTTP ${ar.status})`)
-            }
-            // 2. File this untracked book under them (server prefers the hand-added
-            //    author of the exact name).
-            const sr = await fetch(`/api/identified/${id}/assign-author`, { method: 'POST' })
-            const sb = await sr.json().catch(() => ({}))
-            if (!sr.ok) throw new Error(sb.error || `Filing the book failed (HTTP ${sr.status})`)
-            if (sb.assigned === false) throw new Error(sb.reason || 'Could not file the book under that author.')
-            load() // success — the row moves out of the untracked list
+            const r = await fetch(`/api/identified/${id}/add-manual-author`, { method: 'POST' })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            if (body.assigned === false) throw new Error(body.reason || 'Could not file the book under that author.')
+            load()
         } catch (e) {
-            setError(`“${name}”: ${e.message || e}`)
+            setError(String(e.message || e))
         } finally {
             setBusy(prev => { const n = new Set(prev); n.delete(id); return n })
         }
@@ -655,7 +640,7 @@ function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, assi
                                 {r.source === 'untracked' && r.author && (
                                     <button className="btn-ghost" disabled={busy.has(r.id)}
                                             title={`Add "${r.author}" to the library as a manual author (for people OpenLibrary doesn't list yet) and file this book under them.`}
-                                            onClick={() => addManualAuthor(r.id, r.author)}>
+                                            onClick={() => addManualAuthor(r.id)}>
                                         {busy.has(r.id) ? '…' : `+ Add author “${r.author}” & file here`}
                                     </button>
                                 )}
