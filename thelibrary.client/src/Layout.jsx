@@ -1,3 +1,4 @@
+/* global __APP_VERSION__, __BUILD_TIME__ */
 import { NavLink, Link, Outlet } from 'react-router-dom'
 import './App.css'
 import CoverHoverLayer from './components/CoverHoverLayer.jsx'
@@ -53,6 +54,11 @@ export default function Layout() {
                     <NavLink to="/schedules">Schedules</NavLink>
                     <NavLink to="/settings">Settings</NavLink>
                 </nav>
+                <div className="app-version"
+                     title={`Built ${__BUILD_TIME__} UTC`}
+                     style={{ marginTop: 'auto', padding: '0.75rem 0.6rem 0.4rem', fontSize: '0.7rem', color: 'var(--subtle, #9aa0a6)', opacity: 0.85 }}>
+                    v{__APP_VERSION__}
+                </div>
             </header>
             <main><Outlet /></main>
         </div>

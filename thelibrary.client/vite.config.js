@@ -37,8 +37,23 @@ if (!fs.existsSync(certFilePath) || !fs.existsSync(keyFilePath)) {
 const target = env.ASPNETCORE_HTTPS_PORT ? `https://localhost:${env.ASPNETCORE_HTTPS_PORT}` :
     env.ASPNETCORE_URLS ? env.ASPNETCORE_URLS.split(';')[0] : 'https://localhost:7047';
 
+// Build stamp shown at the bottom of the side menu — refreshed on every build.
+let appVersion;
+try {
+    const hash = child_process.execSync('git rev-parse --short HEAD').toString().trim();
+    const dirty = child_process.execSync('git status --porcelain').toString().trim() ? '+' : '';
+    appVersion = `${hash}${dirty}`;
+} catch {
+    appVersion = 'dev';
+}
+const buildTime = new Date().toISOString().slice(0, 16).replace('T', ' ');
+
 // https://vitejs.dev/config/
 export default defineConfig({
+    define: {
+        __APP_VERSION__: JSON.stringify(appVersion),
+        __BUILD_TIME__: JSON.stringify(buildTime),
+    },
     plugins: [plugin()],
     resolve: {
         alias: {
