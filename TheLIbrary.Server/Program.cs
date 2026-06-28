@@ -183,6 +183,24 @@ if (!skipStartupTasks)
     }
 }
 
+// index.html must NEVER be browser-cached: it names the current fingerprinted JS/CSS
+// bundles, so a cached copy keeps loading old (possibly broken) assets after a deploy.
+// Fingerprinted assets (/assets/index-*.js) have a file extension and stay cacheable;
+// extensionless GETs (the SPA root "/" and client routes) serve index.html → no-cache.
+app.Use(async (context, next) =>
+{
+    if (HttpMethods.IsGet(context.Request.Method) && !Path.HasExtension(context.Request.Path.Value ?? ""))
+    {
+        context.Response.OnStarting(() =>
+        {
+            context.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+            context.Response.Headers.Remove("ETag");
+            return Task.CompletedTask;
+        });
+    }
+    await next();
+});
+
 app.UseDefaultFiles();
 app.MapStaticAssets();
 
