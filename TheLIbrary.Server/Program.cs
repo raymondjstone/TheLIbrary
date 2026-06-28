@@ -222,6 +222,25 @@ if (!disableHangfire)
 
 app.MapControllers();
 
+// Build version shown at the bottom of the side menu. Derived from the running
+// assembly's build time, so it refreshes on every server build/deploy without
+// baking anything build-varying into the (cache-fingerprinted) SPA bundle.
+app.MapGet("/api/version", () =>
+{
+    string version;
+    try
+    {
+        var asm = System.Reflection.Assembly.GetExecutingAssembly();
+        var built = System.IO.File.GetLastWriteTimeUtc(asm.Location);
+        version = built.ToString("yyyy-MM-dd HH:mm") + " UTC";
+    }
+    catch
+    {
+        version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "unknown";
+    }
+    return Results.Ok(new { version });
+});
+
 // Unmatched /api routes must 404 as JSON — never fall through to the SPA's
 // index.html, which a fetch() would then try to JSON.parse ("Unexpected token
 // '<'"). This catch-all is lowest-precedence, so real controllers still win.

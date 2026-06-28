@@ -1,9 +1,19 @@
-/* global __APP_VERSION__, __BUILD_TIME__ */
+import { useEffect, useState } from 'react'
 import { NavLink, Link, Outlet } from 'react-router-dom'
 import './App.css'
 import CoverHoverLayer from './components/CoverHoverLayer.jsx'
 
 export default function Layout() {
+    // Build version is served by the API so the JS bundle stays deterministic
+    // (see vite.config.js). Refreshed on every server build/deploy.
+    const [version, setVersion] = useState('')
+    useEffect(() => {
+        fetch('/api/version')
+            .then(r => r.ok ? r.json() : null)
+            .then(v => v && setVersion(v.version || ''))
+            .catch(() => {})
+    }, [])
+
     return (
         <div className="layout">
             <CoverHoverLayer />
@@ -55,9 +65,8 @@ export default function Layout() {
                     <NavLink to="/settings">Settings</NavLink>
                 </nav>
                 <div className="app-version"
-                     title={`Built ${__BUILD_TIME__} UTC`}
                      style={{ marginTop: 'auto', padding: '0.75rem 0.6rem 0.4rem', fontSize: '0.7rem', color: 'var(--subtle, #9aa0a6)', opacity: 0.85 }}>
-                    v{__APP_VERSION__}
+                    {version || ' '}
                 </div>
             </header>
             <main><Outlet /></main>
