@@ -992,7 +992,7 @@ public class AuthorsControllerIntegrationTests
     }
 
     [Fact]
-    public async Task AssignUntrackedAuthor_Refuses_When_Name_Is_Not_A_Known_OL_Author()
+    public async Task AssignUntrackedAuthor_Adds_A_Manual_Author_When_Name_Is_Not_On_OL()
     {
         using var factory = new LibraryApiFactory();
         var root = Path.Combine(Path.GetTempPath(), $"thelibrary-untracked-{Guid.NewGuid():N}");
@@ -1005,7 +1005,8 @@ public class AuthorsControllerIntegrationTests
             await SeedAsync(factory, db =>
             {
                 db.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "Default", Path = root, Enabled = true, CreatedAt = DateTime.UtcNow });
-                // No matching Author and no OpenLibraryAuthors row for this name.
+                // No matching Author and no OpenLibraryAuthors row for this name —
+                // the user explicitly assigning still files it under a hand-added author.
                 db.BookContentScans.Add(new BookContentScan
                 {
                     Id = 9, FullPath = sourceFile, Source = "untracked", Author = "Nobody In Particular", ScannedAt = DateTime.UtcNow,
@@ -1016,13 +1017,17 @@ public class AuthorsControllerIntegrationTests
             var resp = await client.PostAsync("/api/identified/9/assign-author", null);
             var body = await resp.Content.ReadFromJsonAsync<AuthorsController.AssignAuthorResult>();
 
-            Assert.False(body!.Assigned);
+            Assert.True(body!.Assigned);
             using var scope = factory.Services.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-            Assert.Empty(await db.Authors.ToListAsync());     // nothing invented
-            Assert.Empty(await db.LocalBookFiles.ToListAsync());
-            Assert.True(File.Exists(sourceFile));             // file left where it was
-            Assert.False((await db.BookContentScans.FindAsync(9))!.Reviewed);
+            var author = Assert.Single(await db.Authors.ToListAsync());
+            Assert.Equal("Nobody In Particular", author.Name);
+            Assert.Equal("manual", author.CreationSource);          // hand-added, not an OL guess
+            Assert.StartsWith("XX", author.OpenLibraryKey, StringComparison.Ordinal);
+            Assert.Equal(AuthorStatus.Active, author.Status);
+            var file = Assert.Single(await db.LocalBookFiles.ToListAsync());
+            Assert.Equal(author.Id, file.AuthorId);
+            Assert.False(File.Exists(sourceFile));                  // moved out of __unknown
         }
         finally
         {

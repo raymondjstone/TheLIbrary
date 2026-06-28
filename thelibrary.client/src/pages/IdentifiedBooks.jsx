@@ -613,30 +613,9 @@ function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, assi
                                     "Accept author" action. Untracked files get "Assign to …". */}
                                 {r.source === 'untracked' && r.author && (
                                     <button disabled={busy.has(r.id)}
-                                            title={`File this untracked book under "${r.author}" (resolves via OpenLibrary or by name)`}
+                                            title={`File this book under "${r.author}". Resolves them on OpenLibrary; if they're not on OL, they're added as a manual author and the file is filed under them anyway.`}
                                             onClick={() => assignAuthor(r.id)}>
                                         {busy.has(r.id) ? '…' : `Assign to ${r.author}`}
-                                    </button>
-                                )}
-                                {r.source === 'untracked' && r.author && (
-                                    <button className="btn-ghost" disabled={busy.has(r.id)}
-                                            title={`Add "${r.author}" to the library as a manual author (for people OpenLibrary doesn't list yet) and file this book under them.`}
-                                            onClick={async () => {
-                                                setBusy(prev => new Set(prev).add(r.id))
-                                                setError(null)
-                                                try {
-                                                    const resp = await fetch(`/api/identified/${r.id}/add-manual-author`, { method: 'POST' })
-                                                    const b = await resp.json().catch(() => ({}))
-                                                    if (!resp.ok) throw new Error(b.error || resp.statusText)
-                                                    if (b.assigned === false) throw new Error(b.reason || 'Could not file the book under that author.')
-                                                    load()
-                                                } catch (e) {
-                                                    setError(String(e.message || e))
-                                                } finally {
-                                                    setBusy(prev => { const n = new Set(prev); n.delete(r.id); return n })
-                                                }
-                                            }}>
-                                        {busy.has(r.id) ? '…' : `+ Add author “${r.author}” & file here`}
                                     </button>
                                 )}
                                 {r.source === 'untracked' && (

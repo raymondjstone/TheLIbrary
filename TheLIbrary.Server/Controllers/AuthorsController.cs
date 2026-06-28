@@ -1885,18 +1885,37 @@ public partial class AuthorsController : ControllerBase
     {
         var scan = await _db.BookContentScans.FirstOrDefaultAsync(c => c.Id == scanId, ct);
         if (scan is null) return NotFound(new { error = "Scan not found." });
+
+        bool assigned = false;
+        int? authorId = null, bookId = null;
+        string? authorName = null, path = null, reason = null;
         try
         {
             var r = await _assigner.AssignAsync(scan, ct);
-            return Ok(new AssignAuthorResult(r.Assigned, r.AuthorId, r.AuthorName, r.BookId, r.Path, r.Reason));
+            (assigned, authorId, authorName, bookId, path, reason) =
+                (r.Assigned, r.AuthorId, r.AuthorName, r.BookId, r.Path, r.Reason);
         }
         catch (Services.OpenLibrary.OpenLibraryRequestFailedException ex)
         {
-            // OL refusing/failing the lookup is an upstream problem, not a
-            // server fault — report it as the assign outcome, not a 500.
-            return Ok(new AssignAuthorResult(false, null, null, null, null,
-                $"OpenLibrary lookup failed: {ex.Message}"));
+            reason = $"OpenLibrary lookup failed: {ex.Message}";
         }
+
+        // Couldn't confirm an author via OpenLibrary or by an existing name? If the
+        // row has a guessed author, add them as a MANUAL author and file the book
+        // under them — the user explicitly chose to assign this file, so a hand-added
+        // author is the right outcome for someone OpenLibrary doesn't list.
+        if (!assigned && !string.IsNullOrWhiteSpace(scan.Author))
+        {
+            var made = await _manualAuthors.CreateAsync(scan.Author, ct);
+            if (made.Author is not null)
+            {
+                var r2 = await _assigner.AssignToAuthorAsync(scan, made.Author, ct);
+                (assigned, authorId, authorName, bookId, path, reason) =
+                    (r2.Assigned, r2.AuthorId, r2.AuthorName, r2.BookId, r2.Path, r2.Reason);
+            }
+        }
+
+        return Ok(new AssignAuthorResult(assigned, authorId, authorName, bookId, path, reason));
     }
 
     // Adds the row's GUESSED author as a hand-added (manual) author and files this
