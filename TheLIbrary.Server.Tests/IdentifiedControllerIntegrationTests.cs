@@ -58,6 +58,11 @@ public class IdentifiedControllerIntegrationTests
 
         var bothy = await db.Books.FirstAsync(b => b.Id == 11);
         Assert.Equal("2", bothy.SeriesPosition);
+
+        // The catalogue is cleared once applied, so the row no longer offers (and can't
+        // reapply) "Build series".
+        var consumed = await db.BookContentScans.FirstAsync(c => c.Id == 5);
+        Assert.Null(consumed.SeriesCatalogJson);
     }
 
     // Untracked / unassigned guesses must surface ahead of tracked rows, so the

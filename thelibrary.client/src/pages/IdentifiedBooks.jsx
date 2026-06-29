@@ -228,16 +228,18 @@ export default function IdentifiedBooks() {
     // Build series records from this row's collected catalogue: create/reuse a
     // Series per listing and link the author's matching books to it.
     const applyCatalog = async (id) => {
-        if (!window.confirm("Build this author's series from every scanned book's lists (combined for the fullest order), and assign matching owned books with their positions? Books already in a different series are left untouched.")) return
+        // Inline feedback only — on success the catalogue is cleared server-side so
+        // the "Build series" action disappears from the row (no reapplying); a problem
+        // shows at the top.
         setBusy(prev => new Set(prev).add(id))
+        setError(null)
         try {
             const r = await fetch(`/api/identified/${id}/apply-catalog`, { method: 'POST' })
             const body = await r.json().catch(() => ({}))
             if (!r.ok) throw new Error(body.error || r.statusText)
-            alert(`From ${body.sourceBooks} book list(s): series created ${body.seriesCreated}, reused ${body.seriesReused}; ${body.booksLinked} owned book(s) linked, ${body.titlesAdded} not-yet-owned title(s) added, ${body.positionsFixed} position(s) corrected.`)
             load()
         } catch (e) {
-            alert(`Failed: ${e.message}`)
+            setError(String(e.message || e))
         } finally {
             setBusy(prev => { const n = new Set(prev); n.delete(id); return n })
         }

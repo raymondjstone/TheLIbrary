@@ -460,12 +460,17 @@ public class IdentifiedController : ControllerBase
             }
         }
 
-        // The catalogue rows have now been consumed. Clear the catalogue-only ones
-        // (harvested from matched books) from the review list; leave rows that also
-        // carry a title/author guess so their file can still be matched.
+        // The catalogue has now been applied — clear it on EVERY consumed row so the
+        // "Build series" action disappears and can't be reapplied. Catalogue-only rows
+        // (no title/author/isbn/series guess left) then have nothing to action, so they
+        // leave the review list entirely; rows that also carry a title/author guess stay
+        // so their file can still be matched — just without the series catalogue.
         foreach (var r in sourceRows)
+        {
+            r.SeriesCatalogJson = null;
             if (r.Title is null && r.Author is null && r.Isbn is null && r.Series is null && r.AlsoByTitles is null)
                 r.Reviewed = true;
+        }
 
         await _db.SaveChangesAsync(ct);
         return new ApplyCatalogResult(created, reused, linked, fixedPos, unmatched, added, sourceRows.Count);
