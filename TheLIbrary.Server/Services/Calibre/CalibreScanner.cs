@@ -21,7 +21,7 @@ public sealed class CalibreScanner
     internal static readonly HashSet<string> EbookExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".epub", ".mobi", ".azw", ".azw3", ".azw4", ".kf8", ".prc", ".pdb",
-        ".fb2", ".fbz", ".pdf", ".lit", ".cbz", ".docx", ".odt", ".rtf", ".opf", ".txt"
+        ".fb2", ".fbz", ".pdf", ".lit", ".cbz", ".cbr", ".docx", ".doc", ".odt", ".rtf", ".opf", ".txt"
     };
 
     // Archive extensions handled by the unzip job (kept, not deleted as junk).

@@ -31,8 +31,11 @@ and wishlist.
   flat-file layout under one or more library roots
 - **Ingest formats** — EPUB, MOBI / AZW / AZW3 / AZW4 / KF8 / PRC / PDB,
   FB2 / FBZ / `.fb2.zip`, PDF, LIT (magic validated; title/author via filename
-  fallback), CBZ (ComicInfo.xml), DOCX / ODT (Dublin Core), TXT (filename
-  fallback only)
+  fallback), CBZ (ComicInfo.xml) / CBR, DOCX / DOC / ODT / RTF (Dublin Core where
+  available, else filename), OPF, TXT (filename fallback only). Files whose
+  extension isn't on this list are **ignored** by the scanner — so a folder of, say,
+  `.cbr` or `.doc` files won't appear on the Untracked/Unknown views unless their
+  type is recognised here
 - **In-browser preview** — EPUB / PDF / TXT render natively via epub.js,
   the browser's PDF viewer, and a plain `<pre>` block respectively; **every
   other supported format (MOBI / AZW / AZW3 / FB2 / LIT / DOCX / ODT) is
