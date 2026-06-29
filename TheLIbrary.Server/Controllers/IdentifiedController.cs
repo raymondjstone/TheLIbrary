@@ -102,17 +102,21 @@ public class IdentifiedController : ControllerBase
                 r.ScannedAt)).ToList();
         }
 
-        // A TRACKED row (file already in an author folder) is only worth showing if
-        // there's something to ACT on for book-matching: a series catalogue (Build
-        // series) or a title/ISBN (match the file to a book). Its author is fixed by
-        // the folder and never changed here, so a row whose only guess is an author
-        // (or an "also by" list, or a bare series name) is pure noise and is hidden.
-        // ('matched' rows null their title/ISBN, so title/ISBN only fires for
-        // book-unmatched files — i.e. "unmatched and we found a name".)
+        // A TRACKED row (file already in an author folder) is only worth showing while
+        // ONE of two things is still true:
+        //   1. it carries a series catalogue we determined (the "Build series" action), or
+        //   2. it suggests a title/ISBN for a local file that is NOT currently matched
+        //      to a book (the "match this file" action).
+        // Once neither holds — the file got matched, or its row no longer has a
+        // catalogue — the line is dropped so it stops eating one of the 2000 tracked
+        // slots. The unmatched check is explicit (a LocalBookFile at this path with no
+        // BookId) rather than relying on matched rows having had their title nulled.
         var untracked = await FetchAsync(q.Where(c => c.Source == "untracked"), untrackedCeiling);
         var tracked = await FetchAsync(
             q.Where(c => c.Source != "untracked"
-                && (c.SeriesCatalogJson != null || c.Title != null || c.Isbn != null)),
+                && (c.SeriesCatalogJson != null
+                    || ((c.Title != null || c.Isbn != null)
+                        && _db.LocalBookFiles.Any(f => f.FullPath == c.FullPath && f.BookId == null)))),
             trackedCap);
         return untracked.Concat(tracked).ToList();
     }

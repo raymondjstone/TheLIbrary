@@ -87,6 +87,39 @@ public class IdentifiedControllerIntegrationTests
         Assert.Equal("Marc Brandle", rows[0].Author);
     }
 
+    // A tracked title/ISBN suggestion only shows while the local file is still
+    // UNMATCHED. Once the file is matched to a book the suggestion is moot, so the
+    // row drops (unless it also carries a series catalogue).
+    [Fact]
+    public async Task Get_Hides_Tracked_Title_Rows_Whose_File_Is_Already_Matched()
+    {
+        using var rdb = new RelationalTestDb();
+        await using (var s = rdb.NewContext())
+        {
+            s.Authors.Add(new Author { Id = 1, Name = "Auth" });
+            s.Books.Add(new Book { Id = 99, AuthorId = 1, OpenLibraryWorkKey = "OL99W", Title = "A", NormalizedTitle = "a" });
+            s.BookContentScans.AddRange(
+                // 1: title guess, file already MATCHED → hidden.
+                new BookContentScan { Id = 1, FullPath = "/lib/Auth/a.epub", Source = "matched", AuthorId = 1, Title = "A", ScannedAt = DateTime.UtcNow },
+                // 2: title guess, file UNMATCHED → shown.
+                new BookContentScan { Id = 2, FullPath = "/lib/Auth/b.epub", Source = "unmatched", AuthorId = 1, Title = "B", ScannedAt = DateTime.UtcNow },
+                // 3: series catalogue even though the file is matched → shown.
+                new BookContentScan { Id = 3, FullPath = "/lib/Auth/c.epub", Source = "matched", AuthorId = 1, SeriesCatalogJson = "[{\"Series\":\"S\",\"Titles\":[\"X\"]}]", ScannedAt = DateTime.UtcNow });
+            s.LocalBookFiles.AddRange(
+                new LocalBookFile { Id = 1, FullPath = "/lib/Auth/a.epub", AuthorId = 1, BookId = 99 },
+                new LocalBookFile { Id = 2, FullPath = "/lib/Auth/b.epub", AuthorId = 1, BookId = null },
+                new LocalBookFile { Id = 3, FullPath = "/lib/Auth/c.epub", AuthorId = 1, BookId = 99 });
+            await s.SaveChangesAsync();
+        }
+        await using var db = rdb.NewContext();
+        var ids = (await new IdentifiedController(db, NullLogger<IdentifiedController>.Instance).Get(null, default))
+            .Select(r => r.Id).ToHashSet();
+
+        Assert.DoesNotContain(1, ids);   // matched file → title suggestion hidden
+        Assert.Contains(2, ids);          // unmatched file → title suggestion shown
+        Assert.Contains(3, ids);          // series catalogue → shown
+    }
+
     // Tracked rows are only shown when there's something to act on (series
     // catalogue, or a title/ISBN to match to a book). An author-only tracked row
     // is hidden — the author is fixed by the folder and never changed here.
@@ -104,12 +137,14 @@ public class IdentifiedControllerIntegrationTests
                 new BookContentScan { Id = 2, FullPath = "/lib/Auth/b.epub", Source = "unmatched", AuthorId = 1, Title = "Some Book", ScannedAt = DateTime.UtcNow },
                 // matched row carrying only a series catalogue -> shown (Build series)
                 new BookContentScan { Id = 3, FullPath = "/lib/Auth/c.epub", Source = "matched", AuthorId = 1, SeriesCatalogJson = "[]", ScannedAt = DateTime.UtcNow });
+            // The title row's file must exist and be unmatched for its suggestion to count.
+            s.LocalBookFiles.Add(new LocalBookFile { Id = 2, FullPath = "/lib/Auth/b.epub", AuthorId = 1, BookId = null });
             await s.SaveChangesAsync();
         }
         await using var db = rdb.NewContext();
         var ids = (await new IdentifiedController(db, NullLogger<IdentifiedController>.Instance).Get(null, default)).Select(r => r.Id).ToHashSet();
         Assert.DoesNotContain(1, ids);   // author-only hidden
-        Assert.Contains(2, ids);         // title shown
+        Assert.Contains(2, ids);         // title (unmatched file) shown
         Assert.Contains(3, ids);         // catalogue shown
     }
 
@@ -594,6 +629,8 @@ public class IdentifiedControllerIntegrationTests
                 new BookContentScan { Id = 2, FullPath = "/b/withtitle.epub", Source = "unmatched", AuthorId = 1, Author = "Known Author", Title = "Some Title", ScannedAt = DateTime.UtcNow },
                 // Not under any author, author guess is the only lead → shown.
                 new BookContentScan { Id = 3, FullPath = "/b/untracked.epub", Source = "untracked", AuthorId = null, Author = "Guessed Author", ScannedAt = DateTime.UtcNow });
+            // The title row's file must exist and be unmatched for its suggestion to count.
+            db.LocalBookFiles.Add(new LocalBookFile { Id = 2, FullPath = "/b/withtitle.epub", AuthorId = 1, BookId = null });
         });
 
         using var client = factory.CreateClient();
