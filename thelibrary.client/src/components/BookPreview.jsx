@@ -64,17 +64,37 @@ async function sanitizeEpubEntities(buf) {
 // path-traversal check on the server, so this component just needs the URL.
 export default function BookPreview({ fileId, format, onClose, title, srcUrl }) {
     const f = (format || '').toLowerCase()
-    const convertibleFormats = ['mobi', 'azw', 'azw3', 'fb2', 'lit', 'docx', 'odt']
-    // Which pane renders the file. RTF has no native viewer, so it's shown in
-    // the plain-text pane (the server streams it as text/plain).
-    const displayFormat = convertibleFormats.includes(f) ? 'epub' : (f === 'rtf' ? 'txt' : f)
-    // Which format to ask the server for. Convertibles are converted to EPUB;
-    // RTF is requested under its real extension (the server streams it as text),
-    // so it's NOT mapped to 'txt' here or the file lookup would miss.
-    const requestFormat = convertibleFormats.includes(f) ? 'epub' : f
-    // srcUrl overrides the default /api/files/{id}/preview endpoint so the
-    // same modal can preview untracked files (where there is no LBF row yet).
-    const url = srcUrl ?? `/api/files/${fileId}/preview?format=${requestFormat}`
+    // Comic archives get the page-by-page reader ONLY for tracked files (it needs a
+    // LocalBookFile id for /cbz-pages). For untracked files (srcUrl, no id) there's no
+    // id, so they fall through to EPUB conversion like everything else.
+    const comicViaPane = ['cbz', 'cbr', 'zip', 'rar'].includes(f) && fileId != null && !srcUrl
+    // Which pane renders the file:
+    //   pdf → pdf viewer; txt/rtf → plain-text pane; tracked comics → comic reader;
+    //   epub + EVERYTHING else → epub.js (the server converts on the fly).
+    const displayFormat =
+        f === 'pdf' ? 'pdf'
+            : (f === 'txt' || f === 'rtf') ? 'txt'
+                : comicViaPane ? f
+                    : 'epub'
+    // Which format to ask the server for. RTF is requested under its real extension
+    // (the server streams it as text). Everything non-native is requested as EPUB so
+    // the server converts it (mobi, azw*, doc(x), fb2, lit, cbr, …).
+    const requestFormat =
+        f === 'pdf' ? 'pdf'
+            : f === 'txt' ? 'txt'
+                : f === 'rtf' ? 'rtf'
+                    : comicViaPane ? f
+                        : 'epub'
+    // srcUrl previews untracked files (no LBF row yet). Force the requested format onto
+    // it so a .doc/.cbr/etc. srcUrl is converted, not served raw.
+    let url
+    if (srcUrl) {
+        const u = new URL(srcUrl, window.location.origin)
+        u.searchParams.set('format', requestFormat)
+        url = u.pathname + u.search
+    } else {
+        url = `/api/files/${fileId}/preview?format=${requestFormat}`
+    }
     return (
         // zIndex inline override so the preview sits ON TOP of any caller
         // that already opened a stacked modal (e.g. the Untracked browse pane

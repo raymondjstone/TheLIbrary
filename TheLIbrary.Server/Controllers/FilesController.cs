@@ -65,7 +65,13 @@ public class FilesController : ControllerBase
 
         // Resolve the actual source file. lbf.FullPath may be a directory (library
         // layout) or a direct file path (flat layout). For conversion we need a file.
-        var supportedConversions = new[] { "mobi", "azw", "azw3", "fb2", "lit", "docx", "odt" };
+        // Anything non-native that ebook-convert can turn into EPUB. Native formats
+        // (epub/pdf/txt/rtf/cbz/zip) are served as-is by FilePreviewResolver below.
+        var supportedConversions = new[]
+        {
+            "mobi", "azw", "azw3", "azw4", "kf8", "prc", "pdb",
+            "fb2", "fbz", "lit", "docx", "doc", "odt", "opf", "cbr"
+        };
         var fmt = format.ToLowerInvariant();
 
         string? conversionSource = null;

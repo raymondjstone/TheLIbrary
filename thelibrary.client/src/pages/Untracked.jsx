@@ -2,8 +2,6 @@ import { useEffect, useState } from 'react'
 import AddAuthorDialog from './AddAuthorDialog.jsx'
 import OpenLibraryWorkSearch from '../components/OpenLibraryWorkSearch.jsx'
 import BookPreview from '../components/BookPreview.jsx'
-
-const PREVIEWABLE_EXTS = new Set(['epub', 'pdf', 'txt', 'rtf', 'mobi', 'azw', 'azw3', 'fb2', 'lit', 'docx', 'odt', 'cbz', 'cbr', 'zip'])
 const fileExtension = (name) => {
     const idx = name.lastIndexOf('.')
     return idx >= 0 ? name.slice(idx + 1).toLowerCase() : ''
@@ -259,7 +257,9 @@ export default function Untracked() {
 
     const renderBrowserEntries = (entries, depth = 0) => entries.map(entry => {
         const ext = entry.isDirectory ? '' : fileExtension(entry.name)
-        const canPreview = !entry.isDirectory && PREVIEWABLE_EXTS.has(ext)
+        // Any file with an extension can be previewed — non-native types are
+        // converted to EPUB on the fly server-side.
+        const canPreview = !entry.isDirectory && !!ext
         const isSelected = entry.relativePath === folderBrowser.selectedRelativePath
         const isExpanded = !!folderBrowser.expandedPaths?.[entry.relativePath]
         const nested = folderBrowser.nestedEntries?.[entry.relativePath] || []
@@ -335,7 +335,7 @@ export default function Untracked() {
                         {nestedError && <p className="error" style={{ margin: '0.25rem 0 0.45rem' }}>{nestedError}</p>}
                         {!nestedLoading && !nestedError && nested.length > 0 && nested.map(fileEntry => {
                             const nestedExt = fileExtension(fileEntry.name)
-                            const nestedCanPreview = PREVIEWABLE_EXTS.has(nestedExt)
+                            const nestedCanPreview = !!nestedExt
                             const nestedSelected = fileEntry.relativePath === folderBrowser.selectedRelativePath
                             const relativeToExpanded = fileEntry.relativePath.startsWith(nestedFolderPrefix)
                                 ? fileEntry.relativePath.slice(nestedFolderPrefix.length)
@@ -965,7 +965,7 @@ export default function Untracked() {
                                         Browse files
                                     </button>
                                 )}
-                                {u.isFile && u.rootPaths?.[0] && PREVIEWABLE_EXTS.has(fileExtension(u.authorFolder)) && (
+                                {u.isFile && u.rootPaths?.[0] && !!fileExtension(u.authorFolder) && (
                                     <button className="btn-ghost"
                                             title={`Preview this ${fileExtension(u.authorFolder).toUpperCase()} file`}
                                             onClick={() => setPreview({

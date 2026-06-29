@@ -229,43 +229,11 @@ public partial class AuthorsController
             return NotFound(new { error = "Only files can be previewed" });
 
         var ext = Path.GetExtension(sourcePath).TrimStart('.').ToLowerInvariant();
-        var supportedConversions = new[] { "mobi", "azw", "azw3", "fb2", "lit", "docx", "odt", "cbz", "zip" };
-        var isConvertible = supportedConversions.Contains(ext);
+        var fmt = format.ToLowerInvariant();
 
-        if (!isConvertible && !string.Equals(ext, format, StringComparison.OrdinalIgnoreCase))
-            return BadRequest(new { error = $"File extension '.{ext}' does not match requested format '.{format}'" });
-
-        string? contentType = "application/octet-stream";
-        if (isConvertible || !Services.Sync.FilePreviewResolver.SupportedFormats.TryGetValue(format, out contentType))
-        {
-            if (isConvertible && (format.Equals("epub", StringComparison.OrdinalIgnoreCase) || format.Equals(ext, StringComparison.OrdinalIgnoreCase)))
-            {
-                try
-                {
-                    var convertedPath = await _converter.ConvertToEpubAsync(sourcePath, ct);
-                    if (System.IO.File.Exists(convertedPath))
-                    {
-                        var bytes = await System.IO.File.ReadAllBytesAsync(convertedPath, ct);
-                        try { System.IO.File.Delete(convertedPath); } catch { /* best effort */ }
-                        Response.Headers["Content-Disposition"] = $"inline; filename=\"{Path.GetFileNameWithoutExtension(sourcePath)}.epub\"";
-                        return File(bytes, "application/epub+zip");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    return StatusCode(500, new { error = $"On-the-fly conversion to EPUB failed: {ex.Message}" });
-                }
-            }
-
-            if (!isConvertible)
-            {
-                return StatusCode(415, new { error = $"Preview not supported for '.{format}'. Supported: epub, pdf, txt, cbz, zip." });
-            }
-        }
-
-        // Build the allowed-roots list: every enabled library location PLUS
-        // the custom __unknown path when one is set (it may live outside the
-        // library locations entirely).
+        // Containment guard FIRST — never read / convert / serve a file outside the
+        // enabled library locations (or the custom __unknown path). A tampered path
+        // could otherwise point the converter at any file on disk.
         var roots = await _db.LibraryLocations.AsNoTracking()
             .Where(l => l.Enabled)
             .Select(l => l.Path)
@@ -274,12 +242,34 @@ public partial class AuthorsController
         var allowedRoots = customUnknown is null
             ? (IReadOnlyList<string>)roots
             : roots.Append(customUnknown).ToList();
-
         if (!Services.Sync.FilePreviewResolver.IsInsideAnyRoot(sourcePath, allowedRoots))
             return StatusCode(403, new { error = "Refusing to serve a file outside enabled library locations" });
 
+        // EPUB requested for a non-EPUB file → convert ANYTHING the toolchain can read
+        // (mobi, azw*, doc(x), fb2, lit, cbr, cbz, prc, pdb, …) to EPUB on the fly. This
+        // is how the Untracked page previews every file type: untracked files have no
+        // LocalBookFile id, so the page-by-page comic reader can't be used — the client
+        // routes every non-native format through EPUB conversion.
+        if (fmt == "epub" && !string.Equals(ext, "epub", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var convertedPath = await _converter.ConvertToEpubAsync(sourcePath, ct);
+                if (!System.IO.File.Exists(convertedPath))
+                    return StatusCode(500, new { error = "Conversion produced no output." });
+                var bytes = await System.IO.File.ReadAllBytesAsync(convertedPath, ct);
+                try { System.IO.File.Delete(convertedPath); } catch { /* best effort */ }
+                Response.Headers["Content-Disposition"] = $"inline; filename=\"{Path.GetFileNameWithoutExtension(sourcePath)}.epub\"";
+                return File(bytes, "application/epub+zip");
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = $"On-the-fly conversion to EPUB failed: {ex.Message}" });
+            }
+        }
+
         // RTF: convert to plain text on the fly (RtfPipe) for the txt pane.
-        if (string.Equals(format, "rtf", StringComparison.OrdinalIgnoreCase))
+        if (fmt == "rtf")
         {
             try
             {
@@ -292,10 +282,15 @@ public partial class AuthorsController
             }
         }
 
+        // Otherwise serve the file's native bytes (epub / pdf / txt / cbz / zip), which
+        // must match what's on disk.
+        if (!Services.Sync.FilePreviewResolver.SupportedFormats.TryGetValue(fmt, out var contentType))
+            return StatusCode(415, new { error = $"Preview not supported for '.{fmt}'." });
+        if (!string.Equals(ext, fmt, StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { error = $"File extension '.{ext}' does not match requested format '.{fmt}'" });
+
         var safeName = Path.GetFileName(sourcePath).Replace("\"", "");
         Response.Headers["Content-Disposition"] = $"inline; filename=\"{safeName}\"";
-        // contentType can be null when a supported format had no MIME mapping;
-        // fall back to a generic binary type so PhysicalFile never gets null.
         return PhysicalFile(sourcePath, contentType ?? "application/octet-stream", enableRangeProcessing: true);
     }
 
