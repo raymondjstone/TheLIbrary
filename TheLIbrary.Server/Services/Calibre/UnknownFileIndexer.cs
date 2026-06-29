@@ -25,7 +25,9 @@ public static class UnknownFileIndexer
         int EbookFilesSeen,
         int Added,
         int Removed,
-        int Total);
+        int Total,
+        int TotalFilesSeen = 0,
+        IReadOnlyDictionary<string, int>? ExtensionBreakdown = null);
 
     // Recurses into subfolders but silently skips files/dirs we can't read,
     // instead of throwing on the first inaccessible directory (which would
@@ -55,6 +57,10 @@ public static class UnknownFileIndexer
         // files that's half a million extra network round-trips, and the match
         // search doesn't use those fields anyway.
         var byPath = new Dictionary<string, FileRow>(StringComparer.OrdinalIgnoreCase);
+        // Diagnostic: count EVERY file by extension (including the ones we skip), so
+        // it's obvious when files don't appear because their type isn't recognised.
+        var extCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var totalSeen = 0;
         foreach (var root in roots)
         {
             if (!Directory.Exists(root)) { missing.Add(root); continue; }
@@ -62,6 +68,9 @@ public static class UnknownFileIndexer
             {
                 ct.ThrowIfCancellationRequested();
                 var ext = Path.GetExtension(file).ToLowerInvariant();
+                totalSeen++;
+                var extKey = string.IsNullOrEmpty(ext) ? "(no extension)" : ext;
+                extCounts[extKey] = extCounts.GetValueOrDefault(extKey) + 1;
                 if (!CalibreScanner.EbookExtensions.Contains(ext)) continue;
                 var fi = new FileInfo(file);
                 byPath[file] = new FileRow(
@@ -121,7 +130,8 @@ public static class UnknownFileIndexer
             await tx.CommitAsync(ct);
         });
 
-        return new RescanResult(roots, missing, seen, seen, prior, seen);
+        return new RescanResult(roots, missing, seen, seen, prior, seen, totalSeen,
+            extCounts.OrderByDescending(e => e.Value).ToDictionary(e => e.Key, e => e.Value));
     }
 
     private readonly record struct FileRow(string FullPath, string FileName, string? NormalizedTitle, long SizeBytes, DateTime ModifiedAt);
