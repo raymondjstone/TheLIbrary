@@ -82,7 +82,38 @@ export default function IdentifiedBooks() {
         }
     }
 
+    // Apply ALL content guesses (ISBN, else title vs the author's known books) for
+    // tracked unmatched files. Driven in capped batches via a scan-id cursor so a big
+    // backlog can't time out; inline progress, no dialogs.
+    const [applyAllBusy, setApplyAllBusy] = useState(false)
+    const [applyAllProgress, setApplyAllProgress] = useState(null) // { applied, failed, remaining }
+    const applyAllGuesses = async () => {
+        setApplyAllBusy(true)
+        setError(null)
+        const totals = { applied: 0, failed: 0 }
+        try {
+            let after = 0
+            for (let guard = 0; guard < 100000; guard++) {
+                const r = await fetch(`/api/identified/apply-all?afterId=${after}`, { method: 'POST' })
+                const body = await r.json().catch(() => ({}))
+                if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`)
+                totals.applied += body.applied ?? 0
+                totals.failed += body.failed ?? 0
+                setApplyAllProgress({ ...totals, remaining: body.remaining ?? 0 })
+                if (body.done) break
+                after = body.lastId
+            }
+            load()
+        } catch (e) {
+            setError(String(e.message || e))
+        } finally {
+            setApplyAllBusy(false)
+            setApplyAllProgress(null)
+        }
+    }
+
     const isbnApplicable = (rows ?? []).filter(r => r.fileId != null && r.isbn).length
+    const guessApplicable = (rows ?? []).filter(r => r.fileId != null && (r.isbn || r.title)).length
     const catalogApplicable = (rows ?? []).filter(r => r.authorId != null && r.seriesCatalog?.length > 0).length
     const untrackedAssignable = (rows ?? []).filter(r => r.source === 'untracked' && (r.author || r.isbn || r.title)).length
 
@@ -210,16 +241,18 @@ export default function IdentifiedBooks() {
     // Resolve the guess to an OpenLibrary work (ISBN, else title+author) and link
     // the file to it. The row leaves the list either way (it's marked reviewed).
     const apply = async (id) => {
-        if (!window.confirm('Match this file to an OpenLibrary work based on the guess (ISBN preferred, else title + author)?')) return
+        // No confirm/alert — inline feedback only. The row leaves the list on success;
+        // a "couldn't match" reason or error shows at the top.
         setBusy(prev => new Set(prev).add(id))
+        setError(null)
         try {
             const r = await fetch(`/api/authors/apply-content-guess/${id}`, { method: 'POST' })
             const body = await r.json().catch(() => ({}))
             if (!r.ok) throw new Error(body.error || r.statusText)
-            if (!body.applied) alert(body.reason || 'Could not apply.')
+            if (!body.applied && body.reason) setError(body.reason)
             setRows(prev => prev.filter(x => x.id !== id))
         } catch (e) {
-            alert(`Failed: ${e.message}`)
+            setError(String(e.message || e))
         } finally {
             setBusy(prev => { const n = new Set(prev); n.delete(id); return n })
         }
@@ -400,11 +433,23 @@ export default function IdentifiedBooks() {
 
             {isbnApplicable > 0 && (
                 <div className="toolbar">
-                    <button onClick={applyAllIsbn} disabled={bulkBusy}
+                    <button onClick={applyAllIsbn} disabled={bulkBusy || applyAllBusy}
                             title="Match every file that has an ISBN guess to its OpenLibrary work (high confidence)">
                         {bulkBusy ? 'Applying…' : `Apply all ${isbnApplicable} ISBN match${isbnApplicable === 1 ? '' : 'es'}`}
                     </button>
                     <span className="subtle">ISBN-backed guesses are the reliable ones — title-only guesses still need a per-row check.</span>
+                </div>
+            )}
+
+            {guessApplicable > 0 && (
+                <div className="toolbar">
+                    <button onClick={applyAllGuesses} disabled={applyAllBusy || bulkBusy}
+                            title="Match every tracked unmatched file to a book using its guess — ISBN if present, otherwise the title against the author's own known books. Runs in batches.">
+                        {applyAllBusy
+                            ? `Applying… ${applyAllProgress?.applied ?? 0} matched${applyAllProgress?.remaining != null ? `, ${applyAllProgress.remaining} left` : ''}`
+                            : `Apply all ${guessApplicable} guess${guessApplicable === 1 ? '' : 'es'} (ISBN or title)`}
+                    </button>
+                    <span className="subtle">ISBN where present, else the title matched against the author's own known books — no invented works.</span>
                 </div>
             )}
 

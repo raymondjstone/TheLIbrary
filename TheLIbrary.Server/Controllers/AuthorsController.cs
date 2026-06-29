@@ -1755,25 +1755,28 @@ public partial class AuthorsController : ControllerBase
     {
         var scan = await _db.BookContentScans.FirstOrDefaultAsync(c => c.Id == scanId, ct);
         if (scan is null) return NotFound(new { error = "Scan not found." });
+        return Ok(await ApplyContentGuessCoreAsync(scan, ct));
+    }
 
+    // Core of apply-content-guess, shared by the per-row endpoint and the bulk
+    // "apply all". Resolves the scan's guess to a book and links the file, marking the
+    // row reviewed on each outcome. ISBN is definitive; a title is matched only against
+    // the author's OWN known books (never an invented OL title hit) — we know the real
+    // author from the folder, so anything that doesn't closely match is refused.
+    private async Task<ApplyGuessResult> ApplyContentGuessCoreAsync(BookContentScan scan, CancellationToken ct)
+    {
         var file = await _db.LocalBookFiles.FirstOrDefaultAsync(f => f.FullPath == scan.FullPath, ct);
         if (file is null)
-            return Ok(new ApplyGuessResult(false, null, null, null, "Only tracked unmatched files can be applied (this is an untracked file)."));
+            return new ApplyGuessResult(false, null, null, null, "Only tracked unmatched files can be applied (this is an untracked file).");
         if (file.BookId is not null)
-            return Ok(new ApplyGuessResult(false, null, null, null, "File is already matched to a book."));
+            return new ApplyGuessResult(false, null, null, null, "File is already matched to a book.");
         if (file.AuthorId is null)
-            return Ok(new ApplyGuessResult(false, null, null, null, "File isn't linked to an author."));
+            return new ApplyGuessResult(false, null, null, null, "File isn't linked to an author.");
 
         var currentAuthor = await _db.Authors.FirstOrDefaultAsync(a => a.Id == file.AuthorId, ct);
         if (currentAuthor is null)
-            return Ok(new ApplyGuessResult(false, null, null, null, "File's author no longer exists."));
+            return new ApplyGuessResult(false, null, null, null, "File's author no longer exists.");
 
-        // Resolve the guess to an OpenLibrary work. ISBN is definitive. A title,
-        // by contrast, is only a guess pulled from the book's text — so for the
-        // title path we DON'T just take OL's first hit (that's how unrelated
-        // works got attached). We know the real author (the folder), so we only
-        // accept a work that is (a) actually by that author and (b) a close title
-        // match; anything else is refused rather than guessed.
         WorkSearchDoc? doc = null;
         if (!string.IsNullOrWhiteSpace(scan.Isbn))
         {
@@ -1781,11 +1784,6 @@ public partial class AuthorsController : ControllerBase
             doc = byIsbn?.Docs?.FirstOrDefault(d => !string.IsNullOrWhiteSpace(d.Key));
         }
 
-        // No ISBN hit → match the guessed title against the author's OWN known
-        // books (the DB list of valid titles) rather than inventing an OpenLibrary
-        // work. We already know the author, and AuthorRefresher keeps their full OL
-        // catalogue in the DB, so the right book is almost always already there.
-        // Inventing a work from an OL title search is what attached wrong books.
         if (doc is null && !string.IsNullOrWhiteSpace(scan.Title))
         {
             var known = await FindBestKnownBookAsync(currentAuthor, scan.Title!, scan.SeriesPosition, ct);
@@ -1796,22 +1794,22 @@ public partial class AuthorsController : ControllerBase
                 file.ManuallyUnmatched = false;
                 scan.Reviewed = true;
                 await _db.SaveChangesAsync(ct);
-                return Ok(new ApplyGuessResult(true, known.Id, file.AuthorId, known.Title, null));
+                return new ApplyGuessResult(true, known.Id, file.AuthorId, known.Title, null);
             }
 
-            // Nothing in the author's catalogue matched — do NOT guess an OpenLibrary
-            // work. Leave the file for manual matching rather than attach something wrong.
+            // Nothing in the author's catalogue matched — leave the file for manual
+            // matching rather than attach something wrong, but clear it from the list.
             scan.Reviewed = true;
             await _db.SaveChangesAsync(ct);
-            return Ok(new ApplyGuessResult(false, null, null, null,
-                $"“{scan.Title}” doesn't closely match any of {currentAuthor.Name}'s known titles — not applied. Match it by hand if it's a new book."));
+            return new ApplyGuessResult(false, null, null, null,
+                $"“{scan.Title}” doesn't closely match any of {currentAuthor.Name}'s known titles — not applied. Match it by hand if it's a new book.");
         }
 
         if (doc is null || string.IsNullOrWhiteSpace(doc.Key))
         {
             scan.Reviewed = true; // nothing to apply; clear it from the list
             await _db.SaveChangesAsync(ct);
-            return Ok(new ApplyGuessResult(false, null, null, null, "No OpenLibrary work found for this guess."));
+            return new ApplyGuessResult(false, null, null, null, "No OpenLibrary work found for this guess.");
         }
 
         var req = new MatchOpenLibraryFileRequest(
@@ -1821,11 +1819,45 @@ public partial class AuthorsController : ControllerBase
             doc.AuthorNames?.FirstOrDefault());
 
         var (book, error) = await ApplyOpenLibraryWorkToFileAsync(currentAuthor, file, req, ct, keepCurrentAuthor: true);
-        if (error is not null) return BadRequest(new { error });
+        if (error is not null)
+            return new ApplyGuessResult(false, null, null, null, error);
 
         scan.Reviewed = true;
         await _db.SaveChangesAsync(ct);
-        return Ok(new ApplyGuessResult(true, book!.Id, file.AuthorId, book.Title, null));
+        return new ApplyGuessResult(true, book!.Id, file.AuthorId, book.Title, null);
+    }
+
+    public sealed record BulkApplyAllResult(int Applied, int Failed, int Remaining, int LastId, bool Done);
+
+    // Bulk "apply all": apply the content guess (ISBN, else the author's known titles)
+    // for every tracked unmatched file, advancing by a scan-id cursor and capped per
+    // call (OpenLibrary is rate-limited) — the client repeats with LastId until Done.
+    // POST /api/identified/apply-all?afterId=0
+    [HttpPost("~/api/identified/apply-all")]
+    public async Task<ActionResult<BulkApplyAllResult>> ApplyAllContentGuesses(
+        [FromQuery] int afterId = 0, CancellationToken ct = default)
+    {
+        const int cap = 100;
+        var scans = await _db.BookContentScans
+            .Where(c => c.Id > afterId && !c.Reviewed && (c.Isbn != null || c.Title != null)
+                && _db.LocalBookFiles.Any(f => f.FullPath == c.FullPath && f.BookId == null && f.AuthorId != null))
+            .OrderBy(c => c.Id)
+            .Take(cap)
+            .ToListAsync(ct);
+
+        int applied = 0, failed = 0, lastId = afterId;
+        foreach (var scan in scans)
+        {
+            ct.ThrowIfCancellationRequested();
+            var result = await ApplyContentGuessCoreAsync(scan, ct);
+            if (result.Applied) applied++; else failed++;
+            lastId = scan.Id;
+        }
+
+        var remaining = await _db.BookContentScans.CountAsync(c => c.Id > lastId && !c.Reviewed
+            && (c.Isbn != null || c.Title != null)
+            && _db.LocalBookFiles.Any(f => f.FullPath == c.FullPath && f.BookId == null && f.AuthorId != null), ct);
+        return Ok(new BulkApplyAllResult(applied, failed, remaining, lastId, scans.Count < cap));
     }
 
     public sealed record CleanupNameBooksResult(int Removed);

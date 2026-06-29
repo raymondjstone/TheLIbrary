@@ -152,6 +152,30 @@ public class AuthorsControllerIntegrationTests
     }
 
     [Fact]
+    public async Task ApplyAll_Matches_Unmatched_Tracked_Files_By_Title()
+    {
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Auth" });
+            db.Books.Add(new Book { Id = 50, AuthorId = 1, OpenLibraryWorkKey = "OL50W", Title = "The Quest", NormalizedTitle = TitleNormalizer.Normalize("The Quest") });
+            db.LocalBookFiles.Add(new LocalBookFile { Id = 1, FullPath = "/lib/Auth/q.epub", AuthorId = 1, BookId = null });
+            db.BookContentScans.Add(new BookContentScan { Id = 9, FullPath = "/lib/Auth/q.epub", Source = "unmatched", AuthorId = 1, Title = "The Quest", ScannedAt = DateTime.UtcNow });
+        });
+        using var client = factory.CreateClient();
+
+        var resp = await client.PostAsync("/api/identified/apply-all", null);
+        var body = await resp.Content.ReadFromJsonAsync<AuthorsController.BulkApplyAllResult>();
+
+        Assert.True(body!.Done);
+        Assert.Equal(1, body.Applied);
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        var file = await db.LocalBookFiles.FindAsync(1);
+        Assert.Equal(50, file!.BookId);   // matched to the author's known book by title
+    }
+
+    [Fact]
     public async Task AddOpenLibraryBook_Creates_Work_For_Author()
     {
         using var factory = new LibraryApiFactory();
