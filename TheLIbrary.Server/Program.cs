@@ -52,6 +52,29 @@ builder.Services.AddSingleton<OpenLibraryRateLimiter>();
 builder.Services.AddHttpClient<OpenLibraryClient>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.GoogleBooksRateLimiter>();
 builder.Services.AddHttpClient<TheLibrary.Server.Services.OpenLibrary.GoogleBooksClient>();
+// ISBN-resolution fallback chain (tried in this order after OpenLibrary): Google
+// Books (free, capped), Hardcover (free), ISBNdb (paid). Each is off unless its
+// credential is set. The IEnumerable<IIsbnFallbackProvider> preserves registration
+// order.
+builder.Services.AddHttpClient(TheLibrary.Server.Services.OpenLibrary.HardcoverFallbackProvider.HttpClientName,
+    c => c.BaseAddress = new Uri("https://api.hardcover.app/v1/"));
+builder.Services.AddHttpClient(TheLibrary.Server.Services.OpenLibrary.LocFallbackProvider.HttpClientName,
+    c => c.BaseAddress = new Uri("http://lx2.loc.gov:210/"));
+builder.Services.AddHttpClient(TheLibrary.Server.Services.OpenLibrary.IsbndbFallbackProvider.HttpClientName,
+    c => c.BaseAddress = new Uri("https://api2.isbndb.com/"));
+builder.Services.AddTransient<TheLibrary.Server.Services.OpenLibrary.GoogleBooksFallbackProvider>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.HardcoverFallbackProvider>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.LocFallbackProvider>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.IsbndbFallbackProvider>();
+// Chain order (free sources first, paid last): Google → Hardcover → LoC → ISBNdb.
+builder.Services.AddTransient<TheLibrary.Server.Services.OpenLibrary.IIsbnFallbackProvider>(
+    sp => sp.GetRequiredService<TheLibrary.Server.Services.OpenLibrary.GoogleBooksFallbackProvider>());
+builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.IIsbnFallbackProvider>(
+    sp => sp.GetRequiredService<TheLibrary.Server.Services.OpenLibrary.HardcoverFallbackProvider>());
+builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.IIsbnFallbackProvider>(
+    sp => sp.GetRequiredService<TheLibrary.Server.Services.OpenLibrary.LocFallbackProvider>());
+builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.IIsbnFallbackProvider>(
+    sp => sp.GetRequiredService<TheLibrary.Server.Services.OpenLibrary.IsbndbFallbackProvider>());
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<IFileSystem, SystemFileSystem>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.CoverCacheState>();

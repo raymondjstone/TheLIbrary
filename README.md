@@ -1421,16 +1421,36 @@ validated** before any lookup (ISBN-10 mod-11 / ISBN-13 mod-10), so a mis-extrac
 number that merely happens to be 10/13 digits (an LCCN, ASIN, copyright-page code)
 is rejected up front instead of burning a lookup and caching a junk miss.
 
-**Google Books fallback (optional).** A large share of ISBNs that resolve to nothing
-are real codes for **self-published / KDP / indie / foreign** titles OpenLibrary
-simply doesn't hold (confirmed against both OL's `search.json?isbn=` and `/isbn/`
-endpoints). When a **Google Books API key** is set (Settings → *Google Books ISBN
-fallback*), an ISBN that OpenLibrary can't resolve is looked up on Google Books,
-which covers those titles well; its **title/author** is cached and shown on the
-Identified page. There's no OpenLibrary work behind it, so **Apply-by-ISBN and the
-Reassign button stay inert** for such a row (identification only — there's nothing
-to link to on OL). No key ⇒ the fallback is off and no external Google calls are
-made. A Google transient error (e.g. rate limit) is **not** cached, so it's retried
+**Fallback chain (optional).** A large share of ISBNs that resolve to nothing are
+real codes for **self-published / KDP / indie / foreign** titles OpenLibrary simply
+doesn't hold (confirmed against both OL's `search.json?isbn=` and `/isbn/` endpoints).
+For those, ISBN resolution falls back through a chain of secondary sources, in order,
+until one resolves it (Settings → *ISBN metadata fallbacks*, each off unless its
+credential is set):
+
+1. **Google Books** — free, but capped at **1,000 lookups/day**.
+2. **Hardcover** (`hardcover.app`) — free community GraphQL DB; its indie/KDP-heavy
+   readership often covers the tail better than OpenLibrary.
+3. **Library of Congress** — free, no key (an on/off toggle); queried over SRU
+   (`lx2.loc.gov:210`, MODS records). Strong on traditional and out-of-print
+   US-published ISBNs — the bulk of the `978` tail the other sources miss.
+4. **ISBNdb** (`isbndb.com`) — **paid**, the most comprehensive ISBN database; the
+   backstop, reached only when the free sources miss or are exhausted.
+
+Whichever source hits first supplies the **title/author**, which is cached and shown
+on the Identified page. There's no OpenLibrary work behind a fallback result, so
+**Apply-by-ISBN and the Reassign button stay inert** for such a row (identification
+only — there's nothing to link to on OL). The chain also runs when OpenLibrary **did**
+find the work but **without an author** (OL records are often authorless) — it keeps
+OL's work key and title and just **fills the author from a fallback**, so the row can
+name who wrote it. When no source can supply the author, the title still shows and the
+cell reads *"author not listed"* — **not** the misleading "different author" (and no
+nameless Reassign is offered); a genuine mismatch is only claimed when the ISBN's
+author is actually known and differs. A source with no credential is skipped;
+with none configured the fallback is off and no external calls are made. Each source
+is rate-limited to respect its API, and a source that's temporarily rate/quota-capped
+returns "unavailable" — if no source resolves the ISBN and one was unavailable,
+**nothing is cached** so it's retried later (see quota handling below). A Google transient error (e.g. rate limit) is **not** cached, so it's retried
 later rather than remembered as a permanent miss.
 
 **Quota handling.** Google Books enforces ~100 requests/min and **1,000/day**. Calls

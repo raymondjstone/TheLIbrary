@@ -225,39 +225,49 @@ public class SettingsControllerIntegrationTests
         Assert.Equal(["pdf", "epub", "cbz"], fresh!.Formats);
     }
 
-    // ── Google Books key + ISBN-miss reset ───────────────────────────────────
+    // ── ISBN fallback credentials + ISBN-miss reset ──────────────────────────
 
     [Fact]
-    public async Task PutGoogleBooks_Persists_And_GET_Reports_Configured()
+    public async Task PutIsbnFallbacks_Persists_Each_Key_And_Reports_Configured()
     {
         using var factory = new LibraryApiFactory();
         using var client = factory.CreateClient();
 
-        var blank = await client.GetFromJsonAsync<SettingsController.GoogleBooksDto>("/api/settings/google-books");
-        Assert.False(blank!.Configured);
+        var blank = await client.GetFromJsonAsync<SettingsController.IsbnFallbacksDto>("/api/settings/isbn-fallbacks");
+        Assert.False(blank!.GoogleConfigured);
+        Assert.False(blank.HardcoverConfigured);
+        Assert.False(blank.IsbndbConfigured);
+        Assert.False(blank.LocEnabled);
 
-        var put = await client.PutAsJsonAsync("/api/settings/google-books",
-            new SettingsController.UpdateGoogleBooks("  my-key  "));
-        var dto = await put.Content.ReadFromJsonAsync<SettingsController.GoogleBooksDto>();
-        Assert.Equal("my-key", dto!.ApiKey);      // trimmed
-        Assert.True(dto.Configured);
+        // Set Google + ISBNdb + LoC, leave Hardcover blank.
+        var put = await client.PutAsJsonAsync("/api/settings/isbn-fallbacks",
+            new SettingsController.UpdateIsbnFallbacks("  g-key  ", "", "  db-key  ", true));
+        var dto = await put.Content.ReadFromJsonAsync<SettingsController.IsbnFallbacksDto>();
+        Assert.Equal("g-key", dto!.GoogleBooksKey);   // trimmed
+        Assert.Equal("db-key", dto.IsbndbKey);
+        Assert.True(dto.GoogleConfigured);
+        Assert.False(dto.HardcoverConfigured);
+        Assert.True(dto.IsbndbConfigured);
+        Assert.True(dto.LocEnabled);
     }
 
     // Uses a relational (SQLite) context — like production, and unlike the InMemory
     // test factory, it supports the endpoint's ExecuteDeleteAsync.
     [Fact]
-    public async Task ResetIsbnMisses_Clears_Only_Total_Misses()
+    public async Task ResetIsbnMisses_Clears_Incomplete_Rows_Keeps_Fully_Resolved()
     {
         using var rdb = new RelationalTestDb();
         await using (var s = rdb.NewContext())
         {
             s.IsbnResolutions.AddRange(
-                // Total miss — should be cleared.
+                // Total miss (no title, no author) — cleared.
                 new IsbnResolution { Isbn = "9780000000001", ResolvedAt = DateTime.UtcNow },
-                // Google-resolved (title, no work key) — kept.
+                // Fully resolved via a fallback (title + author, no work key) — kept.
                 new IsbnResolution { Isbn = "9780000000002", ResolvedAt = DateTime.UtcNow, Title = "Indie Book", AuthorName = "Someone" },
-                // OpenLibrary-resolved (work key) — kept.
-                new IsbnResolution { Isbn = "9780000000003", ResolvedAt = DateTime.UtcNow, WorkKey = "/works/OL1W", Title = "Known Book" });
+                // Fully resolved via OpenLibrary (work key + title + author) — kept.
+                new IsbnResolution { Isbn = "9780000000003", ResolvedAt = DateTime.UtcNow, WorkKey = "/works/OL1W", Title = "Known Book", AuthorName = "A. Writer" },
+                // OpenLibrary work with a title but NO author (the "New Lensman" case) — cleared for re-enrichment.
+                new IsbnResolution { Isbn = "9780000000004", ResolvedAt = DateTime.UtcNow, WorkKey = "/works/OL2W", Title = "Authorless Work" });
             await s.SaveChangesAsync();
         }
 
@@ -265,12 +275,13 @@ public class SettingsControllerIntegrationTests
         {
             var controller = new SettingsController(db, null!, null!);
             var result = await controller.ResetIsbnMisses(default);
-            Assert.Equal(1, result.Cleared);
+            Assert.Equal(2, result.Cleared);   // the total miss + the authorless work
         }
 
         await using var v = rdb.NewContext();
-        Assert.Null(await v.IsbnResolutions.FindAsync("9780000000001"));    // miss gone
-        Assert.NotNull(await v.IsbnResolutions.FindAsync("9780000000002")); // google kept
-        Assert.NotNull(await v.IsbnResolutions.FindAsync("9780000000003")); // OL kept
+        Assert.Null(await v.IsbnResolutions.FindAsync("9780000000001"));    // total miss gone
+        Assert.NotNull(await v.IsbnResolutions.FindAsync("9780000000002")); // fallback-resolved kept
+        Assert.NotNull(await v.IsbnResolutions.FindAsync("9780000000003")); // OL-resolved kept
+        Assert.Null(await v.IsbnResolutions.FindAsync("9780000000004"));    // authorless → cleared
     }
 }

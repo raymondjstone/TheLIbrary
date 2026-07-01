@@ -691,24 +691,27 @@ function IsbnTitleCell({ info, row, busy, onReassign }) {
         </span>
     if (info.state !== 'done' || !info.title)
         return <span className="subtle">—</span>
-    const mismatch = info.matches === false
+    // A real mismatch requires that we actually KNOW the ISBN's author and it differs.
+    // matches === null means the ISBN has a title but no listed author — "not listed",
+    // not "different".
+    const mismatch = info.matches === false && !!info.author
     return (
         <span title="Resolved from this row's ISBN — the title Apply would link the file to">
             {info.title}
             <span className="subtle" style={{ fontSize: '0.72em', display: 'block' }}>
-                via ISBN{info.author ? ` · ${info.author}` : ''}
+                via ISBN{info.author ? ` · ${info.author}` : ' · author not listed'}
                 {mismatch && (
                     <span style={{ color: 'var(--danger, #b91c1c)' }}>
-                        {' '}· by {info.author || 'a different author'} — Apply won’t re-file across authors
+                        {' '}— different author, Apply won’t re-file across authors
                     </span>
                 )}
             </span>
             {mismatch && info.workKey && (
                 <button className="btn-ghost" disabled={busy?.has(row.id)}
                         style={{ fontSize: '0.72em', padding: '0.1em 0.4em', marginTop: '0.2rem' }}
-                        title={`Move this file to ${info.author || 'the ISBN author'} and link "${info.title}"`}
+                        title={`Move this file to ${info.author} and link "${info.title}"`}
                         onClick={() => onReassign(row.id, info)}>
-                    {busy?.has(row.id) ? '…' : `↪ Reassign to ${info.author || 'ISBN author'}`}
+                    {busy?.has(row.id) ? '…' : `↪ Reassign to ${info.author}`}
                 </button>
             )}
         </span>

@@ -393,29 +393,50 @@ public class SettingsController : ControllerBase
         return new PushoverTestResult(result.Sent, result.Error);
     }
 
-    // Optional Google Books API key. Enables the ISBN-resolution fallback to Google
-    // Books for ISBNs OpenLibrary can't resolve (self-published / KDP / indie).
-    public sealed record GoogleBooksDto(string ApiKey, bool Configured);
-    public sealed record UpdateGoogleBooks(string? ApiKey);
+    // Optional ISBN-resolution fallback credentials, tried (in this order) after
+    // OpenLibrary for ISBNs it can't resolve (self-published / KDP / indie): Google
+    // Books (free, 1,000/day), Hardcover (free), ISBNdb (paid). Each blank ⇒ that
+    // source is off.
+    public sealed record IsbnFallbacksDto(
+        string GoogleBooksKey, string HardcoverToken, string IsbndbKey, bool LocEnabled,
+        bool GoogleConfigured, bool HardcoverConfigured, bool IsbndbConfigured);
+    public sealed record UpdateIsbnFallbacks(
+        string? GoogleBooksKey, string? HardcoverToken, string? IsbndbKey, bool? LocEnabled);
 
-    [HttpGet("google-books")]
-    public async Task<GoogleBooksDto> GetGoogleBooks(CancellationToken ct)
+    [HttpGet("isbn-fallbacks")]
+    public async Task<IsbnFallbacksDto> GetIsbnFallbacks(CancellationToken ct)
     {
-        var key = await _db.AppSettings.AsNoTracking()
-            .Where(s => s.Key == AppSettingKeys.GoogleBooksApiKey)
-            .Select(s => s.Value)
-            .FirstOrDefaultAsync(ct);
-        return new GoogleBooksDto(key ?? "", !string.IsNullOrWhiteSpace(key));
+        var rows = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.GoogleBooksApiKey
+                     || s.Key == AppSettingKeys.HardcoverApiToken
+                     || s.Key == AppSettingKeys.IsbndbApiKey
+                     || s.Key == AppSettingKeys.LocEnabled)
+            .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
+        rows.TryGetValue(AppSettingKeys.GoogleBooksApiKey, out var google);
+        rows.TryGetValue(AppSettingKeys.HardcoverApiToken, out var hardcover);
+        rows.TryGetValue(AppSettingKeys.IsbndbApiKey, out var isbndb);
+        rows.TryGetValue(AppSettingKeys.LocEnabled, out var loc);
+        return new IsbnFallbacksDto(
+            google ?? "", hardcover ?? "", isbndb ?? "", !string.IsNullOrWhiteSpace(loc),
+            !string.IsNullOrWhiteSpace(google), !string.IsNullOrWhiteSpace(hardcover), !string.IsNullOrWhiteSpace(isbndb));
     }
 
-    [HttpPut("google-books")]
-    public async Task<ActionResult<GoogleBooksDto>> SetGoogleBooks(
-        [FromBody] UpdateGoogleBooks body, CancellationToken ct)
+    [HttpPut("isbn-fallbacks")]
+    public async Task<ActionResult<IsbnFallbacksDto>> SetIsbnFallbacks(
+        [FromBody] UpdateIsbnFallbacks body, CancellationToken ct)
     {
-        var key = body.ApiKey?.Trim() ?? "";
-        await UpsertSettingAsync(AppSettingKeys.GoogleBooksApiKey, key, ct);
+        var google = body.GoogleBooksKey?.Trim() ?? "";
+        var hardcover = body.HardcoverToken?.Trim() ?? "";
+        var isbndb = body.IsbndbKey?.Trim() ?? "";
+        var loc = body.LocEnabled == true ? "true" : "";
+        await UpsertSettingAsync(AppSettingKeys.GoogleBooksApiKey, google, ct);
+        await UpsertSettingAsync(AppSettingKeys.HardcoverApiToken, hardcover, ct);
+        await UpsertSettingAsync(AppSettingKeys.IsbndbApiKey, isbndb, ct);
+        await UpsertSettingAsync(AppSettingKeys.LocEnabled, loc, ct);
         await _db.SaveChangesAsync(ct);
-        return new GoogleBooksDto(key, !string.IsNullOrWhiteSpace(key));
+        return new IsbnFallbacksDto(
+            google, hardcover, isbndb, loc.Length > 0,
+            !string.IsNullOrWhiteSpace(google), !string.IsNullOrWhiteSpace(hardcover), !string.IsNullOrWhiteSpace(isbndb));
     }
 
     public sealed record OpenLibraryIdentityDto(
@@ -661,16 +682,16 @@ public class SettingsController : ControllerBase
 
     public sealed record ResetIsbnMissesResult(int Cleared);
 
-    // Drops every cached ISBN resolution that came back with NOTHING (no work key
-    // and no title — a total miss). The resolve-isbns job then re-resolves those
-    // ISBNs on its next run. Rows that DID resolve (an OpenLibrary work, or a Google
-    // Books title) are kept. Use this after enabling the Google Books fallback so the
-    // previously-null self-published / KDP / indie ISBNs get a second chance.
+    // Drops every INCOMPLETE cached ISBN resolution — a total miss (no title), OR a
+    // partial one that has a title but NO author (common for authorless OpenLibrary
+    // works). The resolve-isbns job then re-resolves them, giving the fallback sources
+    // a fresh chance to supply what's missing. Fully-resolved rows (title AND author)
+    // are kept. Use this after enabling / adding a fallback source.
     [HttpPost("reset-isbn-misses")]
     public async Task<ResetIsbnMissesResult> ResetIsbnMisses(CancellationToken ct)
     {
         var cleared = await _db.IsbnResolutions
-            .Where(r => r.WorkKey == null && r.Title == null)
+            .Where(r => r.AuthorName == null)
             .ExecuteDeleteAsync(ct);
         return new ResetIsbnMissesResult(cleared);
     }

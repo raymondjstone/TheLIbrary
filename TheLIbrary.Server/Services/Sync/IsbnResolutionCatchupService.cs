@@ -95,8 +95,7 @@ public sealed class IsbnResolutionCatchupService
             if (pending.Count < maxPerRun) pending.Add(raw);
         }
 
-        int considered = 0, found = 0;
-        var quotaHit = false;
+        int considered = 0, found = 0, deferred = 0;
         foreach (var raw in pending)
         {
             ct.ThrowIfCancellationRequested();
@@ -105,33 +104,35 @@ public sealed class IsbnResolutionCatchupService
             try
             {
                 var res = await resolver.ResolveAsync(raw, ct);
-                if (res?.Title is not null) found++;   // resolved to a title (OpenLibrary or Google)
+                if (res?.Title is not null) found++;   // resolved to a title (OpenLibrary or a fallback)
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-            catch (GoogleBooksQuotaExceededException)
+            catch (IsbnLookupUnavailableException)
             {
-                // Google's daily quota is spent — stop hitting it. This ISBN and the
-                // rest stay uncached, so they're picked up again on a later run (the
-                // next day, once the quota resets).
-                considered--; // this one wasn't processed
-                quotaHit = true;
-                break;
+                // A source was rate/quota-capped for THIS ISBN — it's left uncached and
+                // re-attempted on a later run. Do NOT abort the whole batch: other ISBNs
+                // still resolve via OpenLibrary or a source that isn't capped (and a
+                // capped source's own throttle/latch makes its calls cheap), so pressing
+                // on gets far more done than stopping at the first blip.
+                deferred++;
             }
             catch (Exception ex)
             {
-                // One bad ISBN (or a transient OL error) shouldn't abort the batch;
-                // it's simply left for a later run.
+                // One bad ISBN (or a transient error) shouldn't abort the batch either.
                 _log.LogWarning(ex, "resolve-isbns: could not resolve ISBN {Isbn}", raw);
+                deferred++;
             }
         }
 
-        var remaining = Math.Max(0, totalMissing - considered);
+        // Not-reached this run PLUS the ones we attempted but couldn't resolve (left
+        // uncached) are all still pending for a later run.
+        var remaining = Math.Max(0, totalMissing - considered) + deferred;
         _log.LogInformation(
-            "resolve-isbns done — resolved {Considered} ISBN(s) ({Found} got a title), {Remaining} still uncached{Quota}",
-            considered, found, remaining, quotaHit ? " (stopped: Google daily quota reached)" : "");
-        _currentMessage = quotaHit
-            ? $"Paused — Google daily quota reached; resolved {considered}, {remaining} will retry tomorrow"
-            : $"Done — resolved {considered}, {remaining} remaining";
+            "resolve-isbns done — attempted {Considered}, resolved {Found}, deferred {Deferred} (source capped/error), {Remaining} still uncached",
+            considered, found, deferred, remaining);
+        _currentMessage = $"Done — resolved {found}"
+            + (deferred > 0 ? $", {deferred} deferred (retry later)" : "")
+            + $", {remaining} remaining";
         return new IsbnCatchupSummary(considered, found, remaining);
     }
 }

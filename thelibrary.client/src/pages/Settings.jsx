@@ -28,9 +28,9 @@ export default function Settings() {
     const [pushover, setPushover] = useState({ appToken: '', userKey: '', configured: false })
     const [pushoverEdit, setPushoverEdit] = useState({ appToken: '', userKey: '' })
     const [pushoverSaving, setPushoverSaving] = useState(false)
-    const [googleBooks, setGoogleBooks] = useState({ apiKey: '', configured: false })
-    const [googleBooksEdit, setGoogleBooksEdit] = useState('')
-    const [googleBooksSaving, setGoogleBooksSaving] = useState(false)
+    const [isbnFb, setIsbnFb] = useState({ googleConfigured: false, hardcoverConfigured: false, isbndbConfigured: false })
+    const [isbnFbEdit, setIsbnFbEdit] = useState({ googleBooksKey: '', hardcoverToken: '', isbndbKey: '', locEnabled: false })
+    const [isbnFbSaving, setIsbnFbSaving] = useState(false)
     const [isbnMissesBusy, setIsbnMissesBusy] = useState(false)
     const [isbnMissesResult, setIsbnMissesResult] = useState(null)
     const [pushoverTestResult, setPushoverTestResult] = useState(null)
@@ -124,11 +124,16 @@ export default function Settings() {
         } catch (e) { setError(prev => prev ?? String(e)) }
 
         try {
-            const r = await fetch('/api/settings/google-books')
+            const r = await fetch('/api/settings/isbn-fallbacks')
             if (!r.ok) throw new Error(r.statusText)
             const body = await r.json()
-            setGoogleBooks(body)
-            setGoogleBooksEdit(body.apiKey ?? '')
+            setIsbnFb(body)
+            setIsbnFbEdit({
+                googleBooksKey: body.googleBooksKey ?? '',
+                hardcoverToken: body.hardcoverToken ?? '',
+                isbndbKey: body.isbndbKey ?? '',
+                locEnabled: !!body.locEnabled,
+            })
         } catch (e) { setError(prev => prev ?? String(e)) }
 
         try {
@@ -601,23 +606,28 @@ export default function Settings() {
         }
     }
 
-    const saveGoogleBooks = async () => {
+    const saveIsbnFallbacks = async () => {
         setError(null)
-        setGoogleBooksSaving(true)
+        setIsbnFbSaving(true)
         try {
-            const r = await fetch('/api/settings/google-books', {
+            const r = await fetch('/api/settings/isbn-fallbacks', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ apiKey: googleBooksEdit }),
+                body: JSON.stringify(isbnFbEdit),
             })
             const body = await r.json().catch(() => ({}))
             if (!r.ok) throw new Error(body.error || r.statusText)
-            setGoogleBooks(body)
-            setGoogleBooksEdit(body.apiKey ?? '')
+            setIsbnFb(body)
+            setIsbnFbEdit({
+                googleBooksKey: body.googleBooksKey ?? '',
+                hardcoverToken: body.hardcoverToken ?? '',
+                isbndbKey: body.isbndbKey ?? '',
+                locEnabled: !!body.locEnabled,
+            })
         } catch (e) {
             setError(String(e.message ?? e))
         } finally {
-            setGoogleBooksSaving(false)
+            setIsbnFbSaving(false)
         }
     }
 
@@ -1166,31 +1176,54 @@ export default function Settings() {
                 </p>
             )}
 
-            <h2 style={{ marginTop: '1.5rem' }}>Google Books ISBN fallback</h2>
+            <h2 style={{ marginTop: '1.5rem' }}>ISBN metadata fallbacks</h2>
             <p className="subtle">
-                Optional. When set, ISBN resolution falls back to <a href="https://www.googleapis.com/books/v1/" target="_blank" rel="noreferrer">Google Books</a>
-                {' '}for ISBNs OpenLibrary has no record of — mostly <strong>self-published, KDP, indie and
-                foreign-language</strong> titles. It fills in the title/author shown on the
-                {' '}<a href="/identified">Identified</a> page (there's no OpenLibrary work to link, so it's
-                for identification, not auto-matching). Get a free key from the
-                {' '}<a href="https://console.cloud.google.com/apis/library/books.googleapis.com" target="_blank" rel="noreferrer">Google Cloud console</a>
-                {' '}(enable the <em>Books API</em>). Blank = fallback off, no external calls. Results are cached,
-                so each ISBN is only ever looked up once.
+                Optional. For ISBNs OpenLibrary has no record of — mostly <strong>self-published,
+                KDP, indie and foreign-language</strong> titles — these sources are tried in order to
+                fill in the title/author shown on the <a href="/identified">Identified</a> page (there's no
+                OpenLibrary work to link, so it's for identification, not auto-matching). Each is off
+                unless its credential is set; results are cached, so each ISBN is looked up only once.
             </p>
-            <div className="toolbar" style={{ flexWrap: 'wrap' }}>
-                <input
-                    style={{ minWidth: 360 }}
-                    value={googleBooksEdit}
-                    onChange={e => setGoogleBooksEdit(e.target.value)}
-                    placeholder="Google Books API key" />
-                <button onClick={saveGoogleBooks} disabled={googleBooksSaving}>
-                    {googleBooksSaving ? 'Saving…' : 'Save'}
+            <div style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr max-content', gap: '0.4rem 0.6rem', alignItems: 'center', maxWidth: 760 }}>
+                <label>Google Books key</label>
+                <input value={isbnFbEdit.googleBooksKey}
+                    onChange={e => setIsbnFbEdit(p => ({ ...p, googleBooksKey: e.target.value }))}
+                    placeholder="Google Books API key — free, 1,000 lookups/day" />
+                <span className="subtle" style={{ fontSize: '0.85em' }}>{isbnFb.googleConfigured ? '● on' : '○ off'}</span>
+
+                <label>Hardcover token</label>
+                <input value={isbnFbEdit.hardcoverToken}
+                    onChange={e => setIsbnFbEdit(p => ({ ...p, hardcoverToken: e.target.value }))}
+                    placeholder="Hardcover API token — free (hardcover.app)" />
+                <span className="subtle" style={{ fontSize: '0.85em' }}>{isbnFb.hardcoverConfigured ? '● on' : '○ off'}</span>
+
+                <label>Library of Congress</label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={isbnFbEdit.locEnabled}
+                        onChange={e => setIsbnFbEdit(p => ({ ...p, locEnabled: e.target.checked }))} />
+                    <span className="subtle" style={{ fontSize: '0.9em' }}>Enable — free, no key; best for traditional / out-of-print ISBNs</span>
+                </label>
+                <span className="subtle" style={{ fontSize: '0.85em' }}>{isbnFbEdit.locEnabled ? '● on' : '○ off'}</span>
+
+                <label>ISBNdb key</label>
+                <input value={isbnFbEdit.isbndbKey}
+                    onChange={e => setIsbnFbEdit(p => ({ ...p, isbndbKey: e.target.value }))}
+                    placeholder="ISBNdb API key — paid, most comprehensive (isbndb.com)" />
+                <span className="subtle" style={{ fontSize: '0.85em' }}>{isbnFb.isbndbConfigured ? '● on' : '○ off'}</span>
+            </div>
+            <div className="toolbar" style={{ flexWrap: 'wrap', marginTop: '0.5rem' }}>
+                <button onClick={saveIsbnFallbacks} disabled={isbnFbSaving}>
+                    {isbnFbSaving ? 'Saving…' : 'Save'}
                 </button>
                 <span className="subtle">
-                    {googleBooks.configured ? 'configured · fallback enabled' : 'not configured · fallback off'}
+                    Order tried: OpenLibrary → Google Books → Hardcover → Library of Congress → ISBNdb.
+                    Get a free Google key from the
+                    {' '}<a href="https://console.cloud.google.com/apis/library/books.googleapis.com" target="_blank" rel="noreferrer">Google Cloud console</a>
+                    {' '}(enable the <em>Books API</em>); a Hardcover token from your
+                    {' '}<a href="https://hardcover.app/account/api" target="_blank" rel="noreferrer">Hardcover account</a>.
                 </span>
                 <button className="btn-ghost" onClick={resetIsbnMisses} disabled={isbnMissesBusy}
-                        title="Drop cached 'no result' ISBN lookups so the resolve-isbns job tries them again (with Google Books if a key is set)">
+                        title="Drop cached 'no result' ISBN lookups so the resolve-isbns job tries them again against the configured sources">
                     {isbnMissesBusy ? 'Clearing…' : 'Re-attempt failed ISBN lookups'}
                 </button>
             </div>

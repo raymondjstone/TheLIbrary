@@ -538,23 +538,26 @@ public class IdentifiedController : ControllerBase
         {
             res = await resolver.ResolveAsync(scan.Isbn, ct);
         }
-        catch (GoogleBooksQuotaExceededException)
+        catch (IsbnLookupUnavailableException)
         {
-            // Temporary — the daily Google quota is spent and nothing was cached, so
-            // this ISBN will resolve on a later day. Report it as a friendly, retryable
-            // state rather than a 500.
+            // Temporary — a metadata source is rate/quota-capped and nothing was cached,
+            // so this ISBN will resolve on a later run. Report it as a friendly,
+            // retryable state rather than a 500.
             return Ok(new IsbnTitleResult(null, null, null,
-                "Google Books' daily lookup quota is used up — this ISBN will be tried again tomorrow.",
+                "An ISBN lookup source is temporarily rate-limited — this ISBN will be tried again later.",
                 null, null, null, null, null, QuotaExhausted: true));
         }
         if (res is null || string.IsNullOrWhiteSpace(res.Title))
             return Ok(new IsbnTitleResult(null, null, null, "No OpenLibrary work found for this ISBN.", null, null, null, null, null));
 
         // Whether the resolved work's author agrees with the file's folder author —
-        // computed live from the cached name/key (no OL call). Apply keeps the folder
-        // author and refuses a mismatched ISBN, so the UI can offer "Reassign" instead.
+        // computed live from the cached name/key (no OL call). Left NULL (unknown) when
+        // the ISBN resolved to a title but NO author (common for authorless OL works) —
+        // that's "author not listed", NOT "a different author", so the UI mustn't claim
+        // a mismatch or offer a nameless reassign.
         bool? matches = null;
-        if (scan.AuthorId is int aid)
+        if (scan.AuthorId is int aid
+            && (res.AuthorName is not null || res.AuthorKey is not null))
         {
             var author = await _db.Authors.AsNoTracking().FirstOrDefaultAsync(a => a.Id == aid, ct);
             if (author is not null)

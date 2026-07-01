@@ -66,10 +66,13 @@ public static class AppSettingKeys
     public const string PushoverAppToken = "PushoverAppToken";
     public const string PushoverUserKey = "PushoverUserKey";
 
-    // Optional Google Books API key. When set, ISBN resolution falls back to Google
-    // Books for ISBNs OpenLibrary has no record of (self-published / KDP / indie).
-    // Blank = fallback disabled (no external calls).
-    public const string GoogleBooksApiKey = "GoogleBooksApiKey";
+    // Optional ISBN-resolution fallback credentials. When set, ISBN resolution falls
+    // back to these sources (in order) for ISBNs OpenLibrary has no record of
+    // (self-published / KDP / indie). Each blank = that source disabled.
+    public const string GoogleBooksApiKey = "GoogleBooksApiKey";       // free, 1,000/day
+    public const string HardcoverApiToken = "HardcoverApiToken";       // free, community GraphQL
+    public const string LocEnabled = "LocEnabled";                     // free, Library of Congress SRU (on/off flag)
+    public const string IsbndbApiKey = "IsbndbApiKey";                 // paid, comprehensive
 
     // Folder name (relative to each library root) used when archiving duplicate
     // files from the Duplicates page. Defaults to "__archive" when not set.
