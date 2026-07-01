@@ -32,6 +32,7 @@ export const JOB_CATEGORIES = [
             { id: 'content-scan', label: 'Identify books from content', statusKey: 'contentScan', manualEndpoint: '/api/jobs/content-scan/start' },
             { id: 'assign-authors', label: 'Assign untracked to authors', statusKey: 'assignAuthors', manualEndpoint: '/api/jobs/assign-authors/start' },
             { id: 'resolve-works', label: 'Resolve works by ISBN', statusKey: 'resolveWorks', manualEndpoint: '/api/jobs/resolve-works/start' },
+            { id: 'resolve-isbns', label: 'Cache ISBN title/author lookups', statusKey: 'resolveIsbns', manualEndpoint: '/api/jobs/resolve-isbns/start' },
             { id: 'promote-manual-books', label: 'Promote manual books & authors', statusKey: 'promoteManualBooks', manualEndpoint: '/api/jobs/promote-manual-books/start' },
             { id: 'llm-identify', label: 'LLM identify quarantined files', statusKey: 'llmIdentify', manualEndpoint: '/api/jobs/llm-identify/start' },
         ],

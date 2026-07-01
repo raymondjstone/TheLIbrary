@@ -50,6 +50,7 @@ public static class ScheduleJobIds
     public const string MarkOtherEditions = "mark-other-editions";
     public const string MarkEditionsRead = "mark-editions-read";
     public const string StarSeriesCoAuthors = "star-series-coauthors";
+    public const string ResolveIsbns = "resolve-isbns";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
@@ -60,7 +61,7 @@ public static class ScheduleJobIds
         ArchiveForeign, MergeLinkedAuthors, CheckIntegrity, PruneStaleFiles,
         ContentScan, AssignAuthors, IndexFullText, PruneAuthors, DuplicateAutoArchive,
         SeriesWatch, AutoReplaceDamaged, ResolveWorks, LlmIdentify, MarkOtherEditions,
-        MarkEditionsRead, StarSeriesCoAuthors
+        MarkEditionsRead, StarSeriesCoAuthors, ResolveIsbns
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -159,5 +160,10 @@ public static class ScheduleJobIds
             // author writes for, so a shared series is followed across all its
             // authors. Additive + reversible, so it runs daily by default.
             [StarSeriesCoAuthors] = new() { Cron = "0 22 * * *", Enabled = true },
+            // Warm the shared ISBN→work cache for ISBNs scanned before content-scan
+            // started resolving them inline. Makes OL calls (capped per run), so it
+            // ships DISABLED — opt in on the Schedules page (or trigger once to work
+            // the backlog); new scans populate the cache without it.
+            [ResolveIsbns] = new() { Cron = "30 16 * * *", Enabled = false },
         };
 }

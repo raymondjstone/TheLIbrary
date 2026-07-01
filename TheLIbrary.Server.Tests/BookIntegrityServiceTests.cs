@@ -19,7 +19,7 @@ public class BookIntegrityServiceTests
     {
         var fs = new FakeFileSystem();
         fs.AddFile("/lib/tiny.epub", TestEpub.Build(("c.xhtml", TestEpub.HtmlWithText(1_000))));
-        var dbName = Seed(("/lib/tiny.epub", sizeBytes: 10, priority: 0));
+        var dbName = Seed(("/lib/tiny.epub", SizeBytes: 10, Priority: 0));
         var sut = CreateService(fs, dbName);
 
         var summary = await sut.RunForTestsAsync(CancellationToken.None);
@@ -69,7 +69,7 @@ public class BookIntegrityServiceTests
         var fs = new FakeFileSystem();
         fs.AddFile("/lib/ok.epub", TestEpub.Build(("c.xhtml", TestEpub.HtmlWithText(40_000))));
         // Already checked at the current size → not a candidate.
-        var dbName = Seed(("/lib/ok.epub", sizeBytes: 99, priority: 0), checkedSize: 99);
+        var dbName = Seed(("/lib/ok.epub", SizeBytes: 99, Priority: 0), checkedSize: 99);
         var sut = CreateService(fs, dbName);
 
         var summary = await sut.RunForTestsAsync(CancellationToken.None);
@@ -300,7 +300,7 @@ public class BookIntegrityServiceTests
     {
         var fs = new FakeFileSystem();
         fs.AddFile("/lib/book.mobi", new byte[] { 1, 2, 3 });
-        var dbName = Seed(("/lib/book.mobi", sizeBytes: 5, priority: 0));
+        var dbName = Seed(("/lib/book.mobi", SizeBytes: 5, Priority: 0));
         var sut = CreateService(fs, dbName, calibreConfigured: false);
 
         var summary = await sut.RunForTestsAsync(CancellationToken.None);

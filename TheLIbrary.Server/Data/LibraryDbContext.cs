@@ -28,6 +28,7 @@ public class LibraryDbContext : DbContext
     public DbSet<BookTextIndex> BookTextIndexes => Set<BookTextIndex>();
     public DbSet<TextIndexWord> TextIndexWords => Set<TextIndexWord>();
     public DbSet<ActivityLogEntry> ActivityLog => Set<ActivityLogEntry>();
+    public DbSet<IsbnResolution> IsbnResolutions => Set<IsbnResolution>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {

@@ -3,6 +3,7 @@ using TheLibrary.Server.Controllers;
 using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
+using TheLibrary.Server.Services.OpenLibrary;
 using TheLibrary.Server.Services.Scheduling;
 
 namespace TheLibrary.Server.Services.Sync;
@@ -100,6 +101,9 @@ public sealed class ContentScanService
         _currentMessage = "Loading files to identify";
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        // Optional so a minimal test scope without OpenLibrary wired up still scans;
+        // in the app it's always registered, so ISBNs are pre-resolved as we go.
+        var resolver = scope.ServiceProvider.GetService<IsbnResolutionService>();
 
         var max = await LoadMaxPerRunAsync(db, ct);
         var archiveLeaf = await LoadArchiveLeafAsync(db, ct);
@@ -205,6 +209,10 @@ public sealed class ContentScanService
                 if (await ScanOneAsync(db, items[i], ct)) withInfo++;
                 await db.SaveChangesAsync(ct);
                 scanned++;
+                // Resolve the file's ISBN now (shared IsbnResolutions cache) so the
+                // Identified page never has to look it up later. Best-effort — a miss
+                // or OL hiccup is left for the ISBN catch-up job.
+                await PreResolveIsbnAsync(db, resolver, items[i].FullPath, ct);
             }
             catch (Exception ex)
             {
@@ -226,6 +234,7 @@ public sealed class ContentScanService
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        var resolver = scope.ServiceProvider.GetService<IsbnResolutionService>();
         var max = await LoadMaxPerRunAsync(db, ct);
         var archiveLeaf = await LoadArchiveLeafAsync(db, ct);
         var notArchived = ArchivedFilesController.NotUnderArchive(archiveLeaf);
@@ -256,6 +265,7 @@ public sealed class ContentScanService
                 if (await ScanOneAsync(db, item, ct)) identified++;
                 await db.SaveChangesAsync(ct); // per file so one bad row can't lose the rest
                 scanned++;
+                await PreResolveIsbnAsync(db, resolver, item.FullPath, ct);
             }
             catch (Exception ex)
             {
@@ -271,6 +281,31 @@ public sealed class ContentScanService
 
     private Task<bool> ScanOneAsync(LibraryDbContext db, ScanItem item, CancellationToken ct)
         => ScanFileAsync(db, item, catalogueOnly: false, ct);
+
+    // After a file is scanned, warm the shared IsbnResolutions cache for whatever
+    // ISBN it carries, so the Identified page (and Apply) never pay the OpenLibrary
+    // lookup later. Best-effort and swallowed on failure — anything missed here is
+    // picked up by the resolve-isbns catch-up job. Only touches files scanned from
+    // now on (existing rows are the catch-up job's job).
+    private async Task PreResolveIsbnAsync(
+        LibraryDbContext db, IsbnResolutionService? resolver, string fullPath, CancellationToken ct)
+    {
+        if (resolver is null) return;
+        try
+        {
+            var isbn = await db.BookContentScans.AsNoTracking()
+                .Where(c => c.FullPath == fullPath)
+                .Select(c => c.Isbn)
+                .FirstOrDefaultAsync(ct);
+            if (!string.IsNullOrWhiteSpace(isbn))
+                await resolver.ResolveAsync(isbn, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "Pre-resolving ISBN for {Path} failed — leaving it for the catch-up job", fullPath);
+        }
+    }
 
     // Reads a file's front+back matter, parses it, and upserts its BookContentScan
     // row. When catalogueOnly is set, only the series catalogue is stored (the

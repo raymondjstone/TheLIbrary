@@ -48,6 +48,7 @@ public sealed class ScheduledJobs
     private readonly OtherEditionMarkerService _markOtherEditions;
     private readonly ReadEditionPropagationService _markEditionsRead;
     private readonly SeriesCoAuthorStarService _starSeriesCoAuthors;
+    private readonly IsbnResolutionCatchupService _resolveIsbns;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -82,6 +83,7 @@ public sealed class ScheduledJobs
         OtherEditionMarkerService markOtherEditions,
         ReadEditionPropagationService markEditionsRead,
         SeriesCoAuthorStarService starSeriesCoAuthors,
+        IsbnResolutionCatchupService resolveIsbns,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
@@ -94,6 +96,7 @@ public sealed class ScheduledJobs
         _dupAutoArchive = dupAutoArchive; _seriesWatch = seriesWatch; _autoReplaceDamaged = autoReplaceDamaged; _resolveWorks = resolveWorks;
         _llmIdentify = llmIdentify; _markOtherEditions = markOtherEditions; _markEditionsRead = markEditionsRead;
         _starSeriesCoAuthors = starSeriesCoAuthors;
+        _resolveIsbns = resolveIsbns;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -320,6 +323,12 @@ public sealed class ScheduledJobs
         ScheduleJobIds.StarSeriesCoAuthors, manualTrigger,
         ct => _starSeriesCoAuthors.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _starSeriesCoAuthors.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunResolveIsbns(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.ResolveIsbns, manualTrigger,
+        ct => _resolveIsbns.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _resolveIsbns.IsRunning);
 
     internal Task RunWithPollingForTests(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,

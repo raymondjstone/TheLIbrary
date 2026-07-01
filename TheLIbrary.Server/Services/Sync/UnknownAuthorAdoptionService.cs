@@ -175,7 +175,9 @@ public sealed class UnknownAuthorAdoptionService
                 // 2. Move the folder back to incoming, stripped of the suffix so
                 //    incoming can match it to the author by name.
                 var destLeaf = SanitizeLeaf(namePart);
-                var dest = UniqueDirectory(incomingPath, destLeaf);
+                // incomingReady (guarding this whole loop) guarantees incomingPath is
+                // a non-null, non-blank, existing directory.
+                var dest = UniqueDirectory(incomingPath!, destLeaf);
                 try
                 {
                     MoveDirectory(dir, dest);

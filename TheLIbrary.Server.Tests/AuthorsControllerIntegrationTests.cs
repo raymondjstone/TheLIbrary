@@ -1251,13 +1251,14 @@ public class AuthorsControllerIntegrationTests
     }
 
     [Fact]
-    public async Task ApplyContentGuess_By_Isbn_Keeps_Folder_Author_Even_When_Work_Has_Another_Author()
+    public async Task ApplyContentGuess_By_Isbn_Refuses_Work_By_Another_Author()
     {
-        // An ISBN is definitive, so the work is applied — but the OL work lists a
-        // *different* author. Because the file already sits in an author folder,
-        // that folder is the author: the file stays put and no foreign author is
-        // created. (The title path, by contrast, refuses a different-author work
-        // — see ApplyContentGuess_By_Title_Refuses_Work_By_Another_Author.)
+        // The scanned ISBN resolves to an OL work by a *different* author than the
+        // one this file is filed under. Because Apply keeps the folder author and
+        // never re-parents, blindly attaching that work would mint a wrong-titled
+        // book under this author — so the ISBN is refused (guard). With no title
+        // that matches the author's own books to fall back on, nothing is applied:
+        // the file stays unmatched, no book/author is created, and the row clears.
         using var factory = new LibraryApiFactory((request, _) =>
         {
             Assert.Contains("search.json", request.RequestUri!.ToString());
@@ -1280,14 +1281,50 @@ public class AuthorsControllerIntegrationTests
         using var client = factory.CreateClient();
         var resp = await client.PostAsync("/api/authors/apply-content-guess/9", null);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var result = await resp.Content.ReadFromJsonAsync<AuthorsController.ApplyGuessResult>();
+        Assert.False(result!.Applied);                         // ISBN by another author — refused
 
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
         var file = await db.LocalBookFiles.FindAsync(5);
         Assert.Equal(1, file!.AuthorId);                       // unchanged — folder is the author
-        var book = await db.Books.FindAsync(file.BookId);
-        Assert.Equal(1, book!.AuthorId);                       // work attached under the folder author
+        Assert.Null(file.BookId);                              // NOT matched to the foreign work
+        Assert.Empty(await db.Books.ToListAsync());            // no wrong-author book minted
         Assert.Single(await db.Authors.ToListAsync());         // no "Someone Else" author created
+        Assert.True((await db.BookContentScans.FindAsync(9))!.Reviewed); // cleared from review list
+    }
+
+    [Fact]
+    public async Task ApplyContentGuess_By_Isbn_Matches_When_Only_Name_Agrees()
+    {
+        // The folder author has no OL key, but the ISBN work's author_name matches
+        // by normalized name variants ("McCaffrey, Anne" ↔ "Anne McCaffrey") — that
+        // agreement is enough for the guard to trust the ISBN and attach the work.
+        using var factory = new LibraryApiFactory((request, _) =>
+            Task.FromResult(TestHttpMessageHandler.Json("""
+                {"numFound":1,"docs":[{"key":"/works/OL77W","title":"Dragonflight",
+                  "author_name":["McCaffrey, Anne"]}]}
+                """)));
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Anne McCaffrey" }); // no OL key
+            db.LocalBookFiles.Add(new LocalBookFile { Id = 5, AuthorId = 1, FullPath = "/lib/A/df.epub" });
+            db.BookContentScans.Add(new BookContentScan
+            {
+                Id = 9, FullPath = "/lib/A/df.epub", Source = "unmatched", AuthorId = 1,
+                Isbn = "9780345334916", Title = "Dragonflight", Author = "Anne McCaffrey",
+            });
+        });
+
+        using var client = factory.CreateClient();
+        var resp = await client.PostAsync("/api/authors/apply-content-guess/9", null);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        var file = await db.LocalBookFiles.FindAsync(5);
+        Assert.NotNull(file!.BookId);                          // name agreed → work attached
+        Assert.Equal("OL77W", (await db.Books.FindAsync(file.BookId))!.OpenLibraryWorkKey);
     }
 
     [Fact]

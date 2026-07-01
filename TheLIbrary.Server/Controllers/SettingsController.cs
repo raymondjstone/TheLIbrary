@@ -393,6 +393,31 @@ public class SettingsController : ControllerBase
         return new PushoverTestResult(result.Sent, result.Error);
     }
 
+    // Optional Google Books API key. Enables the ISBN-resolution fallback to Google
+    // Books for ISBNs OpenLibrary can't resolve (self-published / KDP / indie).
+    public sealed record GoogleBooksDto(string ApiKey, bool Configured);
+    public sealed record UpdateGoogleBooks(string? ApiKey);
+
+    [HttpGet("google-books")]
+    public async Task<GoogleBooksDto> GetGoogleBooks(CancellationToken ct)
+    {
+        var key = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.GoogleBooksApiKey)
+            .Select(s => s.Value)
+            .FirstOrDefaultAsync(ct);
+        return new GoogleBooksDto(key ?? "", !string.IsNullOrWhiteSpace(key));
+    }
+
+    [HttpPut("google-books")]
+    public async Task<ActionResult<GoogleBooksDto>> SetGoogleBooks(
+        [FromBody] UpdateGoogleBooks body, CancellationToken ct)
+    {
+        var key = body.ApiKey?.Trim() ?? "";
+        await UpsertSettingAsync(AppSettingKeys.GoogleBooksApiKey, key, ct);
+        await _db.SaveChangesAsync(ct);
+        return new GoogleBooksDto(key, !string.IsNullOrWhiteSpace(key));
+    }
+
     public sealed record OpenLibraryIdentityDto(
         string AppName, string ContactEmail, bool Identified, string UserAgent);
     public sealed record UpdateOpenLibraryIdentity(string? AppName, string? ContactEmail);
@@ -632,6 +657,22 @@ public class SettingsController : ControllerBase
             .Where(c => c.Source == "untracked" && c.LlmAttemptedAt != null)
             .ExecuteUpdateAsync(s => s.SetProperty(c => c.LlmAttemptedAt, _ => (DateTime?)null), ct);
         return new ResetLlmAttemptsResult(cleared);
+    }
+
+    public sealed record ResetIsbnMissesResult(int Cleared);
+
+    // Drops every cached ISBN resolution that came back with NOTHING (no work key
+    // and no title — a total miss). The resolve-isbns job then re-resolves those
+    // ISBNs on its next run. Rows that DID resolve (an OpenLibrary work, or a Google
+    // Books title) are kept. Use this after enabling the Google Books fallback so the
+    // previously-null self-published / KDP / indie ISBNs get a second chance.
+    [HttpPost("reset-isbn-misses")]
+    public async Task<ResetIsbnMissesResult> ResetIsbnMisses(CancellationToken ct)
+    {
+        var cleared = await _db.IsbnResolutions
+            .Where(r => r.WorkKey == null && r.Title == null)
+            .ExecuteDeleteAsync(ct);
+        return new ResetIsbnMissesResult(cleared);
     }
 
     public sealed record CoverHoverDto(bool Enabled, double Scale);

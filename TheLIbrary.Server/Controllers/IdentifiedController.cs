@@ -4,6 +4,7 @@ using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.IO;
+using TheLibrary.Server.Services.OpenLibrary;
 using TheLibrary.Server.Services.Sync;
 
 namespace TheLibrary.Server.Controllers;
@@ -36,6 +37,12 @@ public class IdentifiedController : ControllerBase
     public sealed record IdentifiedRow(
         int Id,
         int? FileId,            // LocalBookFile id when the path is a tracked file (for preview)
+        // The book this file is ALREADY matched to (null when unmatched). When set,
+        // the file's title is settled — the guess must never overwrite it — so the
+        // client hides the Apply action and shows MatchedTitle (the real linked
+        // book's title) instead of the front-matter guess.
+        int? BookId,
+        string? MatchedTitle,
         string Path,
         string? Format,
         string Source,
@@ -55,7 +62,8 @@ public class IdentifiedController : ControllerBase
     /// Optional ?authorId filter. GET /api/identified
     /// </summary>
     [HttpGet]
-    public async Task<IReadOnlyList<IdentifiedRow>> Get([FromQuery] int? authorId = null, CancellationToken ct = default)
+    public async Task<IReadOnlyList<IdentifiedRow>> Get(
+        [FromQuery] int? authorId = null, [FromQuery] bool starredOnly = false, CancellationToken ct = default)
     {
         var q = _db.BookContentScans.AsNoTracking()
             .Where(c => !c.Reviewed
@@ -67,6 +75,12 @@ public class IdentifiedController : ControllerBase
                     // on a file that's already there) — pure noise — so drop it.
                     || (c.Author != null && c.AuthorId == null)));
         if (authorId is int aid) q = q.Where(c => c.AuthorId == aid);
+        // Starred = priority author (Priority >= 1), matching the rest of the app.
+        // Rows with no linked author (untracked files) can't be starred, so they
+        // drop out of this filter.
+        if (starredOnly)
+            q = q.Where(c => c.AuthorId != null
+                && _db.Authors.Any(a => a.Id == c.AuthorId && a.Priority >= 1));
 
         // There can be tens of thousands of eligible rows, dominated by TRACKED
         // author files that merely carry a series catalogue. The UNTRACKED
@@ -90,12 +104,18 @@ public class IdentifiedController : ControllerBase
                         ? _db.Authors.Where(a => a.Id == c.AuthorId).Select(a => a.Name).FirstOrDefault()
                         : null,
                     FileId = _db.LocalBookFiles.Where(f => f.FullPath == c.FullPath).Select(f => (int?)f.Id).FirstOrDefault(),
+                    // The book this file is already matched to (if any) and that book's
+                    // real title — so the client never offers to overwrite a settled
+                    // match with the front-matter guess.
+                    MatchedBookId = _db.LocalBookFiles.Where(f => f.FullPath == c.FullPath).Select(f => f.BookId).FirstOrDefault(),
+                    MatchedTitle = _db.LocalBookFiles.Where(f => f.FullPath == c.FullPath && f.BookId != null)
+                        .Select(f => f.Book!.Title).FirstOrDefault(),
                 })
                 .Take(take)
                 .ToListAsync(ct);
 
             return rows.Select(r => new IdentifiedRow(
-                r.Id, r.FileId, r.FullPath, FormatOf(r.FullPath), r.Source, r.AuthorId, r.LinkedAuthorName,
+                r.Id, r.FileId, r.MatchedBookId, r.MatchedTitle, r.FullPath, FormatOf(r.FullPath), r.Source, r.AuthorId, r.LinkedAuthorName,
                 r.Isbn, r.Title, r.Author, r.Series, r.SeriesPosition,
                 string.IsNullOrEmpty(r.AlsoByTitles) ? Array.Empty<string>() : r.AlsoByTitles.Split(';'),
                 ParseCatalog(r.SeriesCatalogJson),
@@ -478,6 +498,79 @@ public class IdentifiedController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
         return new ApplyCatalogResult(created, reused, linked, fixedPos, unmatched, added, sourceRows.Count);
+    }
+
+    public sealed record IsbnTitleResult(
+        string? Title, string? Author, bool? MatchesFolderAuthor, string? Reason,
+        // The resolved OL work, so the client can offer "Reassign to this author"
+        // (drive the existing use-work flow) when the ISBN's author differs from the
+        // file's folder author.
+        string? WorkKey, int? FirstPublishYear, int? CoverId, string? AuthorKey, string? Authors,
+        // True when the lookup couldn't run because Google Books' daily quota is spent
+        // — a temporary "try again tomorrow", NOT a "no such book" result. Nothing was
+        // cached, so it re-resolves on a later day.
+        bool QuotaExhausted = false);
+
+    /// <summary>
+    /// Resolves what title a row's ISBN would end up using — the OpenLibrary work
+    /// its <c>search.json?isbn=</c> lookup returns, exactly as the Apply action
+    /// would (first doc with a work key). Used by the Identified page to fill the
+    /// title column for a row that has an ISBN but no guessed / known title, so the
+    /// user can see what it points at before applying. Also reports whether that
+    /// work's author agrees with the file's folder author — when it doesn't, Apply
+    /// would refuse it (the author-agreement guard), so the UI can flag that.
+    /// One OL call, on demand (not during the list load). GET /api/identified/{id}/isbn-title
+    /// </summary>
+    [HttpGet("{id:int}/isbn-title")]
+    public async Task<ActionResult<IsbnTitleResult>> IsbnTitle(
+        int id, [FromServices] IsbnResolutionService resolver, CancellationToken ct)
+    {
+        var scan = await _db.BookContentScans.AsNoTracking().FirstOrDefaultAsync(c => c.Id == id, ct);
+        if (scan is null) return NotFound(new { error = "Scan row not found." });
+        if (string.IsNullOrWhiteSpace(scan.Isbn))
+            return Ok(new IsbnTitleResult(null, null, null, "This row has no ISBN.", null, null, null, null, null));
+
+        // Resolve once per ISBN, shared across every file carrying that code (cached
+        // in IsbnResolutions). Later loads — this row or any other file with the same
+        // ISBN — never call OpenLibrary again; a miss is remembered too.
+        IsbnResolution? res;
+        try
+        {
+            res = await resolver.ResolveAsync(scan.Isbn, ct);
+        }
+        catch (GoogleBooksQuotaExceededException)
+        {
+            // Temporary — the daily Google quota is spent and nothing was cached, so
+            // this ISBN will resolve on a later day. Report it as a friendly, retryable
+            // state rather than a 500.
+            return Ok(new IsbnTitleResult(null, null, null,
+                "Google Books' daily lookup quota is used up — this ISBN will be tried again tomorrow.",
+                null, null, null, null, null, QuotaExhausted: true));
+        }
+        if (res is null || string.IsNullOrWhiteSpace(res.Title))
+            return Ok(new IsbnTitleResult(null, null, null, "No OpenLibrary work found for this ISBN.", null, null, null, null, null));
+
+        // Whether the resolved work's author agrees with the file's folder author —
+        // computed live from the cached name/key (no OL call). Apply keeps the folder
+        // author and refuses a mismatched ISBN, so the UI can offer "Reassign" instead.
+        bool? matches = null;
+        if (scan.AuthorId is int aid)
+        {
+            var author = await _db.Authors.AsNoTracking().FirstOrDefaultAsync(a => a.Id == aid, ct);
+            if (author is not null)
+            {
+                var cachedDoc = new WorkSearchDoc
+                {
+                    AuthorNames = res.AuthorName is null ? null : new() { res.AuthorName },
+                    AuthorKeys = res.AuthorKey is null ? null : new() { res.AuthorKey },
+                };
+                matches = IsbnAuthorAgreement.Matches(cachedDoc, author);
+            }
+        }
+
+        return Ok(new IsbnTitleResult(
+            res.Title, res.AuthorName, matches, null,
+            res.WorkKey, res.FirstPublishYear, res.CoverId, res.AuthorKey, res.AuthorName));
     }
 
     /// <summary>

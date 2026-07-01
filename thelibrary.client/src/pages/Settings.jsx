@@ -28,6 +28,11 @@ export default function Settings() {
     const [pushover, setPushover] = useState({ appToken: '', userKey: '', configured: false })
     const [pushoverEdit, setPushoverEdit] = useState({ appToken: '', userKey: '' })
     const [pushoverSaving, setPushoverSaving] = useState(false)
+    const [googleBooks, setGoogleBooks] = useState({ apiKey: '', configured: false })
+    const [googleBooksEdit, setGoogleBooksEdit] = useState('')
+    const [googleBooksSaving, setGoogleBooksSaving] = useState(false)
+    const [isbnMissesBusy, setIsbnMissesBusy] = useState(false)
+    const [isbnMissesResult, setIsbnMissesResult] = useState(null)
     const [pushoverTestResult, setPushoverTestResult] = useState(null)
     const [pushoverTesting, setPushoverTesting] = useState(false)
     const [remarkable, setRemarkable] = useState(null)
@@ -116,6 +121,14 @@ export default function Settings() {
             const body = await r.json()
             setPushover(body)
             setPushoverEdit({ appToken: body.appToken ?? '', userKey: body.userKey ?? '' })
+        } catch (e) { setError(prev => prev ?? String(e)) }
+
+        try {
+            const r = await fetch('/api/settings/google-books')
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setGoogleBooks(body)
+            setGoogleBooksEdit(body.apiKey ?? '')
         } catch (e) { setError(prev => prev ?? String(e)) }
 
         try {
@@ -585,6 +598,43 @@ export default function Settings() {
             setError(String(e.message ?? e))
         } finally {
             setPushoverSaving(false)
+        }
+    }
+
+    const saveGoogleBooks = async () => {
+        setError(null)
+        setGoogleBooksSaving(true)
+        try {
+            const r = await fetch('/api/settings/google-books', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ apiKey: googleBooksEdit }),
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setGoogleBooks(body)
+            setGoogleBooksEdit(body.apiKey ?? '')
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setGoogleBooksSaving(false)
+        }
+    }
+
+    const resetIsbnMisses = async () => {
+        if (!window.confirm('Re-attempt every ISBN that previously resolved to nothing? Their cached "no result" is dropped so the resolve-isbns job looks them up again (using Google Books if a key is set). Ones that already resolved are untouched.')) return
+        setError(null)
+        setIsbnMissesBusy(true)
+        setIsbnMissesResult(null)
+        try {
+            const r = await fetch('/api/settings/reset-isbn-misses', { method: 'POST' })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setIsbnMissesResult(`Cleared ${body.cleared} cached miss${body.cleared === 1 ? '' : 'es'} — run the resolve-isbns job to re-resolve them.`)
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setIsbnMissesBusy(false)
         }
     }
 
@@ -1114,6 +1164,38 @@ export default function Settings() {
                 <p className={pushoverTestResult.sent ? 'subtle' : 'error'} style={{ marginTop: '0.4rem' }}>
                     {pushoverTestResult.message}
                 </p>
+            )}
+
+            <h2 style={{ marginTop: '1.5rem' }}>Google Books ISBN fallback</h2>
+            <p className="subtle">
+                Optional. When set, ISBN resolution falls back to <a href="https://www.googleapis.com/books/v1/" target="_blank" rel="noreferrer">Google Books</a>
+                {' '}for ISBNs OpenLibrary has no record of — mostly <strong>self-published, KDP, indie and
+                foreign-language</strong> titles. It fills in the title/author shown on the
+                {' '}<a href="/identified">Identified</a> page (there's no OpenLibrary work to link, so it's
+                for identification, not auto-matching). Get a free key from the
+                {' '}<a href="https://console.cloud.google.com/apis/library/books.googleapis.com" target="_blank" rel="noreferrer">Google Cloud console</a>
+                {' '}(enable the <em>Books API</em>). Blank = fallback off, no external calls. Results are cached,
+                so each ISBN is only ever looked up once.
+            </p>
+            <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+                <input
+                    style={{ minWidth: 360 }}
+                    value={googleBooksEdit}
+                    onChange={e => setGoogleBooksEdit(e.target.value)}
+                    placeholder="Google Books API key" />
+                <button onClick={saveGoogleBooks} disabled={googleBooksSaving}>
+                    {googleBooksSaving ? 'Saving…' : 'Save'}
+                </button>
+                <span className="subtle">
+                    {googleBooks.configured ? 'configured · fallback enabled' : 'not configured · fallback off'}
+                </span>
+                <button className="btn-ghost" onClick={resetIsbnMisses} disabled={isbnMissesBusy}
+                        title="Drop cached 'no result' ISBN lookups so the resolve-isbns job tries them again (with Google Books if a key is set)">
+                    {isbnMissesBusy ? 'Clearing…' : 'Re-attempt failed ISBN lookups'}
+                </button>
+            </div>
+            {isbnMissesResult && (
+                <p className="subtle" style={{ marginTop: '0.4rem', color: 'var(--accent)' }}>{isbnMissesResult}</p>
             )}
 
             <h2 style={{ marginTop: '1.5rem' }}>OpenLibrary identity</h2>

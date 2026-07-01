@@ -50,10 +50,13 @@ builder.Services.AddDbContext<LibraryDbContext>(opt =>
 builder.Services.AddSingleton<OpenLibrarySettings>();
 builder.Services.AddSingleton<OpenLibraryRateLimiter>();
 builder.Services.AddHttpClient<OpenLibraryClient>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.GoogleBooksRateLimiter>();
+builder.Services.AddHttpClient<TheLibrary.Server.Services.OpenLibrary.GoogleBooksClient>();
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<IFileSystem, SystemFileSystem>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.CoverCacheState>();
 builder.Services.AddSingleton<OpenLibraryMetadataCacheService>();
+builder.Services.AddScoped<TheLibrary.Server.Services.OpenLibrary.IsbnResolutionService>();
 builder.Services.AddSingleton<IProcessRunner, SystemProcessRunner>();
 builder.Services.AddScoped<CalibreScanner>();
 builder.Services.AddScoped<AuthorDumpSeeder>();
@@ -90,6 +93,7 @@ builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.DuplicateAutoArchi
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.SeriesWatchService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Download.AutoReplaceDamagedService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.WorkResolutionService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.IsbnResolutionCatchupService>();
 builder.Services.AddHttpClient<TheLibrary.Server.Services.Llm.LlmMetadataClient>();
 builder.Services.AddHttpClient<TheLibrary.Server.Services.Llm.LlmSpendClient>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Llm.LlmIdentificationService>();

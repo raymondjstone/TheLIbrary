@@ -66,6 +66,11 @@ public static class AppSettingKeys
     public const string PushoverAppToken = "PushoverAppToken";
     public const string PushoverUserKey = "PushoverUserKey";
 
+    // Optional Google Books API key. When set, ISBN resolution falls back to Google
+    // Books for ISBNs OpenLibrary has no record of (self-published / KDP / indie).
+    // Blank = fallback disabled (no external calls).
+    public const string GoogleBooksApiKey = "GoogleBooksApiKey";
+
     // Folder name (relative to each library root) used when archiving duplicate
     // files from the Duplicates page. Defaults to "__archive" when not set.
     public const string DedupeArchiveFolder = "DedupeArchiveFolder";
@@ -89,6 +94,7 @@ public static class AppSettingKeys
     // own default const, so behaviour is unchanged until the user overrides it.
     public const string PromoteManualBooksMaxPerRun = "PromoteManualBooksMaxPerRun"; // OL searches/run
     public const string ResolveWorksMaxPerRun = "ResolveWorksMaxPerRun";             // OL lookups/run
+    public const string ResolveIsbnsMaxPerRun = "ResolveIsbnsMaxPerRun";             // OL lookups/run
     public const string AssignAuthorsMaxPerRun = "AssignAuthorsMaxPerRun";           // OL lookups/run
     public const string AutoReplaceDamagedMaxPerRun = "AutoReplaceDamagedMaxPerRun"; // indexer grabs/run
     public const string PruneAuthorsMaxPerRun = "PruneAuthorsMaxPerRun";             // deletions/run

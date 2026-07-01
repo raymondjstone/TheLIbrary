@@ -219,7 +219,16 @@ public sealed class SyncService
             // No Author row and not blacklisted — move to __unknown. Authors must
             // be added explicitly, not auto-discovered from disk.
             var unknownRoot = await UnknownRootFor(locationPath);
-            if (MoveToUnknown(locationPath, folder, unknownRoot)) movedFolders.Add(folder);
+            if (MoveToUnknown(locationPath, folder, unknownRoot))
+            {
+                movedFolders.Add(folder);
+                // Audit the eviction so a file that keeps bouncing back into
+                // __unknown can be traced to the sync that swept its folder (these
+                // moves were previously invisible). One entry per swept folder.
+                TheLibrary.Server.Services.ActivityLogger.Record(db, "quarantine",
+                    $"Swept folder '{folder}' to __unknown — no matching author on the watchlist (folder key '{folderKey}')",
+                    source: "sync");
+            }
         }
 
         // Drop blacklist entries for any author whose files turned up on disk.

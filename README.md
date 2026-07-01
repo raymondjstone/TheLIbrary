@@ -1381,12 +1381,94 @@ one useful lead); for a file already sitting in an author folder a bare author
 guess just re-confirms what's known, so it's hidden rather than cluttering the
 list with "accept author" rows that do nothing. A single **filter box** narrows
 the list to rows whose text matches in **any** column — path, author, title,
-series, ISBN, "also by", or anywhere in the series catalogue. Each row offers **Preview**,
+series, ISBN, "also by", or anywhere in the series catalogue; a **Starred authors
+only** toggle further limits the list to files filed under a priority
+(`Priority >= 1`) author. Each row offers **Preview**,
 **Dismiss** (mark reviewed), and **Apply** — which links the file to one of the
-author's books. How the guess is resolved is deliberately strict, because a title
-scraped from a book's text is only a guess, and we already know the author:
+author's books.
 
-- **ISBN** (`?isbn=`) is definitive — its single OpenLibrary result is taken.
+**Apply only ever touches a file that is *not yet* matched to a book.** Once a
+file is matched, its title is settled — that book (in the catalogue) is the
+source of truth, **not** the front-matter guess — so the row shows the **linked
+book's real title** (marked *✓ matched — title locked*) with **no Apply action**,
+and neither the per-row Apply nor **Apply all** can ever overwrite an
+already-matched `BookId`. Such a row only remains on the list when it still
+carries a series catalogue (for **Build series**).
+
+When an unmatched row has an **ISBN but no guessed/known title**, the title column
+resolves and shows **what title that ISBN would end up using** — the OpenLibrary
+work its `search.json?isbn=` lookup returns, exactly what Apply would link to
+(`GET /api/identified/{id}/isbn-title`, resolved lazily per such row so it never
+blocks the list load). The result is cached in a dedicated **`IsbnResolutions`
+table keyed by the normalized ISBN** — so it's resolved **once per unique code and
+shared by every file that carries it** (a shelf of the same ISBN costs a single OL
+call, not one per file), and the same ISBN is **never re-queried against
+OpenLibrary** on later loads. Even a miss is remembered so a no-result ISBN isn't
+retried. If that work's author disagrees with the file's folder author it's flagged
+*by «author» — Apply won't re-file across authors* (the ISBN author-agreement guard
+below refuses it), and a **↪ Reassign to «author»** button is offered: it drives the
+same `use-work` flow to resolve/create that author, move the file into their folder
+and link the book — the explicit override for when the ISBN's author is the correct
+one.
+
+The cache is warmed two ways: **content-scan resolves each file's ISBN inline as it
+scans** (going forward, so newly-scanned files are pre-resolved), and a
+**`resolve-isbns` catch-up job** (Schedules page, off by default) walks the distinct
+ISBNs on existing scan rows and resolves any not yet cached — one OL call per unique
+code, capped per run. Between them the Identified page never pays an on-demand
+lookup for an ISBN that's already been seen. The ISBN itself is **check-digit
+validated** before any lookup (ISBN-10 mod-11 / ISBN-13 mod-10), so a mis-extracted
+number that merely happens to be 10/13 digits (an LCCN, ASIN, copyright-page code)
+is rejected up front instead of burning a lookup and caching a junk miss.
+
+**Google Books fallback (optional).** A large share of ISBNs that resolve to nothing
+are real codes for **self-published / KDP / indie / foreign** titles OpenLibrary
+simply doesn't hold (confirmed against both OL's `search.json?isbn=` and `/isbn/`
+endpoints). When a **Google Books API key** is set (Settings → *Google Books ISBN
+fallback*), an ISBN that OpenLibrary can't resolve is looked up on Google Books,
+which covers those titles well; its **title/author** is cached and shown on the
+Identified page. There's no OpenLibrary work behind it, so **Apply-by-ISBN and the
+Reassign button stay inert** for such a row (identification only — there's nothing
+to link to on OL). No key ⇒ the fallback is off and no external Google calls are
+made. A Google transient error (e.g. rate limit) is **not** cached, so it's retried
+later rather than remembered as a permanent miss.
+
+**Quota handling.** Google Books enforces ~100 requests/min and **1,000/day**. Calls
+are paced under the per-minute cap, and when Google signals the **daily quota is
+spent** (HTTP 429, or a 403 citing a quota/limit reason) the app **latches Google off
+for the rest of the UTC day** — further lookups short-circuit without an HTTP call,
+and the ISBNs that couldn't be resolved are left **uncached so they're re-attempted
+the next day** once the quota resets. The `resolve-isbns` job stops early on quota
+exhaustion and reports *"Paused — Google daily quota reached; N will retry tomorrow"*;
+OpenLibrary-resolvable ISBNs in the same run are still cached (only the Google step
+is paused). The latch clears automatically at the UTC date rollover. On the Identified
+page an on-demand lookup that hits the spent quota shows a **⏳ Google quota — retry
+tomorrow** note (the `isbn-title` endpoint returns a retryable state, not an error)
+rather than a bare failure, and nothing is cached so the row resolves on a later load.
+
+Because a "no result" is cached (so it isn't re-queried forever), ISBNs that were
+looked up **before** you added a Google Books key stay null. Settings → *Google Books
+ISBN fallback* has a **Re-attempt failed ISBN lookups** button
+(`POST /api/settings/reset-isbn-misses`) that drops only the **total-miss** rows
+(no work key *and* no title — the ones that resolved to nothing); rows that already
+resolved via OpenLibrary or Google are untouched. The `resolve-isbns` job then
+re-resolves the dropped ones on its next run, now with the Google fallback in play.
+
+How the guess is resolved for
+an unmatched file is deliberately strict, because a title scraped from a book's
+text is only a guess, and we already know the author:
+
+- **ISBN** (`?isbn=`) is definitive for the *book*, but the file is filed under a
+  folder author and Apply never re-parents it — so the ISBN's OpenLibrary work is
+  taken **only when its author agrees with the folder author** (by OL author key
+  when both have one, else by normalized name variants — the same matcher used for
+  incoming files, so `McCaffrey, Anne` still agrees with `Anne McCaffrey`). If the
+  ISBN resolves to a work by a **different** author (a mis-scanned or wrong-edition
+  ISBN), it is **refused, not applied** — otherwise a wrong-titled book would be
+  minted under this author. The guess then falls back to the title path below, and
+  if that finds nothing either the file is left for manual matching. This guard
+  applies to the per-row **Apply**, **Apply all guesses**, and **Apply all N ISBN
+  matches** alike.
 - **Title** (no ISBN) is matched **against the author's OWN existing books** — the
   DB list of valid titles, kept comprehensive by the OpenLibrary author refresh —
   using the same author-prefix strip + series-filename parsing + Jaro–Winkler fuzzy
@@ -1399,11 +1481,12 @@ scraped from a book's text is only a guess, and we already know the author:
 
 Because a file that lives in an author folder is already
 attributed to that author (the author↔file link is folder-driven), Apply
-**keeps that author and never re-parents the file**, even when matched by ISBN to a
-work that lists a different author — it only attaches the book, it never
-moves the file or invents a new author. (The manual unmatched→OpenLibrary match,
-where you explicitly pick a work, still resolves and re-parents to the work's
-author.) Nothing is applied automatically — Apply is a per-row, user-confirmed
+**keeps that author and never re-parents the file** — it only attaches a book, it
+never moves the file or invents a new author. That is exactly why the ISBN
+author-agreement guard above matters: since a matched book is always filed under
+the folder author, an ISBN pointing at another author's work is refused rather
+than silently mis-filed. (The manual unmatched→OpenLibrary match, where you
+explicitly pick a work, still resolves and re-parents to the work's author.) Nothing is applied automatically — Apply is a per-row, user-confirmed
 action. (Apply works for tracked *unmatched* files.) For **untracked
 `__unknown`** files an **Assign to «author»** button does the equivalent: it
 works out whose book it is — resolving the guessed ISBN/title against
@@ -1756,6 +1839,7 @@ on every startup.
 | `series-watch` | `0 14 * * *` (disabled by default) | When a series you **own a book in** gains a recently-added (≤14 days) volume you don't own, mark it **Wanted** and send one Pushover summary — the high-signal "next in a series I'm collecting" case. Acts on your collection, so it ships **disabled**; opt in on the Schedules page |
 | `auto-replace-damaged` | `0 15 * * *` (disabled by default) | Search the indexer and send the best replacement to SABnzbd for each damaged book (the automated "Grab"). Capped at 20/run; no-ops when Download automation isn't configured. Pulls downloads, so it ships **disabled**; opt in on the Schedules page. The Damaged page also has a per-book **⤓ Grab replacement** button |
 | `resolve-works` | `0 16 * * *` (disabled by default) | Link files that already know their **author** but not their **work**, using the ISBN we already extracted: ISBN → OpenLibrary work (the `/isbn/{isbn}.json` edition endpoint first — it resolves ~2× the ISBNs the search index does — then the ISBN search) → ensure the `Book` under the file's existing author → set `BookId`. A lenient title check rejects a mis-extracted ISBN. Closes the gap where the title-only matcher never consulted ISBN and the ISBN-aware assigner skipped author-linked files. DB-only candidate selection (no NAS reads), capped 200/run; makes OL calls + creates `Book` rows, so it ships **disabled** — opt in on the Schedules page or trigger once to work the backlog |
+| `resolve-isbns` | `30 16 * * *` (disabled by default) | Warm the shared **`IsbnResolutions`** cache for ISBNs that predate content-scan resolving them inline. Walks the distinct ISBNs on `BookContentScan` rows, resolves any not yet cached against OpenLibrary (`search.json?isbn=`, **one call per unique code** — shared by every file that carries it), and stores title/author/work-key so the Identified page never looks them up on demand. DB-only candidate selection, capped 200/run (`ResolveIsbnsMaxPerRun`); makes OL calls, so it ships **disabled** — new scans populate the cache without it, this just backfills the pre-existing backlog |
 | `llm-identify` | `0 17 * * *` (disabled by default) | **Last-resort, paid** identification of opaque `__unknown` files (no author the deterministic + filename paths could find). Sends the signals we already hold — filename, embedded metadata, ISBN, a front-matter snippet — to the configured LLM (**Claude or ChatGPT**, set in Settings → *AI identification*), then feeds the guessed title/author through the **same OpenLibrary validation + assignment** as everything else, so a hallucination is rejected, never filed. No-ops unless enabled with an API key. Cost is bounded by a **per-run cap and a hard rolling daily cap**, and each file is marked `LlmAttemptedAt` so a hopeless file is never re-sent. When the LLM finds a title/author/ISBN but OpenLibrary can't confirm it, the guess is **kept on the scan row and shown on the Identified page** for manual review (not discarded). Settings → *AI identification* has a **Re-attempt untracked files** button (`POST /api/settings/reset-llm-attempts`) that clears the `LlmAttemptedAt` marker so the job re-tries them (e.g. after raising the cap or switching model). Ships **disabled** |
 | `mark-other-editions` | `0 19 * * *` (**enabled** by default) | Where the same author has several catalogue entries for the **same title** (`NormalizedTitle`) and **at least one** of them has an ebook file linked, mark every fileless sibling **Owned (other edition)** (`OwnedDifferentEdition`) — you own the work, just a different edition than that row — so the duplicate entries drop off the **Missing / Wanted** lists. "Has an ebook" is `LocalFiles.Any()`, the same predicate used for ownership everywhere else, so the job is a single set-based `UPDATE` with no NAS reads. **Idempotent** (rows already flagged are skipped) and **reversible** (untick *Other edition* on a book to undo) |
 | `mark-editions-read` | `0 18 * * *` (**enabled** by default) | Where the same author has several catalogue entries for the **same title** (`NormalizedTitle`) and **at least one** is marked **Read** (`ReadStatus.Read`), mark every other edition Read too — reading one edition means you've read the work, whichever row carried the file. Editions already Read keep their existing `ReadAt`; the rest get the run time. A single set-based `UPDATE` with no NAS reads; **idempotent** |

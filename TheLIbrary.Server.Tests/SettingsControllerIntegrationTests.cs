@@ -224,4 +224,53 @@ public class SettingsControllerIntegrationTests
             "/api/settings/duplicate-format-preference");
         Assert.Equal(["pdf", "epub", "cbz"], fresh!.Formats);
     }
+
+    // ── Google Books key + ISBN-miss reset ───────────────────────────────────
+
+    [Fact]
+    public async Task PutGoogleBooks_Persists_And_GET_Reports_Configured()
+    {
+        using var factory = new LibraryApiFactory();
+        using var client = factory.CreateClient();
+
+        var blank = await client.GetFromJsonAsync<SettingsController.GoogleBooksDto>("/api/settings/google-books");
+        Assert.False(blank!.Configured);
+
+        var put = await client.PutAsJsonAsync("/api/settings/google-books",
+            new SettingsController.UpdateGoogleBooks("  my-key  "));
+        var dto = await put.Content.ReadFromJsonAsync<SettingsController.GoogleBooksDto>();
+        Assert.Equal("my-key", dto!.ApiKey);      // trimmed
+        Assert.True(dto.Configured);
+    }
+
+    // Uses a relational (SQLite) context — like production, and unlike the InMemory
+    // test factory, it supports the endpoint's ExecuteDeleteAsync.
+    [Fact]
+    public async Task ResetIsbnMisses_Clears_Only_Total_Misses()
+    {
+        using var rdb = new RelationalTestDb();
+        await using (var s = rdb.NewContext())
+        {
+            s.IsbnResolutions.AddRange(
+                // Total miss — should be cleared.
+                new IsbnResolution { Isbn = "9780000000001", ResolvedAt = DateTime.UtcNow },
+                // Google-resolved (title, no work key) — kept.
+                new IsbnResolution { Isbn = "9780000000002", ResolvedAt = DateTime.UtcNow, Title = "Indie Book", AuthorName = "Someone" },
+                // OpenLibrary-resolved (work key) — kept.
+                new IsbnResolution { Isbn = "9780000000003", ResolvedAt = DateTime.UtcNow, WorkKey = "/works/OL1W", Title = "Known Book" });
+            await s.SaveChangesAsync();
+        }
+
+        await using (var db = rdb.NewContext())
+        {
+            var controller = new SettingsController(db, null!, null!);
+            var result = await controller.ResetIsbnMisses(default);
+            Assert.Equal(1, result.Cleared);
+        }
+
+        await using var v = rdb.NewContext();
+        Assert.Null(await v.IsbnResolutions.FindAsync("9780000000001"));    // miss gone
+        Assert.NotNull(await v.IsbnResolutions.FindAsync("9780000000002")); // google kept
+        Assert.NotNull(await v.IsbnResolutions.FindAsync("9780000000003")); // OL kept
+    }
 }

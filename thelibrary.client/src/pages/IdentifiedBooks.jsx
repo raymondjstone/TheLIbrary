@@ -37,6 +37,10 @@ export default function IdentifiedBooks() {
     const [preview, setPreview] = useState(null)
     const [expanded, setExpanded] = useState(() => new Set())
     const [filter, setFilter] = useState('')
+    const [starredOnly, setStarredOnly] = useState(false)
+    // Lazily-resolved "what title would this ISBN use" for rows that have an ISBN
+    // but no guessed/known title. id -> { state:'loading'|'done'|'none', title, author, matches }.
+    const [isbnTitles, setIsbnTitles] = useState({})
     const [authorEdit, setAuthorEdit] = useState(null) // { id, current }
     const [workSearch, setWorkSearch] = useState(null) // { id, initialQuery }
 
@@ -57,13 +61,65 @@ export default function IdentifiedBooks() {
 
     const load = () => {
         setError(null)
-        const qs = authorId ? `?authorId=${authorId}` : ''
-        fetch(`/api/identified${qs}`)
+        const qs = new URLSearchParams()
+        if (authorId) qs.set('authorId', authorId)
+        if (starredOnly) qs.set('starredOnly', 'true')
+        fetch(`/api/identified${qs.toString() ? `?${qs}` : ''}`)
             .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
             .then(setRows)
             .catch(e => { setError(String(e)); setRows([]) })
     }
-    useEffect(load, [authorId])
+    useEffect(load, [authorId, starredOnly])
+
+    // For rows that carry an ISBN but no guessed/known title, resolve what title the
+    // ISBN would actually end up using (the same OpenLibrary lookup Apply does) and
+    // show it in the title column. Done lazily and SEQUENTIALLY after load — one OL
+    // call per qualifying row — so it never blocks the list or hammers OpenLibrary's
+    // rate limit. Already-resolved rows are skipped, so re-loads don't re-fetch.
+    useEffect(() => {
+        if (!rows) return
+        const need = rows.filter(r =>
+            r.isbn && !r.title && r.bookId == null && !r.matchedTitle && isbnTitles[r.id] === undefined)
+        if (need.length === 0) return
+        let cancelled = false
+        setIsbnTitles(prev => {
+            const n = { ...prev }
+            for (const r of need) n[r.id] = { state: 'loading' }
+            return n
+        })
+        ;(async () => {
+            for (const r of need) {
+                if (cancelled) return
+                let entry
+                try {
+                    const resp = await fetch(`/api/identified/${r.id}/isbn-title`)
+                    const body = await resp.json().catch(() => ({}))
+                    entry = body.title
+                        ? {
+                            state: 'done', title: body.title, author: body.author,
+                            matches: body.matchesFolderAuthor,
+                            // Carried so the "Reassign to this author" button can drive
+                            // the use-work flow without re-resolving the ISBN.
+                            workKey: body.workKey, firstPublishYear: body.firstPublishYear,
+                            coverId: body.coverId, authorKey: body.authorKey, authors: body.authors,
+                        }
+                        // Google's daily quota is spent — a temporary "retry tomorrow",
+                        // not a real miss. Mark it so we don't re-spam the endpoint this
+                        // session; it re-resolves server-side once the quota resets (or on
+                        // a fresh page load).
+                        : body.quotaExhausted
+                            ? { state: 'quota' }
+                            : { state: 'none' }
+                } catch {
+                    entry = { state: 'none' }
+                }
+                if (cancelled) return
+                setIsbnTitles(prev => ({ ...prev, [r.id]: entry }))
+            }
+        })()
+        return () => { cancelled = true }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [rows])
 
     const [bulkBusy, setBulkBusy] = useState(false)
     const applyAllIsbn = async () => {
@@ -100,10 +156,12 @@ export default function IdentifiedBooks() {
                 totals.applied += body.applied ?? 0
                 totals.failed += body.failed ?? 0
                 setApplyAllProgress({ ...totals, remaining: body.remaining ?? 0 })
+                // Refresh the list as we go (every few batches) so processed rows leave
+                // the screen instead of only at the very end — the backlog can be huge.
+                if (body.done || guard % 5 === 0) load()
                 if (body.done) break
                 after = body.lastId
             }
-            load()
         } catch (e) {
             setError(String(e.message || e))
         } finally {
@@ -112,8 +170,10 @@ export default function IdentifiedBooks() {
         }
     }
 
-    const isbnApplicable = (rows ?? []).filter(r => r.fileId != null && r.isbn).length
-    const guessApplicable = (rows ?? []).filter(r => r.fileId != null && (r.isbn || r.title)).length
+    // A guess is only applicable to a file that is NOT already matched to a book —
+    // an already-matched file's title is settled and must never be overwritten.
+    const isbnApplicable = (rows ?? []).filter(r => r.fileId != null && r.bookId == null && r.isbn).length
+    const guessApplicable = (rows ?? []).filter(r => r.fileId != null && r.bookId == null && (r.isbn || r.title)).length
     const catalogApplicable = (rows ?? []).filter(r => r.authorId != null && r.seriesCatalog?.length > 0).length
     const untrackedAssignable = (rows ?? []).filter(r => r.source === 'untracked' && (r.author || r.isbn || r.title)).length
 
@@ -368,6 +428,40 @@ export default function IdentifiedBooks() {
         load()
     }
 
+    // Reassign a file to the author its ISBN actually resolved to. When the ISBN's
+    // OpenLibrary work is by a different author than the file's folder, plain Apply
+    // refuses it (it never re-parents) — this is the explicit override: it drives
+    // the same use-work flow, which resolves/creates that work's author, moves the
+    // file into their folder and links the book. Inline feedback only.
+    const reassignToIsbnAuthor = async (id, info) => {
+        if (!info?.workKey) return
+        setBusy(prev => new Set(prev).add(id))
+        setError(null)
+        try {
+            const r = await fetch(`/api/identified/${id}/use-work`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    workKey: info.workKey,
+                    title: info.title,
+                    firstPublishYear: info.firstPublishYear,
+                    coverId: info.coverId,
+                    authors: info.authors,
+                    primaryAuthorKey: info.authorKey,
+                    primaryAuthorName: info.author,
+                }),
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            if (!body.assigned) throw new Error(body.reason || 'Could not reassign this file to the ISBN author.')
+            load()
+        } catch (e) {
+            setError(String(e.message || e))
+        } finally {
+            setBusy(prev => { const n = new Set(prev); n.delete(id); return n })
+        }
+    }
+
     // Overwrite the guessed author name on a scan row without acting on the file.
     const setAuthor = async (id, newName) => {
         try {
@@ -414,8 +508,8 @@ export default function IdentifiedBooks() {
                     onClose={() => setAddAuthor(false)} />
             )}
 
-            {rows !== null && rows.length > 0 && (
-                <div className="toolbar" style={{ marginBottom: '0.75rem' }}>
+            {(rows !== null && (rows.length > 0 || starredOnly)) && (
+                <div className="toolbar" style={{ marginBottom: '0.75rem', flexWrap: 'wrap' }}>
                     <input
                         type="search"
                         value={filter}
@@ -428,6 +522,12 @@ export default function IdentifiedBooks() {
                             {' '}<button className="btn-ghost" onClick={() => setFilter('')}>clear</button>
                         </span>
                     )}
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer' }}
+                           title="Show only files filed under a starred (priority) author">
+                        <input type="checkbox" checked={starredOnly}
+                            onChange={e => setStarredOnly(e.target.checked)} />
+                        <span className="subtle">Starred authors only</span>
+                    </label>
                 </div>
             )}
 
@@ -444,12 +544,12 @@ export default function IdentifiedBooks() {
             {guessApplicable > 0 && (
                 <div className="toolbar">
                     <button onClick={applyAllGuesses} disabled={applyAllBusy || bulkBusy}
-                            title="Match every tracked unmatched file to a book using its guess — ISBN if present, otherwise the title against the author's own known books. Runs in batches.">
+                            title="Match every tracked unmatched file across the whole library to a book using its guess — ISBN if present, otherwise the title against the author's own known books. Runs in batches; the count can be large, so keep this tab open while it works.">
                         {applyAllBusy
-                            ? `Applying… ${applyAllProgress?.applied ?? 0} matched${applyAllProgress?.remaining != null ? `, ${applyAllProgress.remaining} left` : ''}`
-                            : `Apply all ${guessApplicable} guess${guessApplicable === 1 ? '' : 'es'} (ISBN or title)`}
+                            ? `Applying… ${applyAllProgress?.applied ?? 0} matched${applyAllProgress?.remaining != null ? `, ${applyAllProgress.remaining.toLocaleString()} left` : ''}`
+                            : 'Apply all guesses (ISBN or title)'}
                     </button>
-                    <span className="subtle">ISBN where present, else the title matched against the author's own known books — no invented works.</span>
+                    <span className="subtle">Whole-library: ISBN where present, else the title matched against the author's own known books (no invented works). Rows clear as it works — a big backlog can take a while, so keep this tab open; it resumes where it left off if you re-run.</span>
                 </div>
             )}
 
@@ -491,13 +591,25 @@ export default function IdentifiedBooks() {
             {rows === null ? (
                 <p>Loading…</p>
             ) : rows.length === 0 ? (
-                <p className="subtle">Nothing to review. Run the identify job to populate this.</p>
+                starredOnly
+                    ? <p className="subtle">No rows for starred (priority) authors. <button className="btn-ghost" onClick={() => setStarredOnly(false)}>Show all authors</button></p>
+                    : <p className="subtle">Nothing to review. Run the identify job to populate this.</p>
             ) : filtered.length === 0 ? (
                 <p className="subtle">No rows match “{filter.trim()}”. <button className="btn-ghost" onClick={() => setFilter('')}>Clear filter</button></p>
             ) : (() => {
-                const untracked = filtered.filter(r => r.source === 'untracked')
-                const tracked   = filtered.filter(r => r.source !== 'untracked')
-                const tableProps = { busy, expanded, toggleCatalog, setPreview, apply, assignAuthor, assignUnknown, applyCatalog, dismiss, deleteFile, setAuthorEdit, setWorkSearch }
+                // Order every row by author so a given author's files sit together —
+                // the folder author for tracked rows, the guessed author otherwise —
+                // then by title within an author. Blank authors sort last.
+                const authorKey = (r) => (r.linkedAuthorName || r.author || '').trim().toLowerCase()
+                const byAuthor = (a, b) => {
+                    const ka = authorKey(a), kb = authorKey(b)
+                    if (!ka !== !kb) return ka ? -1 : 1 // named authors before blank
+                    return ka.localeCompare(kb)
+                        || (a.title || a.matchedTitle || '').localeCompare(b.title || b.matchedTitle || '')
+                }
+                const untracked = filtered.filter(r => r.source === 'untracked').sort(byAuthor)
+                const tracked   = filtered.filter(r => r.source !== 'untracked').sort(byAuthor)
+                const tableProps = { busy, expanded, isbnTitles, reassignToIsbnAuthor, toggleCatalog, setPreview, apply, assignAuthor, assignUnknown, applyCatalog, dismiss, deleteFile, setAuthorEdit, setWorkSearch }
                 return (
                     <>
                         <h2 style={{ marginTop: '1.5rem' }}>
@@ -564,7 +676,46 @@ export default function IdentifiedBooks() {
     )
 }
 
-function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, assignAuthor, assignUnknown, applyCatalog, dismiss, deleteFile, setAuthorEdit, setWorkSearch }) {
+// Shows the title a row's ISBN would resolve to (the OpenLibrary work Apply would
+// use) for a row that has an ISBN but no guessed/known title. Fed by the parent's
+// lazily-populated isbnTitles map. When the resolved work's author disagrees with
+// the folder author, Apply refuses it — so it names that author and offers a
+// "Reassign" button that re-files the book under them.
+function IsbnTitleCell({ info, row, busy, onReassign }) {
+    if (!info || info.state === 'loading')
+        return <span className="subtle" style={{ fontSize: '0.85em' }}>resolving ISBN…</span>
+    if (info.state === 'quota')
+        return <span className="subtle" style={{ fontSize: '0.85em' }}
+                     title="Google Books' daily lookup quota is used up. Nothing was cached — this ISBN will be resolved again automatically once the quota resets.">
+            ⏳ Google quota — retry tomorrow
+        </span>
+    if (info.state !== 'done' || !info.title)
+        return <span className="subtle">—</span>
+    const mismatch = info.matches === false
+    return (
+        <span title="Resolved from this row's ISBN — the title Apply would link the file to">
+            {info.title}
+            <span className="subtle" style={{ fontSize: '0.72em', display: 'block' }}>
+                via ISBN{info.author ? ` · ${info.author}` : ''}
+                {mismatch && (
+                    <span style={{ color: 'var(--danger, #b91c1c)' }}>
+                        {' '}· by {info.author || 'a different author'} — Apply won’t re-file across authors
+                    </span>
+                )}
+            </span>
+            {mismatch && info.workKey && (
+                <button className="btn-ghost" disabled={busy?.has(row.id)}
+                        style={{ fontSize: '0.72em', padding: '0.1em 0.4em', marginTop: '0.2rem' }}
+                        title={`Move this file to ${info.author || 'the ISBN author'} and link "${info.title}"`}
+                        onClick={() => onReassign(row.id, info)}>
+                    {busy?.has(row.id) ? '…' : `↪ Reassign to ${info.author || 'ISBN author'}`}
+                </button>
+            )}
+        </span>
+    )
+}
+
+function RowTable({ rows, busy, expanded, isbnTitles, reassignToIsbnAuthor, toggleCatalog, setPreview, apply, assignAuthor, assignUnknown, applyCatalog, dismiss, deleteFile, setAuthorEdit, setWorkSearch }) {
     return (
         <table className="grid">
             <thead>
@@ -603,7 +754,24 @@ function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, assi
                                 </button>
                             </div>
                         </td>
-                        <td>{r.title ?? '—'}</td>
+                        <td>
+                            {r.bookId != null
+                                // Already matched: the file's title is settled — show the
+                                // real linked book title (never the front-matter guess),
+                                // and there's no Apply action that could overwrite it.
+                                ? <span title="Already matched to this book — its title is locked and won't be changed by Apply">
+                                      {r.matchedTitle ?? '(matched)'}
+                                      <span className="subtle" style={{ fontSize: '0.72em', display: 'block' }}>✓ matched — title locked</span>
+                                  </span>
+                                : r.title
+                                    ? r.title
+                                    // No guessed/known title but there's an ISBN — show what
+                                    // title that ISBN would resolve to (what Apply would use).
+                                    : r.isbn
+                                        ? <IsbnTitleCell info={isbnTitles?.[r.id]} row={r} busy={busy}
+                                                         onReassign={reassignToIsbnAuthor} />
+                                        : '—'}
+                        </td>
                         <td>{r.series ? `${r.series}${r.seriesPosition ? ` #${r.seriesPosition}` : ''}` : '—'}</td>
                         <td>{r.isbn ?? '—'}</td>
                         <td style={{ maxWidth: 240 }}>
@@ -648,7 +816,10 @@ function RowTable({ rows, busy, expanded, toggleCatalog, setPreview, apply, assi
                                         Preview
                                     </button>
                                 )}
-                                {r.fileId != null && (r.isbn || r.title) && (
+                                {/* Apply is ONLY offered for a file not yet matched to a
+                                    book. A matched file's title is settled (shown locked
+                                    above), so the guess must never overwrite its book. */}
+                                {r.fileId != null && r.bookId == null && (r.isbn || r.title) && (
                                     <button disabled={busy.has(r.id)}
                                             title="Match this file to an OpenLibrary work using the guess"
                                             onClick={() => apply(r.id)}>

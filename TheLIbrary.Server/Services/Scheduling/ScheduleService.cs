@@ -117,6 +117,7 @@ public sealed class ScheduleService
             ScheduleJobIds.MarkOtherEditions => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunMarkOtherEditions(true)),
             ScheduleJobIds.MarkEditionsRead => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunMarkEditionsRead(true)),
             ScheduleJobIds.StarSeriesCoAuthors => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunStarSeriesCoAuthors(true)),
+            ScheduleJobIds.ResolveIsbns => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunResolveIsbns(true)),
             _ => throw new ArgumentException($"Unknown job id '{jobId}'", nameof(jobId)),
         };
     }
@@ -273,6 +274,9 @@ public sealed class ScheduleService
                     break;
                 case ScheduleJobIds.StarSeriesCoAuthors:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunStarSeriesCoAuthors(), entry.Cron);
+                    break;
+                case ScheduleJobIds.ResolveIsbns:
+                    _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunResolveIsbns(), entry.Cron);
                     break;
             }
             _log.LogInformation("Schedule {Job}: enabled with cron '{Cron}'", jobId, entry.Cron);

@@ -84,7 +84,7 @@ public sealed class SeriesOrganizerService
     internal void DeleteEmptyAncestorsForTests(string dir, string authorDir, string targetDir)
         => DeleteEmptyAncestors(dir, authorDir, targetDir);
 
-    internal static string? ResolveSeriesNameForTests(string storedSeriesName, int? seriesId, string stem)
+    internal static string? ResolveSeriesNameForTests(string? storedSeriesName, int? seriesId, string stem)
     {
         var seriesName = storedSeriesName;
         if (!string.IsNullOrWhiteSpace(seriesName))

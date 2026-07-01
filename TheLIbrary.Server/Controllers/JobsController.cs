@@ -37,6 +37,7 @@ public class JobsController : ControllerBase
     private readonly OtherEditionMarkerService _markOtherEditions;
     private readonly ReadEditionPropagationService _markEditionsRead;
     private readonly SeriesCoAuthorStarService _starSeriesCoAuthors;
+    private readonly IsbnResolutionCatchupService _resolveIsbns;
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly OpenLibraryRateLimiter _rateLimiter;
@@ -71,6 +72,7 @@ public class JobsController : ControllerBase
         OtherEditionMarkerService markOtherEditions,
         ReadEditionPropagationService markEditionsRead,
         SeriesCoAuthorStarService starSeriesCoAuthors,
+        IsbnResolutionCatchupService resolveIsbns,
         BackgroundTaskCoordinator coordinator,
         IHostApplicationLifetime lifetime,
         OpenLibraryRateLimiter rateLimiter,
@@ -104,6 +106,7 @@ public class JobsController : ControllerBase
         _markOtherEditions = markOtherEditions;
         _markEditionsRead = markEditionsRead;
         _starSeriesCoAuthors = starSeriesCoAuthors;
+        _resolveIsbns = resolveIsbns;
         _coordinator = coordinator;
         _lifetime = lifetime;
         _rateLimiter = rateLimiter;
@@ -152,6 +155,7 @@ public class JobsController : ControllerBase
             markOtherEditions = new { isRunning = _markOtherEditions.IsRunning, message = _markOtherEditions.CurrentMessage },
             markEditionsRead = new { isRunning = _markEditionsRead.IsRunning, message = _markEditionsRead.CurrentMessage },
             starSeriesCoAuthors = new { isRunning = _starSeriesCoAuthors.IsRunning, message = _starSeriesCoAuthors.CurrentMessage },
+            resolveIsbns = new { isRunning = _resolveIsbns.IsRunning, message = _resolveIsbns.CurrentMessage },
         });
     }
 
@@ -343,6 +347,14 @@ public class JobsController : ControllerBase
     public IActionResult StartResolveWorks()
     {
         if (!_resolveWorks.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("resolve-isbns/start")]
+    public IActionResult StartResolveIsbns()
+    {
+        if (!_resolveIsbns.TryStart(_lifetime.ApplicationStopping, out var err))
             return Conflict(new { error = err });
         return Accepted();
     }

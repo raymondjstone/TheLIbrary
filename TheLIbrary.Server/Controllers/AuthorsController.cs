@@ -1784,6 +1784,24 @@ public partial class AuthorsController : ControllerBase
             doc = byIsbn?.Docs?.FirstOrDefault(d => !string.IsNullOrWhiteSpace(d.Key));
         }
 
+        // ISBN is definitive for the *book*, but Apply keeps the file's folder
+        // author and never re-parents it — so a mis-scanned or wrong-edition ISBN
+        // whose OL work is by a DIFFERENT author would mint a wrong-titled book
+        // under this folder's author. Only trust the ISBN when its OL author agrees
+        // with the folder author; otherwise drop it and fall back to matching the
+        // title against the author's OWN known books (or refuse).
+        var isbnRejected = false;
+        if (doc is not null && !IsbnAuthorAgreement.Matches(doc, currentAuthor))
+        {
+            _log.LogInformation(
+                "apply-content-guess: ISBN {Isbn} resolved to \"{Title}\" by {DocAuthors}, which doesn't match folder author {Author} (#{AuthorId}) — not applying the ISBN work.",
+                scan.Isbn, doc.Title,
+                doc.AuthorNames is { Count: > 0 } ? string.Join(", ", doc.AuthorNames) : "(no author)",
+                currentAuthor.Name, currentAuthor.Id);
+            doc = null;
+            isbnRejected = true;
+        }
+
         if (doc is null && !string.IsNullOrWhiteSpace(scan.Title))
         {
             var known = await FindBestKnownBookAsync(currentAuthor, scan.Title!, scan.SeriesPosition, ct);
@@ -1809,7 +1827,10 @@ public partial class AuthorsController : ControllerBase
         {
             scan.Reviewed = true; // nothing to apply; clear it from the list
             await _db.SaveChangesAsync(ct);
-            return new ApplyGuessResult(false, null, null, null, "No OpenLibrary work found for this guess.");
+            return new ApplyGuessResult(false, null, null, null,
+                isbnRejected
+                    ? $"ISBN {scan.Isbn} belongs to a book by a different author than {currentAuthor.Name}, so it wasn't applied (Apply never re-files a book across authors). Match it by hand if it's genuinely one of {currentAuthor.Name}'s books."
+                    : "No OpenLibrary work found for this guess.");
         }
 
         var req = new MatchOpenLibraryFileRequest(
@@ -2124,8 +2145,19 @@ public partial class AuthorsController : ControllerBase
             var currentAuthor = file?.AuthorId is int aid ? await _db.Authors.FirstOrDefaultAsync(a => a.Id == aid, ct) : null;
             if (file is null || file.BookId is not null || currentAuthor is null) continue;
 
-            var doc = (await _ol.SearchByIsbnAsync(scan.Isbn!, ct))?.Docs?.FirstOrDefault();
+            var doc = (await _ol.SearchByIsbnAsync(scan.Isbn!, ct))?.Docs?.FirstOrDefault(d => !string.IsNullOrWhiteSpace(d.Key));
             if (doc is null || string.IsNullOrWhiteSpace(doc.Key)) { scan.Reviewed = true; failed++; await _db.SaveChangesAsync(ct); continue; }
+
+            // Don't blindly file across authors: Apply keeps the folder author, so an
+            // ISBN whose OL work is by someone else would mint a wrong book here. Skip
+            // it (marked reviewed so the bulk run drains) for per-row / manual handling.
+            if (!IsbnAuthorAgreement.Matches(doc, currentAuthor))
+            {
+                _log.LogInformation(
+                    "apply-isbn-all: ISBN {Isbn} → \"{Title}\" isn't by folder author {Author} (#{Id}); skipping rather than mis-filing.",
+                    scan.Isbn, doc.Title, currentAuthor.Name, currentAuthor.Id);
+                scan.Reviewed = true; failed++; await _db.SaveChangesAsync(ct); continue;
+            }
 
             var req = new MatchOpenLibraryFileRequest(
                 doc.Key, doc.Title, doc.FirstPublishYear, doc.CoverId,

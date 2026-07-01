@@ -640,6 +640,40 @@ public class IdentifiedControllerIntegrationTests
         Assert.Equal(new[] { 2, 3 }, ids); // the author-only linked row (1) is dropped
     }
 
+    [Fact]
+    public async Task IsbnTitle_Returns_Friendly_Quota_State_Not_500_When_Google_Quota_Spent()
+    {
+        // OpenLibrary returns no work for the ISBN (a miss) so the Google fallback is
+        // reached; with the daily quota latched, Google short-circuits and the endpoint
+        // must report a retryable quota state (HTTP 200), not a 500.
+        using var factory = new LibraryApiFactory((_, _) =>
+            Task.FromResult(TestHttpMessageHandler.Json("""{"numFound":0,"docs":[]}""")));
+        await SeedAsync(factory, db =>
+        {
+            db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.GoogleBooksApiKey, Value = "test-key" });
+            db.BookContentScans.Add(new BookContentScan
+            {
+                Id = 1, FullPath = "/lib/A/x.epub", Source = "unmatched", AuthorId = null,
+                Isbn = "9798636352273", ScannedAt = DateTime.UtcNow,
+            });
+        });
+        // Pin the daily quota latch so no real Google call is attempted.
+        factory.Services.GetRequiredService<TheLibrary.Server.Services.OpenLibrary.GoogleBooksRateLimiter>()
+            .MarkExhausted();
+
+        using var client = factory.CreateClient();
+        var resp = await client.GetAsync("/api/identified/1/isbn-title");
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<IdentifiedController.IsbnTitleResult>();
+        Assert.True(body!.QuotaExhausted);
+        Assert.Null(body.Title);
+
+        // Nothing was cached — the ISBN stays a candidate for a later (next-day) retry.
+        using var scope = factory.Services.CreateScope();
+        var db2 = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        Assert.False(await db2.IsbnResolutions.AnyAsync(r => r.Isbn == "9798636352273"));
+    }
+
     private static async Task SeedAsync(LibraryApiFactory factory, Action<LibraryDbContext> seed)
     {
         using var scope = factory.Services.CreateScope();
