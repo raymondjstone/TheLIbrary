@@ -1415,7 +1415,13 @@ The cache is warmed two ways: **content-scan resolves each file's ISBN inline as
 scans** (going forward, so newly-scanned files are pre-resolved), and a
 **`resolve-isbns` catch-up job** (Schedules page, off by default) walks the distinct
 ISBNs on existing scan rows and resolves any not yet cached — one OL call per unique
-code, capped per run. Between them the Identified page never pays an on-demand
+code, a **random sample** capped per run (random, not first-N in table order: a
+deferred ISBN stays uncached by design, so a fixed order would re-pick the same stuck
+codes every run and stall the batch once the front of the list can't resolve). An
+ISBN deferred because a source was quota-capped is also **skipped for the rest of the
+UTC day**, so later runs spend their slots on fresh candidates instead of re-grinding
+codes that can't resolve until the quota resets. The job's *"Done — resolved N, …
+remaining"* summary stays visible on the Sync page after the run finishes. Between them the Identified page never pays an on-demand
 lookup for an ISBN that's already been seen. The ISBN itself is **check-digit
 validated** before any lookup (ISBN-10 mod-11 / ISBN-13 mod-10), so a mis-extracted
 number that merely happens to be 10/13 digits (an LCCN, ASIN, copyright-page code)
@@ -1458,10 +1464,11 @@ are paced under the per-minute cap, and when Google signals the **daily quota is
 spent** (HTTP 429, or a 403 citing a quota/limit reason) the app **latches Google off
 for the rest of the UTC day** — further lookups short-circuit without an HTTP call,
 and the ISBNs that couldn't be resolved are left **uncached so they're re-attempted
-the next day** once the quota resets. The `resolve-isbns` job stops early on quota
-exhaustion and reports *"Paused — Google daily quota reached; N will retry tomorrow"*;
-OpenLibrary-resolvable ISBNs in the same run are still cached (only the Google step
-is paused). The latch clears automatically at the UTC date rollover. On the Identified
+the next day** once the quota resets. The `resolve-isbns` job presses on past a
+quota-capped ISBN (counted as *deferred*, and skipped for the rest of the day — see
+above) rather than stopping the batch; OpenLibrary-resolvable ISBNs in the same run
+are still cached (only the capped source is paused). The latch clears automatically
+at the UTC date rollover. On the Identified
 page an on-demand lookup that hits the spent quota shows a **⏳ Google quota — retry
 tomorrow** note (the `isbn-title` endpoint returns a retryable state, not an error)
 rather than a bare failure, and nothing is cached so the row resolves on a later load.
@@ -1708,6 +1715,15 @@ extracts and stores book text, which is heavy.
 - Extracted text is **sanitised** before storage (NUL bytes, C0 control chars and
   unpaired UTF-16 surrogates are stripped) and each book is saved independently,
   so a single malformed file can't fail the whole run.
+- **Eligibility is enforced in SQL** for both the candidate batches and the
+  Search page's "Indexed X of Y" count, and the two use the same rules: only
+  ebook extensions (the `BookIntegrityChecker.IsEbook` set), and never files
+  under the **archive** folder (*archived files are inert* — the standing
+  `ArchivePolicy` rule). Rows that can never be indexed — folder-pointer
+  rows, `.rar`/`.pdb`/`.opf` and other non-ebook files, archived copies — are
+  excluded from both, so the indexed/eligible counter **converges** instead of
+  showing a permanent remainder that every run re-attempts and skips ("indexing
+  picks up nothing" while X < Y).
 - **Search engine.** On first index/search the service tries to stand up a SQL
   Server **full-text catalog + index** over the text column; when that succeeds,
   search uses fast `CONTAINS` (per-word prefix match). When the Full-Text

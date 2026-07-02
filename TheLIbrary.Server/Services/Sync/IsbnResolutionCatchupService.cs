@@ -28,6 +28,14 @@ public sealed class IsbnResolutionCatchupService
     private volatile string? _currentMessage;
     private IsbnCatchupSummary? _lastResult;
 
+    // ISBN keys deferred earlier TODAY (a source was rate/quota-capped for them).
+    // They stay uncached by design, so without this they'd be re-picked and re-fail
+    // every run until the quota resets — burning the whole batch on the same stuck
+    // codes. Cleared when the UTC date rolls over (daily quotas reset then). Only
+    // touched inside a run, and the coordinator allows one run at a time.
+    private readonly HashSet<string> _deferredToday = new(StringComparer.Ordinal);
+    private DateOnly _deferredDay;
+
     public IsbnResolutionCatchupService(
         IServiceScopeFactory scopeFactory,
         BackgroundTaskCoordinator coordinator,
@@ -56,7 +64,9 @@ public sealed class IsbnResolutionCatchupService
             try { _lastResult = await RunAsync(hostCt); }
             catch (OperationCanceledException) when (hostCt.IsCancellationRequested) { }
             catch (Exception ex) { _log.LogError(ex, "ISBN resolution catch-up failed"); }
-            finally { _isRunning = false; _currentMessage = null; _coordinator.Release(); }
+            // _currentMessage is left holding the "Done — …" summary so the Sync page
+            // shows the run's outcome (same as dedupe-unknown / promote-manual-books).
+            finally { _isRunning = false; _coordinator.Release(); }
         }, hostCt);
         return true;
     }
@@ -73,9 +83,17 @@ public sealed class IsbnResolutionCatchupService
 
         var maxPerRun = await JobRunLimits.GetAsync(db, AppSettingKeys.ResolveIsbnsMaxPerRun, MaxPerRun, ct);
 
+        // Daily quotas (Google Books) reset with the UTC date — forget yesterday's
+        // deferred ISBNs so they become eligible again.
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        if (today != _deferredDay) { _deferredToday.Clear(); _deferredDay = today; }
+
         // Already-cached ISBN keys, and every distinct ISBN on a scan row. Both are
         // DB-only (no NAS reads). Normalize each raw ISBN to its cache key and keep
-        // the ones not yet cached — capped per run, the rest reported as remaining.
+        // the ones not yet cached — a RANDOM sample capped per run, the rest reported
+        // as remaining. Random (not first-N in table order) matters: a deferred ISBN
+        // is left uncached, so a stable order would re-pick the same stuck codes every
+        // run and stall the whole batch once the front of the list can't resolve.
         var cached = (await db.IsbnResolutions.AsNoTracking().Select(r => r.Isbn).ToListAsync(ct))
             .ToHashSet(StringComparer.Ordinal);
         var rawIsbns = await db.BookContentScans.AsNoTracking()
@@ -84,19 +102,24 @@ public sealed class IsbnResolutionCatchupService
             .Distinct()
             .ToListAsync(ct);
 
-        var pending = new List<string>();
+        var eligible = new List<(string Raw, string Key)>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var totalMissing = 0;
+        var skippedDeferred = 0;
         foreach (var raw in rawIsbns)
         {
             var key = IsbnResolution.IsbnKey(raw);
             if (key is null || cached.Contains(key) || !seen.Add(key)) continue;
             totalMissing++;
-            if (pending.Count < maxPerRun) pending.Add(raw);
+            if (_deferredToday.Contains(key)) { skippedDeferred++; continue; }
+            eligible.Add((raw, key));
         }
+        var shuffled = eligible.ToArray();
+        Random.Shared.Shuffle(shuffled);
+        var pending = shuffled.Take(maxPerRun).ToList();
 
         int considered = 0, found = 0, deferred = 0;
-        foreach (var raw in pending)
+        foreach (var (raw, key) in pending)
         {
             ct.ThrowIfCancellationRequested();
             considered++;
@@ -113,8 +136,10 @@ public sealed class IsbnResolutionCatchupService
                 // re-attempted on a later run. Do NOT abort the whole batch: other ISBNs
                 // still resolve via OpenLibrary or a source that isn't capped (and a
                 // capped source's own throttle/latch makes its calls cheap), so pressing
-                // on gets far more done than stopping at the first blip.
+                // on gets far more done than stopping at the first blip. Remember it for
+                // the rest of today so later runs spend their slots on fresh candidates.
                 deferred++;
+                _deferredToday.Add(key);
             }
             catch (Exception ex)
             {
@@ -128,10 +153,11 @@ public sealed class IsbnResolutionCatchupService
         // uncached) are all still pending for a later run.
         var remaining = Math.Max(0, totalMissing - considered) + deferred;
         _log.LogInformation(
-            "resolve-isbns done — attempted {Considered}, resolved {Found}, deferred {Deferred} (source capped/error), {Remaining} still uncached",
-            considered, found, deferred, remaining);
+            "resolve-isbns done — attempted {Considered}, resolved {Found}, deferred {Deferred} (source capped/error), skipped {Skipped} deferred earlier today, {Remaining} still uncached",
+            considered, found, deferred, skippedDeferred, remaining);
         _currentMessage = $"Done — resolved {found}"
             + (deferred > 0 ? $", {deferred} deferred (retry later)" : "")
+            + (skippedDeferred > 0 ? $", {skippedDeferred} skipped (deferred today)" : "")
             + $", {remaining} remaining";
         return new IsbnCatchupSummary(considered, found, remaining);
     }

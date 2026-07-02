@@ -3,6 +3,7 @@ using TheLibrary.Server.Data;
 using TheLibrary.Server.Data.Models;
 using TheLibrary.Server.Services.Calibre;
 using TheLibrary.Server.Services.Scheduling;
+using TheLibrary.Server.Services.Sync;
 
 namespace TheLibrary.Server.Services.Search;
 
@@ -183,21 +184,49 @@ public sealed class FullTextSearchService
 
     private static async Task<int> OutstandingAsync(LibraryDbContext db, Options opt, CancellationToken ct)
     {
+        // Same eligibility as IndexBatchCoreAsync (ebook extension, not archived) —
+        // if this counts rows the batch can never index, "Indexed X of Y" never
+        // converges and the gap looks like the job silently doing nothing.
+        var notArchived = ArchivePolicy.NotUnder(await ArchivePolicy.LoadLeafAsync(db, ct));
         var n = await db.LocalBookFiles.AsNoTracking()
             .Where(f => f.BookId != null && !db.BookTextIndexes.Any(ix => ix.FullPath == f.FullPath))
+            .Where(LbfIsEbook).Where(notArchived)
             .CountAsync(ct);
         if (opt.IncludeUnmatched)
             n += await db.LocalBookFiles.AsNoTracking()
                 .Where(f => f.AuthorId != null && f.BookId == null && !db.BookTextIndexes.Any(ix => ix.FullPath == f.FullPath))
+                .Where(LbfIsEbook).Where(notArchived)
                 .CountAsync(ct);
         if (opt.IncludeUnknown)
             n += await db.UnknownFiles.AsNoTracking()
                 .Where(u => !db.BookTextIndexes.Any(ix => ix.FullPath == u.FullPath))
+                .Where(UfIsEbook)
                 .CountAsync(ct);
         return n;
     }
 
     // --- Indexing core ----------------------------------------------------------
+
+    // BookIntegrityChecker.IsEbook as EF-translatable EndsWith chains (the idiom
+    // ContentScanService.LbfTextBearing uses), so never-indexable rows — wrong
+    // extension, folder-pointer rows whose path is a directory — are excluded in
+    // SQL by BOTH the candidate pulls and the outstanding/status count. The two
+    // must agree: counting rows the batch filter can never index left the Search
+    // page showing a remainder ("Indexed X of Y") that no run could ever clear,
+    // with every run burning its batch on the same ineligible rows and indexing 0.
+    private static readonly System.Linq.Expressions.Expression<Func<LocalBookFile, bool>> LbfIsEbook =
+        f => f.FullPath.EndsWith(".epub") || f.FullPath.EndsWith(".pdf") || f.FullPath.EndsWith(".mobi")
+          || f.FullPath.EndsWith(".azw") || f.FullPath.EndsWith(".azw3") || f.FullPath.EndsWith(".fb2")
+          || f.FullPath.EndsWith(".cbz") || f.FullPath.EndsWith(".cbr") || f.FullPath.EndsWith(".lit")
+          || f.FullPath.EndsWith(".djvu") || f.FullPath.EndsWith(".doc") || f.FullPath.EndsWith(".docx")
+          || f.FullPath.EndsWith(".rtf") || f.FullPath.EndsWith(".txt");
+
+    private static readonly System.Linq.Expressions.Expression<Func<UnknownFile, bool>> UfIsEbook =
+        u => u.FullPath.EndsWith(".epub") || u.FullPath.EndsWith(".pdf") || u.FullPath.EndsWith(".mobi")
+          || u.FullPath.EndsWith(".azw") || u.FullPath.EndsWith(".azw3") || u.FullPath.EndsWith(".fb2")
+          || u.FullPath.EndsWith(".cbz") || u.FullPath.EndsWith(".cbr") || u.FullPath.EndsWith(".lit")
+          || u.FullPath.EndsWith(".djvu") || u.FullPath.EndsWith(".doc") || u.FullPath.EndsWith(".docx")
+          || u.FullPath.EndsWith(".rtf") || u.FullPath.EndsWith(".txt");
 
     private sealed record Candidate(string FullPath, TextIndexSource Source, int? BookId, int? AuthorId, string Title, long SizeBytes, DateTime ModifiedAt);
 
@@ -205,10 +234,13 @@ public sealed class FullTextSearchService
     {
         var over = opt.MaxPerRun * 4;
         var candidates = new List<Candidate>();
+        // Archived files are inert (ArchivePolicy): the indexer must not read them.
+        var notArchived = ArchivePolicy.NotUnder(await ArchivePolicy.LoadLeafAsync(db, ct));
 
         // 1. Matched books (always). Starred authors (higher Priority) first.
         var matched = await db.LocalBookFiles.AsNoTracking()
             .Where(f => f.BookId != null && !db.BookTextIndexes.Any(ix => ix.FullPath == f.FullPath))
+            .Where(LbfIsEbook).Where(notArchived)
             .OrderByDescending(f => f.Author!.Priority).ThenBy(f => f.Id)
             .Select(f => new { f.FullPath, f.BookId, f.AuthorId, Title = f.Book!.Title, f.SizeBytes, f.ModifiedAt })
             .Take(over).ToListAsync(ct);
@@ -222,6 +254,7 @@ public sealed class FullTextSearchService
         {
             var unmatched = await db.LocalBookFiles.AsNoTracking()
                 .Where(f => f.AuthorId != null && f.BookId == null && !db.BookTextIndexes.Any(ix => ix.FullPath == f.FullPath))
+                .Where(LbfIsEbook).Where(notArchived)
                 .OrderByDescending(f => f.Author!.Priority).ThenBy(f => f.Id)
                 .Select(f => new { f.FullPath, f.AuthorId, f.TitleFolder, f.SizeBytes, f.ModifiedAt })
                 .Take(over).ToListAsync(ct);
@@ -237,6 +270,7 @@ public sealed class FullTextSearchService
         {
             var unknown = await db.UnknownFiles.AsNoTracking()
                 .Where(u => !db.BookTextIndexes.Any(ix => ix.FullPath == u.FullPath))
+                .Where(UfIsEbook)
                 .OrderBy(u => u.Id)
                 .Select(u => new { u.FullPath, u.NormalizedTitle, u.FileName, u.SizeBytes, u.ModifiedAt })
                 .Take(over).ToListAsync(ct);
