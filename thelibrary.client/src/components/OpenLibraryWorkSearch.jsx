@@ -27,6 +27,7 @@ export default function OpenLibraryWorkSearch({
     actionLabel = 'Use selected OpenLibrary result',
     actionBusyLabel = 'Working…',
     actionNote = null,
+    quickFills = null, // optional [{ label, value }] — shortcut buttons that fill the box and search immediately
     onUse,
 }) {
     const [query, setQuery] = useState(initialQuery)
@@ -130,6 +131,20 @@ export default function OpenLibraryWorkSearch({
                         </button>
                     </div>
                 </label>
+                {quickFills?.some(f => f.value?.trim()) && (
+                    <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center', marginTop: '0.5rem' }}>
+                        <span className="subtle" style={{ fontSize: '0.78rem' }}>Search by:</span>
+                        {quickFills.filter(f => f.value?.trim()).map(f => (
+                            <button key={f.label} type="button" className="btn-ghost"
+                                    style={{ fontSize: '0.78rem', padding: '0.15rem 0.5rem' }}
+                                    disabled={busy || actionBusy}
+                                    title={f.value}
+                                    onClick={() => { setQuery(f.value); search(f.value) }}>
+                                {f.label}
+                            </button>
+                        ))}
+                    </div>
+                )}
             </div>
             {status && <p className="subtle" style={{ margin: 0 }}>{status}</p>}
             {error && <p className="error" style={{ margin: 0 }}>{error}</p>}

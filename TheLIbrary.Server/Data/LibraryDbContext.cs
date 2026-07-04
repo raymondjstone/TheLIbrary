@@ -16,6 +16,7 @@ public class LibraryDbContext : DbContext
     public DbSet<AppSetting> AppSettings => Set<AppSetting>();
     public DbSet<RemarkableAuth> RemarkableAuths => Set<RemarkableAuth>();
     public DbSet<AuthorBlacklist> AuthorBlacklist => Set<AuthorBlacklist>();
+    public DbSet<TitleBlacklist> TitleBlacklist => Set<TitleBlacklist>();
     public DbSet<NzbSite> NzbSites => Set<NzbSite>();
     public DbSet<Series> Series => Set<Series>();
     public DbSet<SeriesAuthor> SeriesAuthors => Set<SeriesAuthor>();
@@ -134,6 +135,13 @@ public class LibraryDbContext : DbContext
             e.Property(x => x.FolderName).HasMaxLength(300);
             e.Property(x => x.Reason).HasMaxLength(500);
             e.HasIndex(x => x.NormalizedName).IsUnique();
+        });
+
+        b.Entity<TitleBlacklist>(e =>
+        {
+            e.Property(x => x.Title).HasMaxLength(500);
+            e.Property(x => x.NormalizedTitle).HasMaxLength(500);
+            e.HasIndex(x => x.NormalizedTitle).IsUnique();
         });
 
         b.Entity<NzbSite>(e =>

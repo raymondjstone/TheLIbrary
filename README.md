@@ -76,7 +76,7 @@ and wishlist.
 | Unmatched physical | `/physical-unmatched` | Editable list of physical-books-import rows that couldn't be matched; "Re-run matching" re-tries the whole list against the current library |
 | Sync | `/sync` | Live sync dashboard with phase tracking and progress, plus a **Background jobs** panel with a **run-now** button and live status for **every** job, **grouped by category** |
 | Schedules | `/schedules` | Cron expressions and enabled/disabled flags for **every** background job, **grouped by category**; a collapsible **"What this job does"** explainer and a per-job last-N-run history panel. Both the Schedules and Sync pages render the same jobs from one shared catalog (`src/jobCatalog.js`) so they can't drift apart |
-| Settings | `/settings` | Library locations, incoming folder, custom quarantine (`__unknown`) folder override, Pushover credentials (+ "Send test"), ignored folders, blacklist, NZB sites, reMarkable pairing, book integrity check (max files per run + replacement formats), **Background job run limits** (per-run caps for promote-manual-books, resolve-works, assign-authors, auto-replace-damaged, prune-authors — each defaults to the job's built-in cap), Goodreads + physical-books import |
+| Settings | `/settings` | Library locations, incoming folder, custom quarantine (`__unknown`) folder override, Pushover credentials (+ "Send test"), ignored folders, title blacklist, author blacklist, NZB sites, reMarkable pairing, book integrity check (max files per run + replacement formats), **Background job run limits** (per-run caps for promote-manual-books, resolve-works, resolve-isbns, assign-authors, auto-replace-damaged, prune-authors — each defaults to the job's built-in cap), Goodreads + physical-books import |
 
 ## How it works
 
@@ -1224,6 +1224,18 @@ truncated "X and Thomas"). Publishers ("… Media", "… Press") and URL fragmen
 are refused as authors, and a "Book N in the X series" mention inside running
 prose can no longer smear a whole sentence into the series name.
 
+**Title blacklist.** Whatever guessed a title — prose heuristics, embedded
+metadata, or the filename — the result is checked against the **title
+blacklist** (`TitleBlacklist` table, Settings → *Blacklisted book titles*,
+above the author blacklist) before it's stored: an exact match (by
+`TitleNormalizer.Normalize` — case/punctuation/leading-article insensitive, not
+a substring) is refused and the title left null instead. This catches
+copyright-page boilerplate and OCR artefacts that otherwise look like a
+plausible title-cased line ("Scanned", "Published", "@page", "A Novel", "A Del
+Rey ® Book Published") and would reach OpenLibrary search as if they were
+real. Seeded with a starting set of known junk strings; add or remove entries
+from the Settings page.
+
 **Embedded metadata comes first.** Before trusting prose heuristics, the scan
 reads the file's own embedded metadata (EPUB OPF `dc:creator`/`dc:title`, MOBI
 EXTH, FB2, PDF info, DOCX/ODT core properties — the same readers the incoming
@@ -1415,7 +1427,8 @@ The cache is warmed two ways: **content-scan resolves each file's ISBN inline as
 scans** (going forward, so newly-scanned files are pre-resolved), and a
 **`resolve-isbns` catch-up job** (Schedules page, off by default) walks the distinct
 ISBNs on existing scan rows and resolves any not yet cached — one OL call per unique
-code, a **random sample** capped per run (random, not first-N in table order: a
+code, a **random sample** capped per run (Settings → *Background job run limits →
+Cache ISBN title/author lookups*, default 200; random, not first-N in table order: a
 deferred ISBN stays uncached by design, so a fixed order would re-pick the same stuck
 codes every run and stall the batch once the front of the list can't resolve). An
 ISBN deferred because a source was quota-capped is also **skipped for the rest of the
@@ -2522,6 +2535,8 @@ trusted LAN).
   (case-insensitive). `__unknown` is always skipped automatically.
 - `AuthorBlacklist` — normalized author names that are never promoted to the
   watchlist, with optional folder name and reason fields.
+- `TitleBlacklist` — normalized junk titles ("Scanned", "@page", "A Novel", …)
+  the content-scan job refuses to keep as a guessed title.
 - `NzbSite` — a named NZB site with a URL template containing `{Title}`,
   `{Author}`, and/or `{SearchTerm}` placeholders; has order and active flag.
 - `ScheduleEntry` — cron expression + enabled flag, keyed by job id.

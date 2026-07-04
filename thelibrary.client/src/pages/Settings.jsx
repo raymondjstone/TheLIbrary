@@ -1542,6 +1542,8 @@ export default function Settings() {
 
             <BackupSection />
 
+            <TitleBlacklistSection />
+
             {/* Excluded authors (blacklist) — kept at the very bottom of the page. */}
             <h2 style={{ marginTop: '1.5rem' }}>Excluded authors (blacklist)</h2>
             <p className="subtle">
@@ -1597,12 +1599,93 @@ export default function Settings() {
     )
 }
 
+// Titles the "identify books from content" job must never keep as a guess —
+// copyright-page boilerplate and OCR artefacts ("Scanned", "@page", "A Novel")
+// that would otherwise reach OpenLibrary search as if they were a real title.
+// Matched by exact normalized form (TitleNormalizer.Normalize), same rule the
+// server applies, so "Book" and "book" are the same entry.
+function TitleBlacklistSection() {
+    const [list, setList] = useState([])
+    const [newTitle, setNewTitle] = useState('')
+    const [error, setError] = useState(null)
+
+    const load = () => {
+        fetch('/api/title-blacklist')
+            .then(r => r.ok ? r.json() : [])
+            .then(setList)
+            .catch(() => setList([]))
+    }
+    useEffect(load, [])
+
+    const add = async () => {
+        const title = newTitle.trim()
+        if (!title) return
+        setError(null)
+        try {
+            const r = await fetch('/api/title-blacklist', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title }),
+            })
+            if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(b.error || r.statusText) }
+            setNewTitle('')
+            load()
+        } catch (e) { setError(String(e.message || e)) }
+    }
+
+    const remove = async (id) => {
+        if (!window.confirm('Remove this title from the blacklist? Future scans may guess it again.')) return
+        const r = await fetch(`/api/title-blacklist/${id}`, { method: 'DELETE' })
+        if (r.ok) load()
+    }
+
+    return (
+        <>
+            <h2 style={{ marginTop: '1.5rem' }}>Blacklisted book titles</h2>
+            <p className="subtle">
+                Guessed titles here are refused by the &quot;identify books from content&quot; job — they never get
+                stored, applied, or searched on OpenLibrary. Matched by exact normalized text (case/punctuation/leading
+                article insensitive), not a substring, so this only catches the exact junk phrase, not any title containing it.
+            </p>
+            {error ? <p className="error">{error}</p> : null}
+            <table className="grid" style={{ maxWidth: 480 }}>
+                <thead>
+                    <tr>
+                        <th>Title</th>
+                        <th>Added</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {list.map(b => (
+                        <tr key={b.id}>
+                            <td>{b.title}</td>
+                            <td className="subtle">{new Date(b.addedAt).toLocaleDateString()}</td>
+                            <td><button className="btn-danger" onClick={() => remove(b.id)}>Remove</button></td>
+                        </tr>
+                    ))}
+                    <tr>
+                        <td>
+                            <input
+                                value={newTitle}
+                                onChange={e => setNewTitle(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && add()}
+                                placeholder="Junk title" />
+                        </td>
+                        <td></td>
+                        <td><button onClick={add} disabled={!newTitle.trim()}>Add</button></td>
+                    </tr>
+                </tbody>
+            </table>
+        </>
+    )
+}
+
 // Toggle for the opt-in full-text search feature (default off). Indexing/search
 // controls live on the Search page; this is just the on/off switch.
 // Per-run caps for the paced background jobs that don't have their own dedicated
 // Settings control. Mirrors the FullTextSearchSection load/save pattern.
 function JobLimitsSection() {
-    const fallback = { promoteManualBooks: 100, resolveWorks: 200, assignAuthors: 1000, autoReplaceDamaged: 20, pruneAuthors: 5000 }
+    const fallback = { promoteManualBooks: 100, resolveWorks: 200, resolveIsbns: 200, assignAuthors: 1000, autoReplaceDamaged: 20, pruneAuthors: 5000 }
     const [cfg, setCfg] = useState(null)
     const [saved, setSaved] = useState(null)
     const [busy, setBusy] = useState(false)
@@ -1638,6 +1721,7 @@ function JobLimitsSection() {
     const fields = [
         ['promoteManualBooks', 'Promote manual books', 'OpenLibrary searches per run'],
         ['resolveWorks', 'Resolve works by ISBN', 'OpenLibrary lookups per run'],
+        ['resolveIsbns', 'Cache ISBN title/author lookups', 'ISBN lookups per run'],
         ['assignAuthors', 'Assign untracked books to authors', 'OpenLibrary lookups per run'],
         ['autoReplaceDamaged', 'Auto-replace damaged books', 'indexer grabs per run'],
         ['pruneAuthors', 'Prune empty auto-created authors', 'deletions per run'],

@@ -662,6 +662,11 @@ export default function IdentifiedBooks() {
                             resultText="Choose one OpenLibrary result below. Nothing is auto-used."
                             actionLabel="Match file to this work"
                             actionBusyLabel="Matching…"
+                            quickFills={[
+                                { label: 'File name', value: workSearch.fileTitle },
+                                { label: 'Suggested title', value: workSearch.suggestedTitle },
+                                { label: 'Author', value: workSearch.author },
+                            ]}
                             onUse={(work) => useWork(workSearch.id, work)} />
                     </div>
                 </div>
@@ -848,7 +853,13 @@ function RowTable({ rows, busy, expanded, isbnTitles, reassignToIsbnAuthor, togg
                                 )}
                                 <button className="btn-ghost" disabled={busy.has(r.id)}
                                         title="Search OpenLibrary by book title and match this file to the selected work — applied immediately"
-                                        onClick={() => setWorkSearch({ id: r.id, initialQuery: r.title || fileStem(r.path) })}>
+                                        onClick={() => setWorkSearch({
+                                            id: r.id,
+                                            initialQuery: r.title || fileStem(r.path),
+                                            fileTitle: fileStem(r.path),
+                                            suggestedTitle: r.title,
+                                            author: r.author,
+                                        })}>
                                     Find on OL
                                 </button>
                                 <button className="btn-ghost" disabled={busy.has(r.id)}

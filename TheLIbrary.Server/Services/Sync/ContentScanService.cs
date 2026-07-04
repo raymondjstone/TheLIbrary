@@ -379,6 +379,10 @@ public sealed class ContentScanService
             row.SeriesPosition ??= Cap(fg.SeriesPosition, 50);
         }
 
+        // Refuse a guessed title that's known junk (copyright-page boilerplate,
+        // OCR artefacts) rather than shipping it to OpenLibrary search as real.
+        if (await IsBlacklistedTitleAsync(db, row.Title, ct)) row.Title = null;
+
         // Pre-provision Pending Author rows for the guessed name — but ONLY for
         // untracked files (those in __unknown, with no author folder to seed the
         // watchlist). A file inside an author folder already belongs to a tracked
@@ -430,6 +434,7 @@ public sealed class ContentScanService
             row.Title ??= Cap(fg.Title, 500);
             row.Series ??= Cap(fg.Series, 500);
             row.SeriesPosition ??= Cap(fg.SeriesPosition, 50);
+            if (await IsBlacklistedTitleAsync(db, row.Title, ct)) row.Title = null;
             await EnsurePendingAuthorsForGuessAsync(db, fg.Author!, ct);
             enriched++;
             if (enriched % 100 == 0) await db.SaveChangesAsync(ct);
@@ -455,6 +460,7 @@ public sealed class ContentScanService
             row.Title = Cap(g.Title, 500);
             row.Series ??= Cap(g.Series, 500);
             row.SeriesPosition ??= Cap(g.SeriesPosition, 50);
+            if (await IsBlacklistedTitleAsync(db, row.Title, ct)) row.Title = null;
             enriched++;
             if (enriched % 100 == 0) await db.SaveChangesAsync(ct);
         }
@@ -602,6 +608,17 @@ public sealed class ContentScanService
             .Where(s => s.Key == AppSettingKeys.DedupeArchiveFolder)
             .Select(s => s.Value).FirstOrDefaultAsync(ct);
         return (string.IsNullOrWhiteSpace(raw) ? "__archive" : raw.Trim()).Replace('\\', '/').TrimEnd('/');
+    }
+
+    // True when the guessed title's normalized form is an exact match for a
+    // blacklisted junk title (Settings → Blacklisted book titles). One indexed
+    // lookup per file — the table is tiny, so this stays cheap at job scale.
+    private static async Task<bool> IsBlacklistedTitleAsync(LibraryDbContext db, string? title, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return false;
+        var normalized = TitleNormalizer.Normalize(title);
+        if (normalized.Length == 0) return false;
+        return await db.TitleBlacklist.AsNoTracking().AnyAsync(b => b.NormalizedTitle == normalized, ct);
     }
 
     private static async Task<bool> LoadUntrackedFirstAsync(LibraryDbContext db, CancellationToken ct)
