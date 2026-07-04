@@ -79,7 +79,7 @@ export default function IdentifiedBooks() {
     useEffect(() => {
         if (!rows) return
         const need = rows.filter(r =>
-            r.isbn && !r.title && r.bookId == null && !r.matchedTitle && isbnTitles[r.id] === undefined)
+            r.isbn && r.bookId == null && !r.matchedTitle && isbnTitles[r.id] === undefined)
         if (need.length === 0) return
         let cancelled = false
         setIsbnTitles(prev => {
@@ -764,21 +764,39 @@ function RowTable({ rows, busy, expanded, isbnTitles, reassignToIsbnAuthor, togg
                         </td>
                         <td>
                             {r.bookId != null
-                                // Already matched: the file's title is settled — show the
-                                // real linked book title (never the front-matter guess),
-                                // and there's no Apply action that could overwrite it.
-                                ? <span title="Already matched to this book — its title is locked and won't be changed by Apply">
-                                      {r.matchedTitle ?? '(matched)'}
-                                      <span className="subtle" style={{ fontSize: '0.72em', display: 'block' }}>✓ matched — title locked</span>
-                                  </span>
-                                : r.title
-                                    ? r.title
-                                    // No guessed/known title but there's an ISBN — show what
-                                    // title that ISBN would resolve to (what Apply would use).
-                                    : r.isbn
-                                        ? <IsbnTitleCell info={isbnTitles?.[r.id]} row={r} busy={busy}
-                                                         onReassign={reassignToIsbnAuthor} />
-                                        : '—'}
+                                    // Already matched: the file's title is settled — show the
+                                    // real linked book title (never the front-matter guess),
+                                    // and there's no Apply action that could overwrite it.
+                                    ? <span title="Already matched to this book — its title is locked and won't be changed by Apply">
+                                          {r.matchedTitle ?? '(matched)'}
+                                          <span className="subtle" style={{ fontSize: '0.72em', display: 'block' }}>✓ matched — title locked</span>
+                                      </span>
+                                    : r.title
+                                        // Has a guessed title — show it, but also check whether
+                                        // the ISBN (if any) resolves to a different author so the
+                                        // reassign affordance is visible even when a title exists.
+                                        ? <>
+                                            {r.title}
+                                            {r.isbn && isbnTitles?.[r.id]?.matches === false && isbnTitles[r.id].author && isbnTitles[r.id].workKey && (
+                                                <>
+                                                    <span className="subtle" style={{ fontSize: '0.72em', display: 'block', color: 'var(--danger, #b91c1c)' }}>
+                                                        via ISBN · {isbnTitles[r.id].author} — different author, Apply won’t re-file across authors
+                                                    </span>
+                                                    <button className="btn-ghost" disabled={busy?.has(r.id)}
+                                                            style={{ fontSize: '0.72em', padding: '0.1em 0.4em', marginTop: '0.2rem' }}
+                                                            title={`Move this file to ${isbnTitles[r.id].author} and link "${isbnTitles[r.id].title || r.title}"`}
+                                                            onClick={() => reassignToIsbnAuthor(r.id, isbnTitles[r.id])}>
+                                                        {busy?.has(r.id) ? '…' : `↪ Reassign to ${isbnTitles[r.id].author}`}
+                                                    </button>
+                                                </>
+                                            )}
+                                          </>
+                                        // No guessed/known title but there's an ISBN — show what
+                                        // title that ISBN would resolve to (what Apply would use).
+                                        : r.isbn
+                                            ? <IsbnTitleCell info={isbnTitles?.[r.id]} row={r} busy={busy}
+                                                             onReassign={reassignToIsbnAuthor} />
+                                            : '—'}
                         </td>
                         <td>{r.series ? `${r.series}${r.seriesPosition ? ` #${r.seriesPosition}` : ''}` : '—'}</td>
                         <td>{r.isbn ?? '—'}</td>
