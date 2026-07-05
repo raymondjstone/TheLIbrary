@@ -66,6 +66,7 @@ builder.Services.AddHttpClient(TheLibrary.Server.Services.OpenLibrary.LocFallbac
     c => c.BaseAddress = new Uri("http://lx2.loc.gov:210/"));
 builder.Services.AddHttpClient(TheLibrary.Server.Services.OpenLibrary.IsbndbFallbackProvider.HttpClientName,
     c => c.BaseAddress = new Uri("https://api2.isbndb.com/"));
+builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.IsbndbRateLimiter>();
 builder.Services.AddTransient<TheLibrary.Server.Services.OpenLibrary.GoogleBooksFallbackProvider>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.HardcoverFallbackProvider>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.LocFallbackProvider>();

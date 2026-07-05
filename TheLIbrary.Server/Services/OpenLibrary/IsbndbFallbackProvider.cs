@@ -10,20 +10,24 @@ namespace TheLibrary.Server.Services.OpenLibrary;
 // ISBNdb (api2.isbndb.com) — a paid, comprehensive ISBN database with strong
 // coverage of self-published / KDP / print-on-demand / foreign titles. Auth is the
 // bare API key in the Authorization header. GET /book/{isbn}. Rate-limited per plan
-// (basic ≈ 1 req/sec), so calls are throttled.
+// (basic ≈ 1 req/sec), so calls are throttled. ISBNdb's plans also carry a request
+// quota that resets at 00:00 UTC — once spent, further lookups are latched off for
+// the rest of the day (IsbndbRateLimiter) instead of hammering a plan that's out.
 public sealed class IsbndbFallbackProvider : IIsbnFallbackProvider
 {
     public const string HttpClientName = "isbndb";
 
     private readonly IHttpClientFactory _httpFactory;
+    private readonly IsbndbRateLimiter _quota;
     private readonly ILogger<IsbndbFallbackProvider> _log;
     // Basic plan is ~1 request/second — space calls just over that.
     private readonly IsbnSourceThrottle _throttle = new(TimeSpan.FromMilliseconds(1100));
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
-    public IsbndbFallbackProvider(IHttpClientFactory httpFactory, ILogger<IsbndbFallbackProvider> log)
+    public IsbndbFallbackProvider(IHttpClientFactory httpFactory, IsbndbRateLimiter quota, ILogger<IsbndbFallbackProvider> log)
     {
         _httpFactory = httpFactory;
+        _quota = quota;
         _log = log;
     }
 
@@ -33,6 +37,8 @@ public sealed class IsbndbFallbackProvider : IIsbnFallbackProvider
     public async Task<IsbnLookupResult> LookupAsync(string isbn, string? credential, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(credential)) return IsbnLookupResult.Skipped;
+        // Already latched exhausted today — skip the HTTP call entirely.
+        if (_quota.IsExhaustedToday) return IsbnLookupResult.Unavailable;
 
         await _throttle.WaitAsync(ct);
         var http = _httpFactory.CreateClient(HttpClientName);
@@ -48,19 +54,42 @@ public sealed class IsbndbFallbackProvider : IIsbnFallbackProvider
         }
         using (resp)
         {
-            switch (resp.StatusCode)
+            if (resp.StatusCode == HttpStatusCode.NotFound) return IsbnLookupResult.Miss;
+
+            if (resp.StatusCode == HttpStatusCode.Unauthorized)
             {
-                case HttpStatusCode.NotFound:
-                    return IsbnLookupResult.Miss;
-                case HttpStatusCode.Unauthorized:
-                case HttpStatusCode.Forbidden:
-                    // Bad/expired key — treat as "off" (skip) rather than block caching
-                    // of genuine misses. Logged so the misconfig is visible.
-                    _log.LogWarning("ISBNdb returned {Status} for {Isbn} — check the API key", (int)resp.StatusCode, isbn);
-                    return IsbnLookupResult.Skipped;
-                case HttpStatusCode.TooManyRequests:
-                    return IsbnLookupResult.Unavailable;
+                // Bad/expired key — treat as "off" (skip) rather than block caching of
+                // genuine misses. Logged so the misconfig is visible.
+                _log.LogWarning("ISBNdb returned {Status} for {Isbn} — check the API key", (int)resp.StatusCode, isbn);
+                return IsbnLookupResult.Skipped;
             }
+
+            if (resp.StatusCode == HttpStatusCode.Forbidden)
+            {
+                // A 403 is either a bad key or a spent request quota — ISBNdb uses the
+                // same status for both, so the body decides which. Only a quota-like
+                // reason latches the daily pause; anything else is a misconfigured key.
+                var errBody = await resp.Content.ReadAsStringAsync(ct);
+                if (errBody.Contains("quota", StringComparison.OrdinalIgnoreCase)
+                    || errBody.Contains("limit", StringComparison.OrdinalIgnoreCase))
+                {
+                    _quota.MarkExhausted();
+                    _log.LogWarning("ISBNdb request quota exhausted — pausing lookups until 00:00 UTC");
+                    return IsbnLookupResult.Unavailable;
+                }
+                _log.LogWarning("ISBNdb returned {Status} for {Isbn} — check the API key", (int)resp.StatusCode, isbn);
+                return IsbnLookupResult.Skipped;
+            }
+
+            if (resp.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                // Same daily-quota signal as Google Books treats 429 — latch it so the
+                // rest of today's lookups short-circuit instead of re-hitting a spent plan.
+                _quota.MarkExhausted();
+                _log.LogWarning("ISBNdb request quota exhausted (HTTP 429) — pausing lookups until 00:00 UTC");
+                return IsbnLookupResult.Unavailable;
+            }
+
             if (!resp.IsSuccessStatusCode)
             {
                 _log.LogWarning("ISBNdb returned HTTP {Status} for {Isbn}", (int)resp.StatusCode, isbn);

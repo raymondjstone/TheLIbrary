@@ -1492,11 +1492,15 @@ are paced under the per-minute cap, and when Google signals the **daily quota is
 spent** (HTTP 429, or a 403 citing a quota/limit reason) the app **latches Google off
 for the rest of the UTC day** — further lookups short-circuit without an HTTP call,
 and the ISBNs that couldn't be resolved are left **uncached so they're re-attempted
-the next day** once the quota resets. The `resolve-isbns` job presses on past a
+the next day** once the quota resets. ISBNdb gets the same treatment
+(`IsbndbRateLimiter`): its plan-level request quota also resets at **00:00 UTC**, and
+a 429 or a 403 whose body cites a quota/limit reason latches it off for the rest of
+the day the same way — a plain 403 with no such wording is instead treated as a bad/
+expired key (`Skipped`), not a quota trip. The `resolve-isbns` job presses on past a
 quota-capped ISBN (counted as *deferred*, and skipped for the rest of the day — see
-above) rather than stopping the batch; OpenLibrary-resolvable ISBNs in the same run
-are still cached (only the capped source is paused). The latch clears automatically
-at the UTC date rollover. On the Identified
+above) rather than stopping the batch; ISBNs resolvable via another source in the same
+run are still cached (only the capped source is paused). Each source's latch clears
+automatically at the UTC date rollover. On the Identified
 page an on-demand lookup that hits the spent quota shows a **⏳ Google quota — retry
 tomorrow** note (the `isbn-title` endpoint returns a retryable state, not an error)
 rather than a bare failure, and nothing is cached so the row resolves on a later load.
