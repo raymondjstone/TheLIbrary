@@ -393,15 +393,17 @@ public class SettingsController : ControllerBase
         return new PushoverTestResult(result.Sent, result.Error);
     }
 
-    // Optional ISBN-resolution fallback credentials, tried (in this order) after
-    // OpenLibrary for ISBNs it can't resolve (self-published / KDP / indie): Google
-    // Books (free, 1,000/day), Hardcover (free), ISBNdb (paid). Each blank ⇒ that
-    // source is off.
+    // Optional ISBN-resolution fallback credentials, tried in this order after
+    // OpenLibrary for ISBNs it can't resolve (self-published / KDP / indie): ISBNdb
+    // (paid, checked first when configured), Google Books (free, 1,000/day), Hardcover
+    // (free). Each blank ⇒ that source is off.
     public sealed record IsbnFallbacksDto(
         string GoogleBooksKey, string HardcoverToken, string IsbndbKey, bool LocEnabled,
-        bool GoogleConfigured, bool HardcoverConfigured, bool IsbndbConfigured);
+        bool GoogleConfigured, bool HardcoverConfigured, bool IsbndbConfigured,
+        int MaxFailedAttempts);
     public sealed record UpdateIsbnFallbacks(
-        string? GoogleBooksKey, string? HardcoverToken, string? IsbndbKey, bool? LocEnabled);
+        string? GoogleBooksKey, string? HardcoverToken, string? IsbndbKey, bool? LocEnabled,
+        int? MaxFailedAttempts);
 
     [HttpGet("isbn-fallbacks")]
     public async Task<IsbnFallbacksDto> GetIsbnFallbacks(CancellationToken ct)
@@ -410,33 +412,43 @@ public class SettingsController : ControllerBase
             .Where(s => s.Key == AppSettingKeys.GoogleBooksApiKey
                      || s.Key == AppSettingKeys.HardcoverApiToken
                      || s.Key == AppSettingKeys.IsbndbApiKey
-                     || s.Key == AppSettingKeys.LocEnabled)
+                     || s.Key == AppSettingKeys.LocEnabled
+                     || s.Key == AppSettingKeys.IsbnResolveMaxFailedAttempts)
             .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
         rows.TryGetValue(AppSettingKeys.GoogleBooksApiKey, out var google);
         rows.TryGetValue(AppSettingKeys.HardcoverApiToken, out var hardcover);
         rows.TryGetValue(AppSettingKeys.IsbndbApiKey, out var isbndb);
         rows.TryGetValue(AppSettingKeys.LocEnabled, out var loc);
+        var maxFailed = ReadInt(rows, AppSettingKeys.IsbnResolveMaxFailedAttempts,
+            Services.OpenLibrary.IsbnResolutionService.DefaultMaxFailedAttempts);
         return new IsbnFallbacksDto(
             google ?? "", hardcover ?? "", isbndb ?? "", !string.IsNullOrWhiteSpace(loc),
-            !string.IsNullOrWhiteSpace(google), !string.IsNullOrWhiteSpace(hardcover), !string.IsNullOrWhiteSpace(isbndb));
+            !string.IsNullOrWhiteSpace(google), !string.IsNullOrWhiteSpace(hardcover), !string.IsNullOrWhiteSpace(isbndb),
+            maxFailed);
     }
 
     [HttpPut("isbn-fallbacks")]
     public async Task<ActionResult<IsbnFallbacksDto>> SetIsbnFallbacks(
         [FromBody] UpdateIsbnFallbacks body, CancellationToken ct)
     {
+        if (body.MaxFailedAttempts is <= 0)
+            return BadRequest(new { error = "Give-up attempts must be greater than zero." });
+
         var google = body.GoogleBooksKey?.Trim() ?? "";
         var hardcover = body.HardcoverToken?.Trim() ?? "";
         var isbndb = body.IsbndbKey?.Trim() ?? "";
         var loc = body.LocEnabled == true ? "true" : "";
+        var maxFailed = body.MaxFailedAttempts ?? Services.OpenLibrary.IsbnResolutionService.DefaultMaxFailedAttempts;
         await UpsertSettingAsync(AppSettingKeys.GoogleBooksApiKey, google, ct);
         await UpsertSettingAsync(AppSettingKeys.HardcoverApiToken, hardcover, ct);
         await UpsertSettingAsync(AppSettingKeys.IsbndbApiKey, isbndb, ct);
         await UpsertSettingAsync(AppSettingKeys.LocEnabled, loc, ct);
+        await UpsertSettingAsync(AppSettingKeys.IsbnResolveMaxFailedAttempts, maxFailed.ToString(), ct);
         await _db.SaveChangesAsync(ct);
         return new IsbnFallbacksDto(
             google, hardcover, isbndb, loc.Length > 0,
-            !string.IsNullOrWhiteSpace(google), !string.IsNullOrWhiteSpace(hardcover), !string.IsNullOrWhiteSpace(isbndb));
+            !string.IsNullOrWhiteSpace(google), !string.IsNullOrWhiteSpace(hardcover), !string.IsNullOrWhiteSpace(isbndb),
+            maxFailed);
     }
 
     public sealed record OpenLibraryIdentityDto(

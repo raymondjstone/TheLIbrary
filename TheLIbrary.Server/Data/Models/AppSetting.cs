@@ -74,6 +74,12 @@ public static class AppSettingKeys
     public const string LocEnabled = "LocEnabled";                     // free, Library of Congress SRU (on/off flag)
     public const string IsbndbApiKey = "IsbndbApiKey";                 // paid, comprehensive
 
+    // How many times an ISBN may come back with NOTHING at all (no hit, no definitive
+    // miss — every reachable fallback was rate/quota-capped) before it's given up on
+    // and cached as a permanent miss instead of being retried forever. Tracked per-ISBN
+    // in IsbnResolutionAttempt.FailCount. Unset/invalid = IsbnResolutionService.DefaultMaxFailedAttempts.
+    public const string IsbnResolveMaxFailedAttempts = "IsbnResolveMaxFailedAttempts";
+
     // Folder name (relative to each library root) used when archiving duplicate
     // files from the Duplicates page. Defaults to "__archive" when not set.
     public const string DedupeArchiveFolder = "DedupeArchiveFolder";

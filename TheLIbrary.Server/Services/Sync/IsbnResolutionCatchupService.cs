@@ -90,10 +90,7 @@ public sealed class IsbnResolutionCatchupService
 
         // Already-cached ISBN keys, and every distinct ISBN on a scan row. Both are
         // DB-only (no NAS reads). Normalize each raw ISBN to its cache key and keep
-        // the ones not yet cached — a RANDOM sample capped per run, the rest reported
-        // as remaining. Random (not first-N in table order) matters: a deferred ISBN
-        // is left uncached, so a stable order would re-pick the same stuck codes every
-        // run and stall the whole batch once the front of the list can't resolve.
+        // the ones not yet cached, the rest reported as remaining.
         var cached = (await db.IsbnResolutions.AsNoTracking().Select(r => r.Isbn).ToListAsync(ct))
             .ToHashSet(StringComparer.Ordinal);
         var rawIsbns = await db.BookContentScans.AsNoTracking()
@@ -114,9 +111,31 @@ public sealed class IsbnResolutionCatchupService
             if (_deferredToday.Contains(key)) { skippedDeferred++; continue; }
             eligible.Add((raw, key));
         }
-        var shuffled = eligible.ToArray();
-        Random.Shared.Shuffle(shuffled);
-        var pending = shuffled.Take(maxPerRun).ToList();
+
+        // Never-attempted ISBNs go first — a fresh code deserves its first try before
+        // a slot is spent re-trying one that has already failed. Once those run out,
+        // fill the rest of the batch from previously-failed ISBNs ordered by FEWEST
+        // failures so far, so a code close to its give-up limit doesn't keep competing
+        // evenly with one that's barely been tried. Random within each tier (fail-count
+        // group) — not first-N in table order — so a huge backlog doesn't always
+        // surface the same front-of-list candidates run after run.
+        var failCounts = await db.IsbnResolutionAttempts.AsNoTracking()
+            .Select(a => new { a.Isbn, a.FailCount })
+            .ToDictionaryAsync(a => a.Isbn, a => a.FailCount, ct);
+
+        var neverAttempted = eligible.Where(e => !failCounts.ContainsKey(e.Key)).ToArray();
+        Random.Shared.Shuffle(neverAttempted);
+        var previouslyFailed = eligible.Where(e => failCounts.ContainsKey(e.Key))
+            .GroupBy(e => failCounts[e.Key])
+            .OrderBy(g => g.Key)
+            .SelectMany(g =>
+            {
+                var arr = g.ToArray();
+                Random.Shared.Shuffle(arr);
+                return arr;
+            });
+
+        var pending = neverAttempted.Concat(previouslyFailed).Take(maxPerRun).ToList();
 
         int considered = 0, found = 0, deferred = 0;
         foreach (var (raw, key) in pending)

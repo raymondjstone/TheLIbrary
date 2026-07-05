@@ -29,7 +29,7 @@ export default function Settings() {
     const [pushoverEdit, setPushoverEdit] = useState({ appToken: '', userKey: '' })
     const [pushoverSaving, setPushoverSaving] = useState(false)
     const [isbnFb, setIsbnFb] = useState({ googleConfigured: false, hardcoverConfigured: false, isbndbConfigured: false })
-    const [isbnFbEdit, setIsbnFbEdit] = useState({ googleBooksKey: '', hardcoverToken: '', isbndbKey: '', locEnabled: false })
+    const [isbnFbEdit, setIsbnFbEdit] = useState({ googleBooksKey: '', hardcoverToken: '', isbndbKey: '', locEnabled: false, maxFailedAttempts: 5 })
     const [isbnFbSaving, setIsbnFbSaving] = useState(false)
     const [isbnMissesBusy, setIsbnMissesBusy] = useState(false)
     const [isbnMissesResult, setIsbnMissesResult] = useState(null)
@@ -133,6 +133,7 @@ export default function Settings() {
                 hardcoverToken: body.hardcoverToken ?? '',
                 isbndbKey: body.isbndbKey ?? '',
                 locEnabled: !!body.locEnabled,
+                maxFailedAttempts: body.maxFailedAttempts ?? 5,
             })
         } catch (e) { setError(prev => prev ?? String(e)) }
 
@@ -613,7 +614,7 @@ export default function Settings() {
             const r = await fetch('/api/settings/isbn-fallbacks', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(isbnFbEdit),
+                body: JSON.stringify({ ...isbnFbEdit, maxFailedAttempts: Math.max(1, Number(isbnFbEdit.maxFailedAttempts) || 5) }),
             })
             const body = await r.json().catch(() => ({}))
             if (!r.ok) throw new Error(body.error || r.statusText)
@@ -623,6 +624,7 @@ export default function Settings() {
                 hardcoverToken: body.hardcoverToken ?? '',
                 isbndbKey: body.isbndbKey ?? '',
                 locEnabled: !!body.locEnabled,
+                maxFailedAttempts: body.maxFailedAttempts ?? 5,
             })
         } catch (e) {
             setError(String(e.message ?? e))
@@ -1210,13 +1212,25 @@ export default function Settings() {
                     onChange={e => setIsbnFbEdit(p => ({ ...p, isbndbKey: e.target.value }))}
                     placeholder="ISBNdb API key — paid, most comprehensive (isbndb.com)" />
                 <span className="subtle" style={{ fontSize: '0.85em' }}>{isbnFb.isbndbConfigured ? '● on' : '○ off'}</span>
+
+                <label>Give up after</label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <input type="number" min="1" style={{ width: '5rem' }}
+                        value={isbnFbEdit.maxFailedAttempts}
+                        onChange={e => setIsbnFbEdit(p => ({ ...p, maxFailedAttempts: Number(e.target.value) }))} />
+                    <span className="subtle" style={{ fontSize: '0.9em' }}>
+                        failed attempts, if every source keeps coming back unavailable/erroring — then it's
+                        cached as a permanent miss instead of being retried forever
+                    </span>
+                </label>
+                <span></span>
             </div>
             <div className="toolbar" style={{ flexWrap: 'wrap', marginTop: '0.5rem' }}>
                 <button onClick={saveIsbnFallbacks} disabled={isbnFbSaving}>
                     {isbnFbSaving ? 'Saving…' : 'Save'}
                 </button>
                 <span className="subtle">
-                    Order tried: OpenLibrary → Google Books → Hardcover → Library of Congress → ISBNdb.
+                    Order tried: OpenLibrary → ISBNdb (when configured) → Hardcover → Library of Congress → Google Books.
                     Get a free Google key from the
                     {' '}<a href="https://console.cloud.google.com/apis/library/books.googleapis.com" target="_blank" rel="noreferrer">Google Cloud console</a>
                     {' '}(enable the <em>Books API</em>); a Hardcover token from your

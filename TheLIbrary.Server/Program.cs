@@ -52,8 +52,12 @@ builder.Services.AddSingleton<OpenLibraryRateLimiter>();
 builder.Services.AddHttpClient<OpenLibraryClient>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.GoogleBooksRateLimiter>();
 builder.Services.AddHttpClient<TheLibrary.Server.Services.OpenLibrary.GoogleBooksClient>();
-// ISBN-resolution fallback chain (tried in this order after OpenLibrary): Google
-// Books (free, capped), Hardcover (free), ISBNdb (paid). Each is off unless its
+// ISBN-resolution fallback chain (tried in this order after OpenLibrary): ISBNdb
+// (paid, most comprehensive — checked first when configured so a definitive answer
+// doesn't burn the free sources' daily quotas first), then Hardcover (free), Library
+// of Congress (free), and Google Books last (free but the most tightly quota-capped
+// of the three — 1,000/day shared with content-scan's inline resolution — so it's
+// saved for ISBNs the other free sources couldn't place). Each is off unless its
 // credential is set. The IEnumerable<IIsbnFallbackProvider> preserves registration
 // order.
 builder.Services.AddHttpClient(TheLibrary.Server.Services.OpenLibrary.HardcoverFallbackProvider.HttpClientName,
@@ -66,15 +70,20 @@ builder.Services.AddTransient<TheLibrary.Server.Services.OpenLibrary.GoogleBooks
 builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.HardcoverFallbackProvider>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.LocFallbackProvider>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.IsbndbFallbackProvider>();
-// Chain order (free sources first, paid last): Google → Hardcover → LoC → ISBNdb.
-builder.Services.AddTransient<TheLibrary.Server.Services.OpenLibrary.IIsbnFallbackProvider>(
-    sp => sp.GetRequiredService<TheLibrary.Server.Services.OpenLibrary.GoogleBooksFallbackProvider>());
+// Chain order: ISBNdb first when configured (paid — most comprehensive, and a
+// definitive answer here spares the free sources' quotas), then Hardcover → LoC, with
+// Google Books LAST — its 1,000/day quota is shared with content-scan's inline
+// resolution and is the easiest of the three to exhaust, so it's only spent on ISBNs
+// nothing else could place. A source with no credential is Skipped instantly
+// regardless of position, so this ordering only matters when that source is on.
+builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.IIsbnFallbackProvider>(
+    sp => sp.GetRequiredService<TheLibrary.Server.Services.OpenLibrary.IsbndbFallbackProvider>());
 builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.IIsbnFallbackProvider>(
     sp => sp.GetRequiredService<TheLibrary.Server.Services.OpenLibrary.HardcoverFallbackProvider>());
 builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.IIsbnFallbackProvider>(
     sp => sp.GetRequiredService<TheLibrary.Server.Services.OpenLibrary.LocFallbackProvider>());
-builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.IIsbnFallbackProvider>(
-    sp => sp.GetRequiredService<TheLibrary.Server.Services.OpenLibrary.IsbndbFallbackProvider>());
+builder.Services.AddTransient<TheLibrary.Server.Services.OpenLibrary.IIsbnFallbackProvider>(
+    sp => sp.GetRequiredService<TheLibrary.Server.Services.OpenLibrary.GoogleBooksFallbackProvider>());
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<IFileSystem, SystemFileSystem>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.OpenLibrary.CoverCacheState>();

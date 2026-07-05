@@ -34,6 +34,16 @@ public class IsbnResolutionCatchupServiceTests
         return new OpenLibraryClient(http, new OpenLibraryRateLimiter(settings), settings, NullLogger<OpenLibraryClient>.Instance);
     }
 
+    // Resolves every ISBN as a hit — used by the ordering tests, where the point is
+    // WHICH ISBNs get attempted this run, not how a miss/unavailable is handled.
+    private sealed class AlwaysHitProvider : IIsbnFallbackProvider
+    {
+        public string Name => "Fake";
+        public string CredentialSettingKey => "FakeKey";
+        public Task<IsbnLookupResult> LookupAsync(string isbn, string? cred, CancellationToken ct)
+            => Task.FromResult(IsbnLookupResult.Found("Resolved Title", "Resolved Author", 2020));
+    }
+
     [Fact]
     public async Task Continues_Past_An_Unavailable_Isbn_Instead_Of_Stopping()
     {
@@ -118,5 +128,93 @@ public class IsbnResolutionCatchupServiceTests
         using var verify = provider.CreateScope();
         var vdb = verify.ServiceProvider.GetRequiredService<LibraryDbContext>();
         Assert.Null(await vdb.IsbnResolutions.FindAsync(bad));    // still uncached → retried tomorrow
+    }
+
+    [Fact]
+    public async Task Never_Attempted_Isbns_Are_Preferred_Over_Previously_Failed()
+    {
+        // Two fresh ISBNs (no attempt history) and one that already failed once. The
+        // batch is capped to 2, so it must spend both slots on the fresh codes and
+        // leave the previously-failed one for a later run.
+        const string freshA = "9780307762726", freshB = "9781475960235", failedC = "9780648491798";
+        var dbName = $"isbn-catchup-{Guid.NewGuid():N}";
+
+        var services = new ServiceCollection();
+        services.AddDbContext<LibraryDbContext>(opt => opt.UseInMemoryDatabase(dbName));
+        services.AddSingleton(MissingOl());
+        services.AddSingleton<IIsbnFallbackProvider>(new AlwaysHitProvider());
+        services.AddScoped<IsbnResolutionService>();
+        var provider = services.BuildServiceProvider();
+
+        using (var scope = provider.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+            var now = DateTime.UtcNow;
+            db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.ResolveIsbnsMaxPerRun, Value = "2" });
+            db.BookContentScans.AddRange(
+                new BookContentScan { Id = 1, FullPath = "/a", Source = "unmatched", Isbn = freshA, ScannedAt = now },
+                new BookContentScan { Id = 2, FullPath = "/b", Source = "unmatched", Isbn = freshB, ScannedAt = now },
+                new BookContentScan { Id = 3, FullPath = "/c", Source = "unmatched", Isbn = failedC, ScannedAt = now });
+            db.IsbnResolutionAttempts.Add(new IsbnResolutionAttempt { Isbn = failedC, FailCount = 1, LastAttemptAt = now });
+            await db.SaveChangesAsync();
+        }
+
+        var sut = new IsbnResolutionCatchupService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new BackgroundTaskCoordinator(),
+            NullLogger<IsbnResolutionCatchupService>.Instance);
+
+        var summary = await sut.RunForTestsAsync(CancellationToken.None);
+        Assert.Equal(2, summary.Considered);
+
+        using var verify = provider.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        Assert.NotNull(await vdb.IsbnResolutions.FindAsync(freshA));
+        Assert.NotNull(await vdb.IsbnResolutions.FindAsync(freshB));
+        Assert.Null(await vdb.IsbnResolutions.FindAsync(failedC));   // slots went to fresh codes instead
+    }
+
+    [Fact]
+    public async Task Retries_Prefer_The_Lowest_Fail_Count_First()
+    {
+        // Both ISBNs have already failed before — none are "fresh" — so the tiebreak
+        // is fail count: the one that's failed fewer times should be retried first,
+        // leaving the more-often-failed one further from its give-up limit for later.
+        const string lowFails = "9780307762726", highFails = "9781475960235";
+        var dbName = $"isbn-catchup-{Guid.NewGuid():N}";
+
+        var services = new ServiceCollection();
+        services.AddDbContext<LibraryDbContext>(opt => opt.UseInMemoryDatabase(dbName));
+        services.AddSingleton(MissingOl());
+        services.AddSingleton<IIsbnFallbackProvider>(new AlwaysHitProvider());
+        services.AddScoped<IsbnResolutionService>();
+        var provider = services.BuildServiceProvider();
+
+        using (var scope = provider.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+            var now = DateTime.UtcNow;
+            db.AppSettings.Add(new AppSetting { Key = AppSettingKeys.ResolveIsbnsMaxPerRun, Value = "1" });
+            db.BookContentScans.AddRange(
+                new BookContentScan { Id = 1, FullPath = "/a", Source = "unmatched", Isbn = lowFails, ScannedAt = now },
+                new BookContentScan { Id = 2, FullPath = "/b", Source = "unmatched", Isbn = highFails, ScannedAt = now });
+            db.IsbnResolutionAttempts.AddRange(
+                new IsbnResolutionAttempt { Isbn = lowFails, FailCount = 1, LastAttemptAt = now },
+                new IsbnResolutionAttempt { Isbn = highFails, FailCount = 5, LastAttemptAt = now });
+            await db.SaveChangesAsync();
+        }
+
+        var sut = new IsbnResolutionCatchupService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            new BackgroundTaskCoordinator(),
+            NullLogger<IsbnResolutionCatchupService>.Instance);
+
+        var summary = await sut.RunForTestsAsync(CancellationToken.None);
+        Assert.Equal(1, summary.Considered);
+
+        using var verify = provider.CreateScope();
+        var vdb = verify.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        Assert.NotNull(await vdb.IsbnResolutions.FindAsync(lowFails));    // retried first
+        Assert.Null(await vdb.IsbnResolutions.FindAsync(highFails));     // left for later
     }
 }

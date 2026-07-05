@@ -8,11 +8,26 @@ namespace TheLibrary.Server.Services.OpenLibrary;
 // keyed by the normalized ISBN. Every file that carries the same code then reuses that
 // one row — so a shelf of books sharing an ISBN costs a single lookup, not one per
 // file. OpenLibrary is the primary source; when it has no record, the configured
-// fallback providers (Google Books, Hardcover, ISBNdb, in registration order) are
+// fallback providers (Google Books, Hardcover, LoC, ISBNdb, in registration order) are
 // tried in turn. A miss is cached too (Title null) so it isn't retried forever — but
-// only when every source gave a definitive answer.
+// only when NO source found anything AND NO source gave a definitive "not found"
+// either (i.e. every source that was actually reachable was rate/quota-capped). One
+// capped source no longer blocks caching a miss that another source already checked
+// and confirmed — otherwise the whole backlog stalls for the rest of the day the
+// moment any single source's daily quota runs out.
+//
+// An ISBN that comes back with NOTHING AT ALL (every source unavailable, nobody gave
+// even a definitive miss) is never cached — by design, so it's retried once sources
+// recover. But without a limit that's forever: a persistently-broken source, or an
+// ISBN no source will ever have, gets re-picked and re-attempted on every future run.
+// IsbnResolutionAttempt tracks a per-ISBN FailCount for exactly this case; once it
+// reaches Settings → *ISBN metadata fallbacks* → "give up after N failed attempts",
+// the ISBN is cached as a permanent miss instead — same outcome as a definitive miss,
+// just reached by exhaustion instead of confirmation.
 public sealed class IsbnResolutionService
 {
+    public const int DefaultMaxFailedAttempts = 5;
+
     private readonly LibraryDbContext _db;
     private readonly OpenLibraryClient _ol;
     private readonly IReadOnlyList<IIsbnFallbackProvider> _providers;
@@ -80,6 +95,7 @@ public sealed class IsbnResolutionService
         {
             var creds = await LoadCredentialsAsync(ct);
             var anyUnavailable = false;
+            var anyDefinitiveMiss = false;
             foreach (var provider in _providers)
             {
                 var cred = creds.GetValueOrDefault(provider.CredentialSettingKey);
@@ -92,13 +108,36 @@ public sealed class IsbnResolutionService
                     if (!string.IsNullOrWhiteSpace(row.AuthorName)) break; // got the author we needed
                 }
                 else if (r.Status == IsbnLookupStatus.Unavailable) anyUnavailable = true;
-                // Miss / Skipped → try the next source.
+                else if (r.Status == IsbnLookupStatus.Miss) anyDefinitiveMiss = true;
+                // Skipped (not configured) → contributes nothing either way.
             }
-            // Only defer (retry later) when we have NOTHING to show. If OpenLibrary
-            // already gave a title, cache it even if no source could add the author —
-            // the title is still useful, and the author can be re-attempted later.
-            if (row.Title is null && anyUnavailable)
-                throw new IsbnLookupUnavailableException();
+            // Only defer (retry later) when NOTHING useful came back at all — no title,
+            // and not even a definitive "not found" from some other source. Once one
+            // source has actually checked and drawn a blank, a DIFFERENT source being
+            // rate/quota-capped isn't reason enough to block caching forever: that's what
+            // starved this job once Google's daily quota ran out mid-day — every
+            // self-published ISBN still on the backlog got deferred and re-attempted for
+            // nothing, even when Hardcover/LoC had already definitively found nobody has
+            // it. If OpenLibrary already gave a title, cache it regardless — the title is
+            // still useful, and the author can be re-attempted later.
+            if (row.Title is null && anyUnavailable && !anyDefinitiveMiss)
+            {
+                if (!await RecordFailureAndCheckGiveUpAsync(key, ct))
+                    throw new IsbnLookupUnavailableException();
+                // Exceeded the fail-attempt limit — stop retrying and cache this as a
+                // permanent miss (row is still all-null) instead of falling into the
+                // same dead end on every future run.
+            }
+        }
+
+        // Whatever path got us here (a real hit, a definitive miss, or giving up after
+        // too many failed attempts), this ISBN now has a settled answer — drop any
+        // failure-tracking row so a later re-resolution (e.g. after "reset cached
+        // misses") starts its fail count fresh instead of giving up after one attempt.
+        if (_providers.Count > 0)
+        {
+            var stale = await _db.IsbnResolutionAttempts.FirstOrDefaultAsync(a => a.Isbn == key, ct);
+            if (stale is not null) _db.IsbnResolutionAttempts.Remove(stale);
         }
 
         _db.IsbnResolutions.Add(row);
@@ -116,6 +155,29 @@ public sealed class IsbnResolutionService
             if (winner is not null) return winner;
             throw;
         }
+    }
+
+    // Bumps this ISBN's failed-attempt counter (creating the row on its first failure)
+    // and reports whether it has now hit the configured limit. Saved immediately —
+    // independent of the caller's own SaveChangesAsync — because the "not yet given up"
+    // branch throws right after this and never reaches that later save.
+    private async Task<bool> RecordFailureAndCheckGiveUpAsync(string key, CancellationToken ct)
+    {
+        var attempt = await _db.IsbnResolutionAttempts.FirstOrDefaultAsync(a => a.Isbn == key, ct);
+        if (attempt is null)
+        {
+            attempt = new IsbnResolutionAttempt { Isbn = key };
+            _db.IsbnResolutionAttempts.Add(attempt);
+        }
+        attempt.FailCount++;
+        attempt.LastAttemptAt = DateTime.UtcNow;
+        await _db.SaveChangesAsync(ct);
+
+        var maxRaw = await _db.AppSettings.AsNoTracking()
+            .Where(s => s.Key == AppSettingKeys.IsbnResolveMaxFailedAttempts)
+            .Select(s => s.Value).FirstOrDefaultAsync(ct);
+        var max = int.TryParse(maxRaw, out var n) && n > 0 ? n : DefaultMaxFailedAttempts;
+        return attempt.FailCount >= max;
     }
 
     // Second-chance author fill for an already-cached row that has a title but no

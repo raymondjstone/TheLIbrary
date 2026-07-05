@@ -1427,14 +1427,17 @@ The cache is warmed two ways: **content-scan resolves each file's ISBN inline as
 scans** (going forward, so newly-scanned files are pre-resolved), and a
 **`resolve-isbns` catch-up job** (Schedules page, off by default) walks the distinct
 ISBNs on existing scan rows and resolves any not yet cached — one OL call per unique
-code, a **random sample** capped per run (Settings → *Background job run limits →
-Cache ISBN title/author lookups*, default 200; random, not first-N in table order: a
-deferred ISBN stays uncached by design, so a fixed order would re-pick the same stuck
-codes every run and stall the batch once the front of the list can't resolve). An
-ISBN deferred because a source was quota-capped is also **skipped for the rest of the
-UTC day**, so later runs spend their slots on fresh candidates instead of re-grinding
-codes that can't resolve until the quota resets. The job's *"Done — resolved N, …
-remaining"* summary stays visible on the Sync page after the run finishes. Between them the Identified page never pays an on-demand
+code, capped per run (Settings → *Background job run limits → Cache ISBN title/author
+lookups*, default 200). Candidates are prioritized, not picked in table order or pure
+random: **never-attempted ISBNs go first** — a fresh code gets its first try before a
+slot is spent retrying one that's already failed — and once those run out, the rest of
+the batch is filled from previously-failed ISBNs ordered by **fewest failures so far**
+(random within each fail-count tier, so a huge backlog doesn't always surface the same
+front-of-list candidates). An ISBN deferred because a source was quota-capped is also
+**skipped for the rest of the UTC day**, so later runs spend their slots on fresh
+candidates instead of re-grinding codes that can't resolve until the quota resets. The
+job's *"Done — resolved N, …  remaining"* summary stays visible on the Sync page after
+the run finishes. Between them the Identified page never pays an on-demand
 lookup for an ISBN that's already been seen. The ISBN itself is **check-digit
 validated** before any lookup (ISBN-10 mod-11 / ISBN-13 mod-10), so a mis-extracted
 number that merely happens to be 10/13 digits (an LCCN, ASIN, copyright-page code)
@@ -1447,14 +1450,21 @@ For those, ISBN resolution falls back through a chain of secondary sources, in o
 until one resolves it (Settings → *ISBN metadata fallbacks*, each off unless its
 credential is set):
 
-1. **Google Books** — free, but capped at **1,000 lookups/day**.
+1. **ISBNdb** (`isbndb.com`) — **paid**, the most comprehensive ISBN database. Checked
+   **first** when configured, ahead of every free source — a definitive answer here
+   means the free sources' quotas aren't spent chasing something ISBNdb already has.
 2. **Hardcover** (`hardcover.app`) — free community GraphQL DB; its indie/KDP-heavy
    readership often covers the tail better than OpenLibrary.
 3. **Library of Congress** — free, no key (an on/off toggle); queried over SRU
    (`lx2.loc.gov:210`, MODS records). Strong on traditional and out-of-print
    US-published ISBNs — the bulk of the `978` tail the other sources miss.
-4. **ISBNdb** (`isbndb.com`) — **paid**, the most comprehensive ISBN database; the
-   backstop, reached only when the free sources miss or are exhausted.
+4. **Google Books** — free, but capped at **1,000 lookups/day** and shared with
+   content-scan's inline resolution, making it the easiest of the three to exhaust.
+   Checked **last**, so its quota is spent only on ISBNs Hardcover/LoC couldn't place.
+
+A source with no credential is skipped instantly regardless of where it sits in the
+chain, so this ordering only matters once the source ahead of it is actually
+configured.
 
 Whichever source hits first supplies the **title/author**, which is cached and shown
 on the Identified page. There's no OpenLibrary work behind a fallback result, so
@@ -1468,9 +1478,14 @@ nameless Reassign is offered); a genuine mismatch is only claimed when the ISBN'
 author is actually known and differs. A source with no credential is skipped;
 with none configured the fallback is off and no external calls are made. Each source
 is rate-limited to respect its API, and a source that's temporarily rate/quota-capped
-returns "unavailable" — if no source resolves the ISBN and one was unavailable,
-**nothing is cached** so it's retried later (see quota handling below). A Google transient error (e.g. rate limit) is **not** cached, so it's retried
-later rather than remembered as a permanent miss.
+returns "unavailable". Only when **nothing at all** came back — no hit, and not even a
+definitive "not found" from some other source — is the ISBN left **uncached** so it's
+retried later (see quota handling below). Crucially, one capped source does **not**
+block caching a miss that a *different* source already checked and confirmed: if
+Google's daily quota is spent but Hardcover or LoC definitively found nothing, that's
+cached as a real miss rather than deferred — otherwise the whole self-published tail
+stalls for the rest of the day the moment Google's quota runs out, even though other
+sources had already ruled it out.
 
 **Quota handling.** Google Books enforces ~100 requests/min and **1,000/day**. Calls
 are paced under the per-minute cap, and when Google signals the **daily quota is
@@ -1493,6 +1508,18 @@ ISBN fallback* has a **Re-attempt failed ISBN lookups** button
 (no work key *and* no title — the ones that resolved to nothing); rows that already
 resolved via OpenLibrary or Google are untouched. The `resolve-isbns` job then
 re-resolves the dropped ones on its next run, now with the Google fallback in play.
+
+**Give up after N failed attempts.** An ISBN that comes back with **nothing at all**
+(every reachable source unavailable, none even definitive) is deliberately left
+uncached so it's retried later — but without a limit that's forever: a persistently
+broken source, or a code no source will ever have, would be re-picked and
+re-attempted on every future run. Each such failure is counted per-ISBN
+(`IsbnResolutionAttempt.FailCount`); once it reaches Settings → *ISBN metadata
+fallbacks* → **"give up after N failed attempts"** (default 5), the ISBN is instead
+cached as a permanent miss — same outcome as a definitive miss, just reached by
+exhaustion instead of confirmation. A later real answer (a source coming back online,
+or a manual **Re-attempt failed ISBN lookups**) clears the counter, so it doesn't give
+up again after a single attempt.
 
 How the guess is resolved for
 an unmatched file is deliberately strict, because a title scraped from a book's
@@ -1888,7 +1915,7 @@ on every startup.
 | `series-watch` | `0 14 * * *` (disabled by default) | When a series you **own a book in** gains a recently-added (≤14 days) volume you don't own, mark it **Wanted** and send one Pushover summary — the high-signal "next in a series I'm collecting" case. Acts on your collection, so it ships **disabled**; opt in on the Schedules page |
 | `auto-replace-damaged` | `0 15 * * *` (disabled by default) | Search the indexer and send the best replacement to SABnzbd for each damaged book (the automated "Grab"). Capped at 20/run; no-ops when Download automation isn't configured. Pulls downloads, so it ships **disabled**; opt in on the Schedules page. The Damaged page also has a per-book **⤓ Grab replacement** button |
 | `resolve-works` | `0 16 * * *` (disabled by default) | Link files that already know their **author** but not their **work**, using the ISBN we already extracted: ISBN → OpenLibrary work (the `/isbn/{isbn}.json` edition endpoint first — it resolves ~2× the ISBNs the search index does — then the ISBN search) → ensure the `Book` under the file's existing author → set `BookId`. A lenient title check rejects a mis-extracted ISBN. Closes the gap where the title-only matcher never consulted ISBN and the ISBN-aware assigner skipped author-linked files. DB-only candidate selection (no NAS reads), capped 200/run; makes OL calls + creates `Book` rows, so it ships **disabled** — opt in on the Schedules page or trigger once to work the backlog |
-| `resolve-isbns` | `30 16 * * *` (disabled by default) | Warm the shared **`IsbnResolutions`** cache for ISBNs that predate content-scan resolving them inline. Walks the distinct ISBNs on `BookContentScan` rows, resolves any not yet cached against OpenLibrary (`search.json?isbn=`, **one call per unique code** — shared by every file that carries it), and stores title/author/work-key so the Identified page never looks them up on demand. DB-only candidate selection, capped 200/run (`ResolveIsbnsMaxPerRun`); makes OL calls, so it ships **disabled** — new scans populate the cache without it, this just backfills the pre-existing backlog |
+| `resolve-isbns` | `30 16 * * *` (disabled by default) | Warm the shared **`IsbnResolutions`** cache for ISBNs that predate content-scan resolving them inline. Walks the distinct ISBNs on `BookContentScan` rows, resolves any not yet cached against OpenLibrary (`search.json?isbn=`, **one call per unique code** — shared by every file that carries it), and stores title/author/work-key so the Identified page never looks them up on demand. Never-attempted ISBNs are prioritized first, then previously-failed ones by fewest failures so far; one that keeps failing past the configured limit is given up on (see [Identifying books from content](#identifying-books-from-content)). DB-only candidate selection, capped 200/run (`ResolveIsbnsMaxPerRun`); makes OL calls, so it ships **disabled** — new scans populate the cache without it, this just backfills the pre-existing backlog |
 | `llm-identify` | `0 17 * * *` (disabled by default) | **Last-resort, paid** identification of opaque `__unknown` files (no author the deterministic + filename paths could find). Sends the signals we already hold — filename, embedded metadata, ISBN, a front-matter snippet — to the configured LLM (**Claude or ChatGPT**, set in Settings → *AI identification*), then feeds the guessed title/author through the **same OpenLibrary validation + assignment** as everything else, so a hallucination is rejected, never filed. No-ops unless enabled with an API key. Cost is bounded by a **per-run cap and a hard rolling daily cap**, and each file is marked `LlmAttemptedAt` so a hopeless file is never re-sent. When the LLM finds a title/author/ISBN but OpenLibrary can't confirm it, the guess is **kept on the scan row and shown on the Identified page** for manual review (not discarded). Settings → *AI identification* has a **Re-attempt untracked files** button (`POST /api/settings/reset-llm-attempts`) that clears the `LlmAttemptedAt` marker so the job re-tries them (e.g. after raising the cap or switching model). Ships **disabled** |
 | `mark-other-editions` | `0 19 * * *` (**enabled** by default) | Where the same author has several catalogue entries for the **same title** (`NormalizedTitle`) and **at least one** of them has an ebook file linked, mark every fileless sibling **Owned (other edition)** (`OwnedDifferentEdition`) — you own the work, just a different edition than that row — so the duplicate entries drop off the **Missing / Wanted** lists. "Has an ebook" is `LocalFiles.Any()`, the same predicate used for ownership everywhere else, so the job is a single set-based `UPDATE` with no NAS reads. **Idempotent** (rows already flagged are skipped) and **reversible** (untick *Other edition* on a book to undo) |
 | `mark-editions-read` | `0 18 * * *` (**enabled** by default) | Where the same author has several catalogue entries for the **same title** (`NormalizedTitle`) and **at least one** is marked **Read** (`ReadStatus.Read`), mark every other edition Read too — reading one edition means you've read the work, whichever row carried the file. Editions already Read keep their existing `ReadAt`; the rest get the run time. A single set-based `UPDATE` with no NAS reads; **idempotent** |

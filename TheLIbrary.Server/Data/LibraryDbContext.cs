@@ -30,6 +30,7 @@ public class LibraryDbContext : DbContext
     public DbSet<TextIndexWord> TextIndexWords => Set<TextIndexWord>();
     public DbSet<ActivityLogEntry> ActivityLog => Set<ActivityLogEntry>();
     public DbSet<IsbnResolution> IsbnResolutions => Set<IsbnResolution>();
+    public DbSet<IsbnResolutionAttempt> IsbnResolutionAttempts => Set<IsbnResolutionAttempt>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {

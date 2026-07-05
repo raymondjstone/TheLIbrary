@@ -88,15 +88,97 @@ public class IsbnResolutionServiceTests
     }
 
     [Fact]
-    public async Task Unavailable_With_No_Hit_Throws_And_Caches_Nothing()
+    public async Task All_Unavailable_With_No_Definitive_Answer_Throws_And_Caches_Nothing()
     {
         using var rdb = new RelationalTestDb();
-        var svc = Service(rdb, new FakeProvider(IsbnLookupResult.Miss), new FakeProvider(IsbnLookupResult.Unavailable));
+        var svc = Service(rdb, new FakeProvider(IsbnLookupResult.Unavailable), new FakeProvider(IsbnLookupResult.Unavailable));
 
         await Assert.ThrowsAsync<IsbnLookupUnavailableException>(() => svc.ResolveAsync("9780996845007", default));
 
         await using var v = rdb.NewContext();
         Assert.False(await v.IsbnResolutions.AnyAsync(r => r.Isbn == "9780996845007"));  // not cached → retried later
+    }
+
+    // A source being rate/quota-capped (e.g. Google's daily quota spent) must not block
+    // caching a miss that ANOTHER source already definitively checked — otherwise every
+    // self-published ISBN still in the backlog gets deferred and re-tried for nothing
+    // once that one source's quota is blown for the day, and the catch-up job appears to
+    // make almost no progress even though Hardcover/LoC already said nobody has it.
+    [Fact]
+    public async Task Unavailable_Source_Does_Not_Block_A_Definitive_Miss_From_Another()
+    {
+        using var rdb = new RelationalTestDb();
+        var svc = Service(rdb, new FakeProvider(IsbnLookupResult.Unavailable), new FakeProvider(IsbnLookupResult.Miss));
+
+        var row = await svc.ResolveAsync("9780996845007", default);
+        Assert.NotNull(row);
+        Assert.Null(row!.Title);   // remembered as a total miss, not deferred
+
+        await using var v = rdb.NewContext();
+        Assert.True(await v.IsbnResolutions.AnyAsync(r => r.Isbn == "9780996845007"));
+    }
+
+    // Without a fail-attempt limit, an ISBN that every source is (temporarily or
+    // permanently) unavailable for would be re-attempted forever. Below the configured
+    // limit it must keep throwing (retry later); once it reaches the limit it should
+    // give up and cache a permanent miss instead — same shape as any other unresolvable
+    // ISBN — so the catch-up job stops re-picking it run after run.
+    [Fact]
+    public async Task Repeated_Total_Failure_Gives_Up_After_Configured_Limit()
+    {
+        using var rdb = new RelationalTestDb();
+        await using (var seed = rdb.NewContext())
+        {
+            seed.AppSettings.Add(new AppSetting { Key = AppSettingKeys.IsbnResolveMaxFailedAttempts, Value = "2" });
+            await seed.SaveChangesAsync();
+        }
+        var svc = Service(rdb, new FakeProvider(IsbnLookupResult.Unavailable));
+
+        // 1st attempt: below the limit — still thrown, nothing cached.
+        await Assert.ThrowsAsync<IsbnLookupUnavailableException>(() => svc.ResolveAsync("9780996845007", default));
+        await using (var v1 = rdb.NewContext())
+        {
+            Assert.False(await v1.IsbnResolutions.AnyAsync(r => r.Isbn == "9780996845007"));
+            Assert.Equal(1, (await v1.IsbnResolutionAttempts.FindAsync("9780996845007"))!.FailCount);
+        }
+
+        // 2nd attempt: hits the limit — gives up, caches a permanent miss, and clears
+        // the attempt-tracking row.
+        var row = await svc.ResolveAsync("9780996845007", default);
+        Assert.NotNull(row);
+        Assert.Null(row!.Title);
+
+        await using var v2 = rdb.NewContext();
+        Assert.True(await v2.IsbnResolutions.AnyAsync(r => r.Isbn == "9780996845007"));
+        Assert.Null(await v2.IsbnResolutionAttempts.FindAsync("9780996845007"));
+    }
+
+    // A source being unavailable must not, on its own, tip the fail counter closer to
+    // the give-up limit once a DIFFERENT source has already produced a real answer —
+    // the counter only tracks total-failure attempts, not every call.
+    [Fact]
+    public async Task A_Later_Success_Clears_A_Previously_Recorded_Failure()
+    {
+        using var rdb = new RelationalTestDb();
+        await using (var seed = rdb.NewContext())
+        {
+            seed.AppSettings.Add(new AppSetting { Key = AppSettingKeys.IsbnResolveMaxFailedAttempts, Value = "5" });
+            await seed.SaveChangesAsync();
+        }
+
+        // First: every source unavailable — records one failure, throws.
+        var svc1 = Service(rdb, new FakeProvider(IsbnLookupResult.Unavailable));
+        await Assert.ThrowsAsync<IsbnLookupUnavailableException>(() => svc1.ResolveAsync("9780996845007", default));
+        await using (var v1 = rdb.NewContext())
+            Assert.Equal(1, (await v1.IsbnResolutionAttempts.FindAsync("9780996845007"))!.FailCount);
+
+        // Then: a source comes through with a real hit — the stale failure row is dropped.
+        var svc2 = Service(rdb, new FakeProvider(IsbnLookupResult.Found("Indie Book", "Jane Indie", 2021)));
+        var row = await svc2.ResolveAsync("9780996845007", default);
+        Assert.Equal("Indie Book", row!.Title);
+
+        await using var v2 = rdb.NewContext();
+        Assert.Null(await v2.IsbnResolutionAttempts.FindAsync("9780996845007"));
     }
 
     [Fact]

@@ -241,7 +241,7 @@ public class SettingsControllerIntegrationTests
 
         // Set Google + ISBNdb + LoC, leave Hardcover blank.
         var put = await client.PutAsJsonAsync("/api/settings/isbn-fallbacks",
-            new SettingsController.UpdateIsbnFallbacks("  g-key  ", "", "  db-key  ", true));
+            new SettingsController.UpdateIsbnFallbacks("  g-key  ", "", "  db-key  ", true, 7));
         var dto = await put.Content.ReadFromJsonAsync<SettingsController.IsbnFallbacksDto>();
         Assert.Equal("g-key", dto!.GoogleBooksKey);   // trimmed
         Assert.Equal("db-key", dto.IsbndbKey);
@@ -249,6 +249,7 @@ public class SettingsControllerIntegrationTests
         Assert.False(dto.HardcoverConfigured);
         Assert.True(dto.IsbndbConfigured);
         Assert.True(dto.LocEnabled);
+        Assert.Equal(7, dto.MaxFailedAttempts);
     }
 
     // Uses a relational (SQLite) context — like production, and unlike the InMemory
