@@ -42,6 +42,7 @@ export default function IdentifiedBooks() {
     // but no guessed/known title. id -> { state:'loading'|'done'|'none', title, author, matches }.
     const [isbnTitles, setIsbnTitles] = useState({})
     const [authorEdit, setAuthorEdit] = useState(null) // { id, current }
+    const [titleEdit, setTitleEdit] = useState(null) // { id, current }
     const [workSearch, setWorkSearch] = useState(null) // { id, initialQuery }
 
     // Filter rows on the entered text appearing in ANY column.
@@ -484,6 +485,26 @@ export default function IdentifiedBooks() {
         }
     }
 
+    // Overwrite the guessed title on a scan row without acting on the file.
+    const setTitle = async (id, newTitle) => {
+        try {
+            const r = await fetch(`/api/identified/${id}/title`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ title: newTitle }),
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setRows(prev => prev.map(x => x.id !== id ? x : {
+                ...x,
+                title: body.title ?? null,
+            }))
+            setTitleEdit(null)
+        } catch (e) {
+            alert(`Failed: ${e.message}`)
+        }
+    }
+
     return (
         <div>
             <h1>Identified Books</h1>
@@ -609,7 +630,7 @@ export default function IdentifiedBooks() {
                 }
                 const untracked = filtered.filter(r => r.source === 'untracked').sort(byAuthor)
                 const tracked   = filtered.filter(r => r.source !== 'untracked').sort(byAuthor)
-                const tableProps = { busy, expanded, isbnTitles, reassignToIsbnAuthor, toggleCatalog, setPreview, apply, assignAuthor, assignUnknown, applyCatalog, dismiss, deleteFile, setAuthorEdit, setWorkSearch }
+                const tableProps = { busy, expanded, isbnTitles, reassignToIsbnAuthor, toggleCatalog, setPreview, apply, assignAuthor, assignUnknown, applyCatalog, dismiss, deleteFile, setAuthorEdit, setTitleEdit, setWorkSearch }
                 return (
                     <>
                         <h2 style={{ marginTop: '1.5rem' }}>
@@ -643,6 +664,14 @@ export default function IdentifiedBooks() {
                     current={authorEdit.current}
                     onSave={setAuthor}
                     onClose={() => setAuthorEdit(null)} />
+            )}
+
+            {titleEdit && (
+                <TitleEditPopover
+                    scanId={titleEdit.id}
+                    current={titleEdit.current}
+                    onSave={setTitle}
+                    onClose={() => setTitleEdit(null)} />
             )}
 
             {workSearch && (
@@ -723,7 +752,7 @@ function IsbnTitleCell({ info, row, busy, onReassign }) {
     )
 }
 
-function RowTable({ rows, busy, expanded, isbnTitles, reassignToIsbnAuthor, toggleCatalog, setPreview, apply, assignAuthor, assignUnknown, applyCatalog, dismiss, deleteFile, setAuthorEdit, setWorkSearch }) {
+function RowTable({ rows, busy, expanded, isbnTitles, reassignToIsbnAuthor, toggleCatalog, setPreview, apply, assignAuthor, assignUnknown, applyCatalog, dismiss, deleteFile, setAuthorEdit, setTitleEdit, setWorkSearch }) {
     return (
         <table className="grid">
             <thead>
@@ -772,11 +801,20 @@ function RowTable({ rows, busy, expanded, isbnTitles, reassignToIsbnAuthor, togg
                                           <span className="subtle" style={{ fontSize: '0.72em', display: 'block' }}>✓ matched — title locked</span>
                                       </span>
                                     : r.title
-                                        // Has a guessed title — show it, but also check whether
+                                        // Has a guessed title — show it with edit button, but also check whether
                                         // the ISBN (if any) resolves to a different author so the
                                         // reassign affordance is visible even when a title exists.
                                         ? <>
-                                            {r.title}
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                                                <span>{r.title}</span>
+                                                {r.bookId == null && (
+                                                    <button className="btn-ghost" style={{ fontSize: '0.75em', padding: '0.1em 0.35em' }}
+                                                            title="Edit the guessed title"
+                                                            onClick={() => setTitleEdit({ id: r.id, current: r.title ?? '' })}>
+                                                        ✎
+                                                    </button>
+                                                )}
+                                            </div>
                                             {r.isbn && isbnTitles?.[r.id]?.matches === false && isbnTitles[r.id].author && isbnTitles[r.id].workKey && (
                                                 <>
                                                     <span className="subtle" style={{ fontSize: '0.72em', display: 'block', color: 'var(--danger, #b91c1c)' }}>
@@ -1002,6 +1040,43 @@ function AuthorEditPopover({ scanId, current, onSave, onClose }) {
                             </ul>
                         )
                 )}
+            </div>
+        </div>
+    )
+}
+
+// Simple popover for editing the guessed title on a scan row. Just a text
+// input with save/clear — no OpenLibrary search needed for titles.
+function TitleEditPopover({ scanId, current, onSave, onClose }) {
+    const [value, setValue] = useState(current)
+    const inputRef = useRef(null)
+
+    useEffect(() => { inputRef.current?.focus() }, [])
+
+    return (
+        <div className="modal-backdrop" style={{ zIndex: 1200 }} onClick={onClose}>
+            <div className="modal" style={{ width: 'min(480px, 94vw)', display: 'flex', flexDirection: 'column' }}
+                 onClick={e => e.stopPropagation()}>
+                <div className="modal-header">
+                    <h3 style={{ margin: 0 }}>Change guessed title</h3>
+                    <button className="btn-ghost" onClick={onClose}>&times;</button>
+                </div>
+                <div style={{ padding: '0.5rem 0 0.25rem' }}>
+                    <input
+                        ref={inputRef}
+                        value={value}
+                        onChange={e => setValue(e.target.value)}
+                        placeholder="Enter title…"
+                        style={{ width: '100%', boxSizing: 'border-box' }} />
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                    <button onClick={() => onSave(scanId, value.trim())} disabled={!value.trim()}>
+                        Use "{value.trim() || '…'}"
+                    </button>
+                    <button className="btn-ghost" onClick={() => onSave(scanId, '')}>
+                        Clear
+                    </button>
+                </div>
             </div>
         </div>
     )

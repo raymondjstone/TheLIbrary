@@ -45,6 +45,7 @@ public sealed class ScheduledJobs
     private readonly TheLibrary.Server.Services.Download.AutoReplaceDamagedService _autoReplaceDamaged;
     private readonly WorkResolutionService _resolveWorks;
     private readonly TheLibrary.Server.Services.Llm.LlmIdentificationService _llmIdentify;
+    private readonly TheLibrary.Server.Services.Llm.LlmTitleMatchService _llmTitleMatch;
     private readonly OtherEditionMarkerService _markOtherEditions;
     private readonly ReadEditionPropagationService _markEditionsRead;
     private readonly SeriesCoAuthorStarService _starSeriesCoAuthors;
@@ -80,6 +81,7 @@ public sealed class ScheduledJobs
         TheLibrary.Server.Services.Download.AutoReplaceDamagedService autoReplaceDamaged,
         WorkResolutionService resolveWorks,
         TheLibrary.Server.Services.Llm.LlmIdentificationService llmIdentify,
+        TheLibrary.Server.Services.Llm.LlmTitleMatchService llmTitleMatch,
         OtherEditionMarkerService markOtherEditions,
         ReadEditionPropagationService markEditionsRead,
         SeriesCoAuthorStarService starSeriesCoAuthors,
@@ -94,7 +96,7 @@ public sealed class ScheduledJobs
         _mergeLinkedAuthors = mergeLinkedAuthors; _integrity = integrity; _pruneStaleFiles = pruneStaleFiles;
         _contentScan = contentScan; _assignAuthors = assignAuthors; _fullText = fullText; _pruneAuthors = pruneAuthors;
         _dupAutoArchive = dupAutoArchive; _seriesWatch = seriesWatch; _autoReplaceDamaged = autoReplaceDamaged; _resolveWorks = resolveWorks;
-        _llmIdentify = llmIdentify; _markOtherEditions = markOtherEditions; _markEditionsRead = markEditionsRead;
+        _llmIdentify = llmIdentify; _llmTitleMatch = llmTitleMatch; _markOtherEditions = markOtherEditions; _markEditionsRead = markEditionsRead;
         _starSeriesCoAuthors = starSeriesCoAuthors;
         _resolveIsbns = resolveIsbns;
         _schedules = schedules; _lifetime = lifetime; _log = log;
@@ -305,6 +307,12 @@ public sealed class ScheduledJobs
         ScheduleJobIds.LlmIdentify, manualTrigger,
         ct => _llmIdentify.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _llmIdentify.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunLlmTitleMatch(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.LlmTitleMatch, manualTrigger,
+        ct => _llmTitleMatch.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _llmTitleMatch.IsRunning);
 
     [AutomaticRetry(Attempts = 0)]
     public Task RunMarkOtherEditions(bool manualTrigger = false) => RunWithPolling(

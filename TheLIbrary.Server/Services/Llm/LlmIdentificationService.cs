@@ -147,17 +147,50 @@ public sealed class LlmIdentificationService
                 if (hasSignal)
                 {
                     var outcome = await assigner.AssignAsync(scan, ct);
-                    if (outcome.Assigned) resolved++;
+                    if (outcome.Assigned)
+                    {
+                        resolved++;
+
+                        // Log each successful identification individually to the Activity page
+                        var fileName = Path.GetFileName(scan.FullPath);
+                        var details = new List<string>();
+                        if (!string.IsNullOrWhiteSpace(scan.Title)) details.Add($"Title: \"{scan.Title}\"");
+                        if (!string.IsNullOrWhiteSpace(scan.Author)) details.Add($"Author: {scan.Author}");
+                        if (!string.IsNullOrWhiteSpace(scan.Isbn)) details.Add($"ISBN: {scan.Isbn}");
+
+                        ActivityLogger.Record(db, "llm-identify",
+                            $"Identified \"{fileName}\" → {string.Join(", ", details)}",
+                            source: "llm-identify");
+                    }
                 }
             }
             else await db.SaveChangesAsync(ct);
         }
 
         await SaveUsageAsync(db, today, usedToday + calls, ct);
-        if (resolved > 0)
+
+        // Log a summary entry when the job runs with no identifications or to show completion
+        if (calls > 0 && resolved == 0)
+        {
+            // No identifications - log summary
             ActivityLogger.Record(db, "llm-identify",
-                $"LLM ({cfg.Provider}) identified {resolved} of {considered} quarantined file(s) in {calls} call(s)",
+                $"LLM ({cfg.Provider}) tried {considered} quarantined file(s) in {calls} call(s) — none could be identified/filed",
                 source: "llm-identify");
+        }
+        else if (calls > 0 && resolved > 0)
+        {
+            // Identifications were logged individually above; add completion summary
+            ActivityLogger.Record(db, "llm-identify",
+                $"LLM ({cfg.Provider}) completed: identified {resolved} of {considered} file(s) in {calls} call(s)",
+                source: "llm-identify");
+        }
+        else if (considered > 0)
+        {
+            // Considered files but didn't call LLM (all already attempted or budget exhausted)
+            ActivityLogger.Record(db, "llm-identify",
+                $"LLM identify: found {considered} candidate(s) but skipped (already attempted or budget exhausted)",
+                source: "llm-identify");
+        }
         await db.SaveChangesAsync(ct);
 
         _log.LogInformation("LLM identify: considered {Considered}, resolved {Resolved}, calls {Calls}", considered, resolved, calls);

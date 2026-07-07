@@ -47,6 +47,7 @@ public static class ScheduleJobIds
     public const string AutoReplaceDamaged = "auto-replace-damaged";
     public const string ResolveWorks = "resolve-works";
     public const string LlmIdentify = "llm-identify";
+    public const string LlmTitleMatch = "llm-title-match";
     public const string MarkOtherEditions = "mark-other-editions";
     public const string MarkEditionsRead = "mark-editions-read";
     public const string StarSeriesCoAuthors = "star-series-coauthors";
@@ -60,8 +61,8 @@ public static class ScheduleJobIds
         DedupeUnknown, DedupeAuthorFiles, PromoteManualBooks, AdoptUnknownAuthors,
         ArchiveForeign, MergeLinkedAuthors, CheckIntegrity, PruneStaleFiles,
         ContentScan, AssignAuthors, IndexFullText, PruneAuthors, DuplicateAutoArchive,
-        SeriesWatch, AutoReplaceDamaged, ResolveWorks, LlmIdentify, MarkOtherEditions,
-        MarkEditionsRead, StarSeriesCoAuthors, ResolveIsbns
+        SeriesWatch, AutoReplaceDamaged, ResolveWorks, LlmIdentify, LlmTitleMatch,
+        MarkOtherEditions, MarkEditionsRead, StarSeriesCoAuthors, ResolveIsbns
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -143,6 +144,11 @@ public static class ScheduleJobIds
             // no-ops unless enabled with an API key in Settings (per-run + daily
             // caps bound the cost).
             [LlmIdentify] = new() { Cron = "0 17 * * *", Enabled = false },
+            // LLM-based title matching for unmatched files under starred authors.
+            // Reads book content to identify the title, then matches against the
+            // author's catalog. Paid + shares the daily budget with LlmIdentify,
+            // so it ships DISABLED (opt in on Schedules page).
+            [LlmTitleMatch] = new() { Cron = "30 17 * * *", Enabled = false },
             // Search the indexer and grab replacements for damaged books. Pulls
             // downloads + indexer rate-limited, so it ships DISABLED — opt in on
             // the Schedules page (and configure Download automation in Settings).

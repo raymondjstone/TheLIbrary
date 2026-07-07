@@ -130,6 +130,7 @@ builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.IsbnResolutionCatc
 builder.Services.AddHttpClient<TheLibrary.Server.Services.Llm.LlmMetadataClient>();
 builder.Services.AddHttpClient<TheLibrary.Server.Services.Llm.LlmSpendClient>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Llm.LlmIdentificationService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Llm.LlmTitleMatchService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.ManualBookPromotionService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.UnknownAuthorAdoptionService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.StarredAuthorRefreshService>();

@@ -699,6 +699,23 @@ public class IdentifiedController : ControllerBase
 
     public sealed record SetAuthorRequest(string? Author);
 
+    /// <summary>
+    /// Overwrites the guessed title on a scan row with a new free-text value.
+    /// The row is NOT marked reviewed — the user still needs to act on it.
+    /// PATCH /api/identified/{id}/title
+    /// </summary>
+    [HttpPatch("{id:int}/title")]
+    public async Task<IActionResult> SetTitle(int id, [FromBody] SetTitleRequest body, CancellationToken ct)
+    {
+        var row = await _db.BookContentScans.FirstOrDefaultAsync(c => c.Id == id, ct);
+        if (row is null) return NotFound(new { error = "Scan row not found." });
+        row.Title = string.IsNullOrWhiteSpace(body.Title) ? null : body.Title.Trim();
+        await _db.SaveChangesAsync(ct);
+        return Ok(new { title = row.Title });
+    }
+
+    public sealed record SetTitleRequest(string? Title);
+
     // All-optional so [ApiController] can't 400 a partial payload.
     public sealed record UseWorkRequest(
         string? WorkKey, string? Title, int? FirstPublishYear, int? CoverId,

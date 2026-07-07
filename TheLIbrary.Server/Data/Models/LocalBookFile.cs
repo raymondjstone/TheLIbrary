@@ -84,6 +84,10 @@ public class LocalBookFile
 
     public DateTime? IntegrityCheckedAt { get; set; }
 
+    // When the LLM title-match job last tried this file. Set whether or not
+    // a match was found so hopeless files are never re-spent.
+    public DateTime? LlmTitleMatchAttemptedAt { get; set; }
+
     // Forget the last integrity result so the next check-integrity run examines
     // this file again. Needed after a move into an author folder: moving keeps
     // SizeBytes/ModifiedAt, so the stamps above would still match and the file
