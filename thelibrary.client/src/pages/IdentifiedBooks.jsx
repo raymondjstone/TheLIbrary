@@ -93,24 +93,41 @@ export default function IdentifiedBooks() {
                 if (cancelled) return
                 let entry
                 try {
-                    const resp = await fetch(`/api/identified/${r.id}/isbn-title`)
-                    const body = await resp.json().catch(() => ({}))
-                    entry = body.title
-                        ? {
-                            state: 'done', title: body.title, author: body.author,
-                            matches: body.matchesFolderAuthor,
-                            // Carried so the "Reassign to this author" button can drive
-                            // the use-work flow without re-resolving the ISBN.
-                            workKey: body.workKey, firstPublishYear: body.firstPublishYear,
-                            coverId: body.coverId, authorKey: body.authorKey, authors: body.authors,
+                    // Add a 30-second timeout to prevent requests from hanging forever
+                    const controller = new AbortController()
+                    const timeoutId = setTimeout(() => controller.abort(), 30000)
+                    try {
+                        const resp = await fetch(`/api/identified/${r.id}/isbn-title`, {
+                            signal: controller.signal
+                        })
+                        clearTimeout(timeoutId)
+                        const body = await resp.json().catch(() => ({}))
+                        entry = body.title
+                            ? {
+                                state: 'done', title: body.title, author: body.author,
+                                matches: body.matchesFolderAuthor,
+                                // Carried so the "Reassign to this author" button can drive
+                                // the use-work flow without re-resolving the ISBN.
+                                workKey: body.workKey, firstPublishYear: body.firstPublishYear,
+                                coverId: body.coverId, authorKey: body.authorKey, authors: body.authors,
+                            }
+                            // Google's daily quota is spent — a temporary "retry tomorrow",
+                            // not a real miss. Mark it so we don't re-spam the endpoint this
+                            // session; it re-resolves server-side once the quota resets (or on
+                            // a fresh page load).
+                            : body.quotaExhausted
+                                ? { state: 'quota' }
+                                : { state: 'none' }
+                    } catch (fetchError) {
+                        clearTimeout(timeoutId)
+                        // Distinguish between timeout and other errors
+                        if (fetchError.name === 'AbortError') {
+                            console.warn(`ISBN resolution timeout for row ${r.id} (ISBN: ${r.isbn})`)
+                            entry = { state: 'none' }
+                        } else {
+                            throw fetchError
                         }
-                        // Google's daily quota is spent — a temporary "retry tomorrow",
-                        // not a real miss. Mark it so we don't re-spam the endpoint this
-                        // session; it re-resolves server-side once the quota resets (or on
-                        // a fresh page load).
-                        : body.quotaExhausted
-                            ? { state: 'quota' }
-                            : { state: 'none' }
+                    }
                 } catch {
                     entry = { state: 'none' }
                 }
