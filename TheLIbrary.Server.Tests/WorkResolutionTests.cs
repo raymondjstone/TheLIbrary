@@ -83,4 +83,26 @@ public sealed class WorkResolutionTests : IDisposable
         Assert.False(ok);
         Assert.Null(file.BookId);
     }
+
+    // The exact (file, book) pairing was explicitly unlinked before (Duplicates page
+    // "Unlink") — resolve-works (via TryLinkWorkByIsbnAsync) must refuse to re-add it,
+    // even though the ISBN still resolves cleanly to that same book.
+    [Fact]
+    public async Task Refuses_To_Relink_A_Blocked_File_And_Book_Pair()
+    {
+        var name = "wr3-" + Guid.NewGuid().ToString("N");
+        await using var db = NewDb(name);
+        db.Authors.Add(new Author { Id = 1, Name = "Manley Wade Wellman" });
+        db.Books.Add(new Book { Id = 99, AuthorId = 1, OpenLibraryWorkKey = "OL999W", Title = "The Old Gods Awaken", NormalizedTitle = "the old gods awaken" });
+        var file = new LocalBookFile { Id = 5, AuthorId = 1, FullPath = "/lib/MWW/x.epub", ModifiedAt = DateTime.UtcNow };
+        db.LocalBookFiles.Add(file);
+        db.BlockedBookLinks.Add(new BlockedBookLink { FullPath = file.FullPath, BookId = 99, BlockedAt = DateTime.UtcNow });
+        await db.SaveChangesAsync();
+
+        var assigner = new UntrackedAuthorAssigner(db, NewOl(), new SystemFileSystem());
+        var ok = await assigner.TryLinkWorkByIsbnAsync(file, "978-0-00-000000-1", "The Old Gods Awaken", CancellationToken.None);
+
+        Assert.False(ok);
+        Assert.Null(file.BookId);
+    }
 }

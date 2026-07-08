@@ -155,6 +155,12 @@ public sealed class UntrackedAuthorAssigner
                     ? "Couldn't determine an author — no usable ISBN, title, or author was guessed for this file."
                     : $"Couldn't confirm \"{searchAuthor}\" — not found via OpenLibrary, so no author was created.");
 
+        // A book this exact file was previously unlinked from (a false match undone
+        // on the Duplicates page) must never be silently re-attached — file the
+        // author but leave the book unresolved, same as if OL hadn't found one.
+        if (book is not null && await LinkBlocklist.IsBlockedAsync(_db, sourcePath, book.Id, ct))
+            book = null;
+
         var file = existingFile ?? new LocalBookFile();
         if (existingFile is null) _db.LocalBookFiles.Add(file);
 
@@ -213,6 +219,10 @@ public sealed class UntrackedAuthorAssigner
         var add = await EnsureOpenLibraryBookAsync(author.Id, workKey, title, firstPublishYear, coverId, owned: false, ct);
         if (add.Error is not null)
             return new UntrackedAssignOutcome(false, null, null, null, null, add.Error);
+
+        if (await LinkBlocklist.IsBlockedAsync(_db, sourcePath, add.Book!.Id, ct))
+            return new UntrackedAssignOutcome(false, null, null, null, null,
+                "This file was previously unlinked from this exact book — it's blocked from being re-linked to it. Remove the block in Settings if this match is actually correct.");
 
         var (root, rootError) = await ResolveDestinationRootAsync(sourcePath, ct);
         if (root is null)
@@ -321,6 +331,10 @@ public sealed class UntrackedAuthorAssigner
         var add = await EnsureOpenLibraryBookAsync(authorId, workKey, title, firstPublishYear, coverId, owned: false, ct);
         if (add.Error is not null)
             return new UntrackedAssignOutcome(false, null, null, null, null, add.Error);
+
+        if (await LinkBlocklist.IsBlockedAsync(_db, scan.FullPath, add.Book!.Id, ct))
+            return new UntrackedAssignOutcome(false, null, null, null, null,
+                "This file was previously unlinked from this exact book — it's blocked from being re-linked to it. Remove the block in Settings if this match is actually correct.");
 
         var file = await _db.LocalBookFiles.FirstOrDefaultAsync(f => f.FullPath == scan.FullPath, ct);
         if (file is not null) file.BookId = add.Book!.Id;
@@ -535,6 +549,7 @@ public sealed class UntrackedAuthorAssigner
 
         var add = await EnsureOpenLibraryBookAsync(file.AuthorId.Value, workKey, title, year, coverId, owned: false, ct);
         if (add.Book is null) return false;
+        if (await LinkBlocklist.IsBlockedAsync(_db, file.FullPath, add.Book.Id, ct)) return false;
         file.BookId = add.Book.Id;
         return true;
     }

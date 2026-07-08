@@ -140,19 +140,37 @@ export default function IdentifiedBooks() {
     }, [rows])
 
     const [bulkBusy, setBulkBusy] = useState(false)
+    // Backend caps each call at 100 (rate-limited OL calls, keeps one request bounded)
+    // and reports how many are still unreviewed — so this has to keep calling the
+    // endpoint until remaining hits 0, the same way "Apply all guesses" does, rather
+    // than firing once and stopping after the first 100.
+    const [isbnAllProgress, setIsbnAllProgress] = useState(null) // { applied, failed, remaining }
     const applyAllIsbn = async () => {
         if (!window.confirm('Apply every ISBN-backed guess (the high-confidence ones) to its file? Each is matched to the OpenLibrary work for that ISBN.')) return
         setBulkBusy(true)
+        setError(null)
+        const totals = { applied: 0, failed: 0 }
         try {
-            const r = await fetch('/api/identified/apply-isbn-all', { method: 'POST' })
-            const body = await r.json().catch(() => ({}))
-            if (!r.ok) throw new Error(body.error || r.statusText)
-            alert(`Applied ${body.applied}, failed ${body.failed}, ${body.remaining} ISBN guess(es) remaining.`)
-            load()
+            for (let guard = 0; guard < 100000; guard++) {
+                const r = await fetch('/api/identified/apply-isbn-all', { method: 'POST' })
+                const body = await r.json().catch(() => ({}))
+                if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`)
+                totals.applied += body.applied ?? 0
+                totals.failed += body.failed ?? 0
+                const remaining = body.remaining ?? 0
+                setIsbnAllProgress({ ...totals, remaining })
+                if (guard % 5 === 0 || remaining === 0) load()
+                if (remaining === 0) break
+                // No progress this batch — every candidate was skipped without being
+                // resolved (e.g. a race with the file moving) — stop instead of
+                // spinning forever on the same stuck rows.
+                if ((body.applied ?? 0) === 0 && (body.failed ?? 0) === 0) break
+            }
         } catch (e) {
-            alert(`Failed: ${e.message}`)
+            setError(String(e.message || e))
         } finally {
             setBulkBusy(false)
+            setIsbnAllProgress(null)
         }
     }
 
@@ -573,7 +591,9 @@ export default function IdentifiedBooks() {
                 <div className="toolbar">
                     <button onClick={applyAllIsbn} disabled={bulkBusy || applyAllBusy}
                             title="Match every file that has an ISBN guess to its OpenLibrary work (high confidence)">
-                        {bulkBusy ? 'Applying…' : `Apply all ${isbnApplicable} ISBN match${isbnApplicable === 1 ? '' : 'es'}`}
+                        {bulkBusy
+                            ? `Applying… ${isbnAllProgress?.applied ?? 0} matched${isbnAllProgress?.remaining != null ? `, ${isbnAllProgress.remaining.toLocaleString()} left` : ''}`
+                            : `Apply all ${isbnApplicable} ISBN match${isbnApplicable === 1 ? '' : 'es'}`}
                     </button>
                     <span className="subtle">ISBN-backed guesses are the reliable ones — title-only guesses still need a per-row check.</span>
                 </div>

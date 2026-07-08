@@ -51,7 +51,10 @@ public sealed class LlmTitleMatchService
             try { _lastResult = await RunAsync(hostCt); }
             catch (OperationCanceledException) when (hostCt.IsCancellationRequested) { }
             catch (Exception ex) { _log.LogError(ex, "LLM title matching failed"); }
-            finally { _isRunning = false; _currentMessage = null; _coordinator.Release(); }
+            // _currentMessage is left holding the "Done — …" / "Skipped — …" summary so
+            // the Sync page shows the run's outcome instead of reverting to blank the
+            // instant a run finishes.
+            finally { _isRunning = false; _coordinator.Release(); }
         }, hostCt);
         return true;
     }
@@ -144,6 +147,9 @@ public sealed class LlmTitleMatchService
                     var match = await db.Books
                         .Where(b => b.AuthorId == file.AuthorId && b.NormalizedTitle == normalizedGuess)
                         .FirstOrDefaultAsync(ct);
+
+                    if (match is not null && await LinkBlocklist.IsBlockedAsync(db, file.FullPath, match.Id, ct))
+                        match = null; // this exact pairing was explicitly unlinked before — never re-add it
 
                     if (match is not null)
                     {

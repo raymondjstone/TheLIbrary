@@ -35,6 +35,7 @@ export const JOB_CATEGORIES = [
             { id: 'resolve-isbns', label: 'Cache ISBN title/author lookups', statusKey: 'resolveIsbns', manualEndpoint: '/api/jobs/resolve-isbns/start' },
             { id: 'promote-manual-books', label: 'Promote manual books & authors', statusKey: 'promoteManualBooks', manualEndpoint: '/api/jobs/promote-manual-books/start' },
             { id: 'llm-identify', label: 'LLM identify quarantined files', statusKey: 'llmIdentify', manualEndpoint: '/api/jobs/llm-identify/start' },
+            { id: 'llm-title-match', label: 'LLM title-match starred authors', statusKey: 'llmTitleMatch', manualEndpoint: '/api/jobs/llm-title-match/start' },
         ],
     },
     {

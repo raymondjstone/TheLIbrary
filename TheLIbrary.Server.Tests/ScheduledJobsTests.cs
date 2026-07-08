@@ -66,6 +66,7 @@ public class ScheduledJobsTests
                 () => jobs.RunAutoReplaceDamaged(),
                 () => jobs.RunResolveWorks(),
                 () => jobs.RunLlmIdentify(),
+                () => jobs.RunLlmTitleMatch(),
                 () => jobs.RunMarkOtherEditions(),
                 () => jobs.RunMarkEditionsRead(),
                 () => jobs.RunStarSeriesCoAuthors(),

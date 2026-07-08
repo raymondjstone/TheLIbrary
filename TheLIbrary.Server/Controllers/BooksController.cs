@@ -930,10 +930,14 @@ public class BooksController : ControllerBase
 
     public sealed record UnlinkFileResult(int FileId, bool Unlinked);
 
-    // Undo a false match: detach a file from its book (keeping it on disk, under
-    // its author) and mark it ManuallyUnmatched so the title-matcher won't just
-    // re-link it on the next sync. Used by the Duplicates page when a "duplicate"
-    // is actually a different book wrongly matched to this one.
+    // Undo a false match: detach a file from its book (keeping it on disk, under its
+    // author), mark it ManuallyUnmatched so the classic sync title-matcher won't just
+    // re-link it, AND permanently block this exact (file, book) pair via
+    // LinkBlocklist — every other automated/apply path (assign-authors, resolve-works,
+    // promote-manual-books, the LLM jobs, apply-all/apply-isbn-all, "Find on OL")
+    // checks that blocklist too, so the same wrong match can't be silently re-added
+    // by any of them. Used by the Duplicates page when a "duplicate" is actually a
+    // different book wrongly matched to this one.
     [HttpPost("files/{fileId:int}/unlink")]
     public async Task<ActionResult<UnlinkFileResult>> UnlinkFile(int fileId, CancellationToken ct)
     {
@@ -941,10 +945,14 @@ public class BooksController : ControllerBase
         if (file is null) return NotFound(new { error = "File not found." });
         if (file.BookId is null) return Ok(new UnlinkFileResult(fileId, false));
 
+        var bookId = file.BookId.Value;
+        var bookTitle = await _db.Books.Where(b => b.Id == bookId).Select(b => b.Title).FirstOrDefaultAsync(ct);
+        await LinkBlocklist.BlockAsync(_db, file.FullPath, bookId, ct);
         file.BookId = null;
         file.ManuallyUnmatched = true;
         Services.ActivityLogger.Record(_db, "unlink",
-            $"Unlinked {System.IO.Path.GetFileName(file.FullPath)} (file #{fileId}) from its book — false match undone");
+            $"Unlinked {System.IO.Path.GetFileName(file.FullPath)} (file #{fileId}) from \"{bookTitle ?? "book #" + bookId}\" — false match undone, blocked from ever re-linking",
+            bookId: bookId);
         await _db.SaveChangesAsync(ct);
         return Ok(new UnlinkFileResult(fileId, true));
     }

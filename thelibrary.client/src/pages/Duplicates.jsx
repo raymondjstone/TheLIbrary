@@ -90,17 +90,17 @@ export default function Duplicates() {
         }
     }
 
-    // Undo a false match: detach this file from the book (keeps the file, stops
-    // sync re-linking it). Reload so the group reflects the change.
+    // Undo a false match: detach this file from the book (keeps the file, blocks
+    // every automated/apply path from ever re-linking this exact file to this exact
+    // book again). Reload so the group reflects the change.
     const unlinkFile = async (fileId, bookTitle) => {
-        if (!window.confirm(`Unlink this file from "${bookTitle ?? 'this book'}"? It stays on disk under its author but is no longer matched to this book.`)) return
         setSendNotice(null); setError(null)
         setSendBusyIds(prev => new Set(prev).add(fileId))
         try {
             const r = await fetch(`/api/books/files/${fileId}/unlink`, { method: 'POST' })
             const body = await r.json().catch(() => null)
             if (!r.ok) throw new Error(body?.error ?? r.statusText)
-            setSendNotice('File unlinked from its book.')
+            setSendNotice('File unlinked — blocked from ever being re-linked to this book by any job.')
             load()
         } catch (e) {
             setError(`Unlink failed: ${e.message ?? e}`)
@@ -364,7 +364,7 @@ export default function Duplicates() {
                                                                 className="btn-ghost"
                                                                 style={{ fontSize: '0.7rem', padding: '0 0.4rem', whiteSpace: 'nowrap', color: 'var(--danger, #b91c1c)' }}
                                                                 disabled={sendBusyIds.has(f.id)}
-                                                                title="Not this book? Unlink this file from the book (undo a false match). The file stays on disk under its author."
+                                                                title="Not this book? Unlink this file from the book. The file stays on disk under its author, and this exact file+book pairing is permanently blocked from being auto-relinked (remove the block in Settings if this was a mistake)."
                                                                 onClick={() => unlinkFile(f.id, g.title)}>
                                                                 Unlink
                                                             </button>

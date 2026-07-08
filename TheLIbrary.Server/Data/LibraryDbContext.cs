@@ -31,6 +31,7 @@ public class LibraryDbContext : DbContext
     public DbSet<ActivityLogEntry> ActivityLog => Set<ActivityLogEntry>();
     public DbSet<IsbnResolution> IsbnResolutions => Set<IsbnResolution>();
     public DbSet<IsbnResolutionAttempt> IsbnResolutionAttempts => Set<IsbnResolutionAttempt>();
+    public DbSet<BlockedBookLink> BlockedBookLinks => Set<BlockedBookLink>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -143,6 +144,12 @@ public class LibraryDbContext : DbContext
             e.Property(x => x.Title).HasMaxLength(500);
             e.Property(x => x.NormalizedTitle).HasMaxLength(500);
             e.HasIndex(x => x.NormalizedTitle).IsUnique();
+        });
+
+        b.Entity<BlockedBookLink>(e =>
+        {
+            e.Property(x => x.FullPath).HasMaxLength(2048);
+            e.HasIndex(x => new { x.FullPath, x.BookId }).IsUnique();
         });
 
         b.Entity<NzbSite>(e =>

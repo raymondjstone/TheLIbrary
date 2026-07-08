@@ -34,6 +34,7 @@ public class JobsController : ControllerBase
     private readonly TheLibrary.Server.Services.Download.AutoReplaceDamagedService _autoReplaceDamaged;
     private readonly WorkResolutionService _resolveWorks;
     private readonly TheLibrary.Server.Services.Llm.LlmIdentificationService _llmIdentify;
+    private readonly TheLibrary.Server.Services.Llm.LlmTitleMatchService _llmTitleMatch;
     private readonly OtherEditionMarkerService _markOtherEditions;
     private readonly ReadEditionPropagationService _markEditionsRead;
     private readonly SeriesCoAuthorStarService _starSeriesCoAuthors;
@@ -69,6 +70,7 @@ public class JobsController : ControllerBase
         TheLibrary.Server.Services.Download.AutoReplaceDamagedService autoReplaceDamaged,
         WorkResolutionService resolveWorks,
         TheLibrary.Server.Services.Llm.LlmIdentificationService llmIdentify,
+        TheLibrary.Server.Services.Llm.LlmTitleMatchService llmTitleMatch,
         OtherEditionMarkerService markOtherEditions,
         ReadEditionPropagationService markEditionsRead,
         SeriesCoAuthorStarService starSeriesCoAuthors,
@@ -103,6 +105,7 @@ public class JobsController : ControllerBase
         _autoReplaceDamaged = autoReplaceDamaged;
         _resolveWorks = resolveWorks;
         _llmIdentify = llmIdentify;
+        _llmTitleMatch = llmTitleMatch;
         _markOtherEditions = markOtherEditions;
         _markEditionsRead = markEditionsRead;
         _starSeriesCoAuthors = starSeriesCoAuthors;
@@ -152,6 +155,7 @@ public class JobsController : ControllerBase
             autoReplaceDamaged = new { isRunning = _autoReplaceDamaged.IsRunning, message = _autoReplaceDamaged.CurrentMessage },
             resolveWorks = new { isRunning = _resolveWorks.IsRunning, message = _resolveWorks.CurrentMessage },
             llmIdentify = new { isRunning = _llmIdentify.IsRunning, message = _llmIdentify.CurrentMessage },
+            llmTitleMatch = new { isRunning = _llmTitleMatch.IsRunning, message = _llmTitleMatch.CurrentMessage },
             markOtherEditions = new { isRunning = _markOtherEditions.IsRunning, message = _markOtherEditions.CurrentMessage },
             markEditionsRead = new { isRunning = _markEditionsRead.IsRunning, message = _markEditionsRead.CurrentMessage },
             starSeriesCoAuthors = new { isRunning = _starSeriesCoAuthors.IsRunning, message = _starSeriesCoAuthors.CurrentMessage },
@@ -363,6 +367,14 @@ public class JobsController : ControllerBase
     public IActionResult StartLlmIdentify()
     {
         if (!_llmIdentify.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("llm-title-match/start")]
+    public IActionResult StartLlmTitleMatch()
+    {
+        if (!_llmTitleMatch.TryStart(_lifetime.ApplicationStopping, out var err))
             return Conflict(new { error = err });
         return Accepted();
     }

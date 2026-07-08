@@ -1730,6 +1730,9 @@ public partial class AuthorsController : ControllerBase
             targetAuthor.Id, body.WorkKey, body.Title, body.FirstPublishYear, body.CoverId, owned: false, ct);
         if (add.Error is not null) return (null, add.Error);
 
+        if (await LinkBlocklist.IsBlockedAsync(_db, file.FullPath, add.Book!.Id, ct))
+            return (null, "This file was previously unlinked from this exact book — it's blocked from being re-linked to it. Remove the block in Settings if this match is actually correct.");
+
         if (targetAuthor.Id != currentAuthor.Id)
             await MoveFileToAuthorFolderAsync(file, targetAuthor, ct);
         else
@@ -1780,8 +1783,24 @@ public partial class AuthorsController : ControllerBase
         WorkSearchDoc? doc = null;
         if (!string.IsNullOrWhiteSpace(scan.Isbn))
         {
-            var byIsbn = await _ol.SearchByIsbnAsync(scan.Isbn, ct);
-            doc = byIsbn?.Docs?.FirstOrDefault(d => !string.IsNullOrWhiteSpace(d.Key));
+            // A single unreachable/malformed ISBN (OL down, rate-limited past the
+            // client's own retries, or a garbage OCR'd ISBN that 400s) must not take
+            // down the whole bulk-apply run, nor get silently dismissed as "no work
+            // found" — leave this row unreviewed and bail on just this one so the
+            // caller (the bulk loop) moves on to the next scan.
+            try
+            {
+                var byIsbn = await _ol.SearchByIsbnAsync(scan.Isbn, ct);
+                doc = byIsbn?.Docs?.FirstOrDefault(d => !string.IsNullOrWhiteSpace(d.Key));
+            }
+            catch (OpenLibraryRequestFailedException ex)
+            {
+                _log.LogWarning(ex,
+                    "apply-content-guess: OpenLibrary ISBN lookup failed for {Isbn} (#{ScanId}); leaving unreviewed to retry later.",
+                    scan.Isbn, scan.Id);
+                return new ApplyGuessResult(false, null, null, null,
+                    $"OpenLibrary lookup failed for ISBN {scan.Isbn} — try again later.");
+            }
         }
 
         // ISBN is definitive for the *book*, but Apply keeps the file's folder
@@ -1805,6 +1824,8 @@ public partial class AuthorsController : ControllerBase
         if (doc is null && !string.IsNullOrWhiteSpace(scan.Title))
         {
             var known = await FindBestKnownBookAsync(currentAuthor, scan.Title!, scan.SeriesPosition, ct);
+            if (known is not null && await LinkBlocklist.IsBlockedAsync(_db, file.FullPath, known.Id, ct))
+                known = null; // this exact pairing was explicitly unlinked before — never re-add it
             if (known is not null)
             {
                 file.AuthorId = currentAuthor.Id;
@@ -2125,7 +2146,11 @@ public partial class AuthorsController : ControllerBase
 
     // Bulk-applies every ISBN-backed guess (the high-confidence ones) for tracked
     // unmatched files, capped per call so the run can't time out — repeat until
-    // Remaining is 0. POST /api/identified/apply-isbn-all
+    // Remaining is 0. Newest-first — same order the Identified page lists rows in
+    // (GET /api/identified is ScannedAt-descending, capped at 2000) — so on a big
+    // backlog this visibly clears the rows the user is actually looking at instead
+    // of grinding through years-old scans nobody's watching before ever reaching
+    // them. POST /api/identified/apply-isbn-all
     [HttpPost("~/api/identified/apply-isbn-all")]
     public async Task<ActionResult<BulkApplyResult>> ApplyAllIsbnGuesses(CancellationToken ct)
     {
@@ -2133,7 +2158,7 @@ public partial class AuthorsController : ControllerBase
         var scans = await _db.BookContentScans
             .Where(c => !c.Reviewed && c.Isbn != null
                 && _db.LocalBookFiles.Any(f => f.FullPath == c.FullPath && f.BookId == null && f.AuthorId != null))
-            .OrderBy(c => c.Id)
+            .OrderByDescending(c => c.Id)
             .Take(cap)
             .ToListAsync(ct);
 
@@ -2145,7 +2170,24 @@ public partial class AuthorsController : ControllerBase
             var currentAuthor = file?.AuthorId is int aid ? await _db.Authors.FirstOrDefaultAsync(a => a.Id == aid, ct) : null;
             if (file is null || file.BookId is not null || currentAuthor is null) continue;
 
-            var doc = (await _ol.SearchByIsbnAsync(scan.Isbn!, ct))?.Docs?.FirstOrDefault(d => !string.IsNullOrWhiteSpace(d.Key));
+            WorkSearchDoc? doc;
+            try
+            {
+                doc = (await _ol.SearchByIsbnAsync(scan.Isbn!, ct))?.Docs?.FirstOrDefault(d => !string.IsNullOrWhiteSpace(d.Key));
+            }
+            catch (OpenLibraryRequestFailedException ex)
+            {
+                // A single unreachable/malformed ISBN (OL down, rate-limited past the
+                // client's own retries, or a garbage OCR'd ISBN that 400s) must not
+                // abort the whole batch — every scan after it in this cap=100 page
+                // would otherwise silently never get tried. Leave it unreviewed (so
+                // it's retried on the next run) and move on to the rest of the batch.
+                _log.LogWarning(ex,
+                    "apply-isbn-all: OpenLibrary lookup failed for ISBN {Isbn} (#{ScanId}); leaving unreviewed to retry later.",
+                    scan.Isbn, scan.Id);
+                failed++;
+                continue;
+            }
             if (doc is null || string.IsNullOrWhiteSpace(doc.Key)) { scan.Reviewed = true; failed++; await _db.SaveChangesAsync(ct); continue; }
 
             // Don't blindly file across authors: Apply keeps the folder author, so an

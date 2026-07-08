@@ -18,7 +18,7 @@ public class IsbndbFallbackProviderTests
     }
 
     private static IsbndbFallbackProvider Provider(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
-        => new(new FakeFactory(handler), new IsbndbRateLimiter(), NullLogger<IsbndbFallbackProvider>.Instance);
+        => new(new FakeFactory(handler), NullLogger<IsbndbFallbackProvider>.Instance);
 
     [Fact]
     public async Task Skipped_When_No_Credential()
@@ -70,58 +70,51 @@ public class IsbndbFallbackProviderTests
         Assert.Equal(IsbnLookupStatus.Unavailable, (await p.LookupAsync("9780000000000", "k", default)).Status);
     }
 
-    // ISBNdb's plan-level request quota resets at 00:00 UTC. A 429 (or a 403 whose body
-    // cites the quota) latches the rest of today's lookups off WITHOUT another HTTP
-    // call — mirrors GoogleBooksRateLimiter's daily-exhaustion behavior.
+    // ISBNdb's basic plan is rate-limited per-SECOND (~1 req/sec) — a 429 is that
+    // transient cap. It must never latch anything off; the very next lookup has to
+    // make a real HTTP call again, not be short-circuited.
     [Fact]
-    public async Task A_429_Latches_The_Quota_For_The_Rest_Of_The_Day()
+    public async Task A_429_Is_Transient_And_Retries_On_The_Next_Lookup()
     {
         var calls = 0;
-        var quota = new IsbndbRateLimiter();
         var p = new IsbndbFallbackProvider(
             new FakeFactory((_, _) => { calls++; return Task.FromResult(new HttpResponseMessage(HttpStatusCode.TooManyRequests)); }),
-            quota, NullLogger<IsbndbFallbackProvider>.Instance);
+            NullLogger<IsbndbFallbackProvider>.Instance);
 
         var first = await p.LookupAsync("9780000000000", "k", default);
         Assert.Equal(IsbnLookupStatus.Unavailable, first.Status);
         Assert.Equal(1, calls);
-        Assert.True(quota.IsExhaustedToday);
 
-        // Second lookup must short-circuit — no second HTTP call.
         var second = await p.LookupAsync("9780000000001", "k", default);
         Assert.Equal(IsbnLookupStatus.Unavailable, second.Status);
+        Assert.Equal(2, calls);
+    }
+
+    // A 403 is ambiguous (quota, rate limit, or bad key — ISBNdb's exact wording for
+    // each isn't reliably known) so it must be treated as transient, NOT a permanent
+    // skip or a day-long latch — two different body-text heuristics here previously
+    // misfired and disabled a working account for a full day on an ambiguous 403.
+    [Fact]
+    public async Task A_403_Is_Transient_And_Retries_On_The_Next_Lookup()
+    {
+        var calls = 0;
+        var p = new IsbndbFallbackProvider(
+            new FakeFactory((_, _) =>
+            {
+                calls++;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)
+                {
+                    Content = new StringContent("""{"message":"Monthly quota exceeded"}"""),
+                });
+            }),
+            NullLogger<IsbndbFallbackProvider>.Instance);
+
+        var first = await p.LookupAsync("9780000000000", "k", default);
+        Assert.Equal(IsbnLookupStatus.Unavailable, first.Status);
         Assert.Equal(1, calls);
-    }
 
-    [Fact]
-    public async Task A_403_With_Quota_Wording_Latches_The_Quota()
-    {
-        var quota = new IsbndbRateLimiter();
-        var p = new IsbndbFallbackProvider(
-            new FakeFactory((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)
-            {
-                Content = new StringContent("""{"message":"Monthly quota exceeded"}"""),
-            })),
-            quota, NullLogger<IsbndbFallbackProvider>.Instance);
-
-        var r = await p.LookupAsync("9780000000000", "k", default);
-        Assert.Equal(IsbnLookupStatus.Unavailable, r.Status);
-        Assert.True(quota.IsExhaustedToday);
-    }
-
-    [Fact]
-    public async Task A_403_Without_Quota_Wording_Is_Treated_As_A_Bad_Key()
-    {
-        var quota = new IsbndbRateLimiter();
-        var p = new IsbndbFallbackProvider(
-            new FakeFactory((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)
-            {
-                Content = new StringContent("""{"message":"Invalid API key"}"""),
-            })),
-            quota, NullLogger<IsbndbFallbackProvider>.Instance);
-
-        var r = await p.LookupAsync("9780000000000", "bad-key", default);
-        Assert.Equal(IsbnLookupStatus.Skipped, r.Status);
-        Assert.False(quota.IsExhaustedToday);
+        var second = await p.LookupAsync("9780000000001", "k", default);
+        Assert.Equal(IsbnLookupStatus.Unavailable, second.Status);
+        Assert.Equal(2, calls);
     }
 }

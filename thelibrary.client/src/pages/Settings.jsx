@@ -1558,6 +1558,8 @@ export default function Settings() {
 
             <TitleBlacklistSection />
 
+            <BlockedBookLinksSection />
+
             {/* Excluded authors (blacklist) — kept at the very bottom of the page. */}
             <h2 style={{ marginTop: '1.5rem' }}>Excluded authors (blacklist)</h2>
             <p className="subtle">
@@ -1688,6 +1690,68 @@ function TitleBlacklistSection() {
                         <td></td>
                         <td><button onClick={add} disabled={!newTitle.trim()}>Add</button></td>
                     </tr>
+                </tbody>
+            </table>
+        </>
+    )
+}
+
+// Files permanently blocked from being re-linked to a specific book — created by
+// the Duplicates page's "Unlink" action (a false match undone). Every automated
+// matching path (sync, assign-authors, resolve-works, promote-manual-books, the
+// LLM jobs) and the apply/bulk-apply flows refuse to re-add one of these exact
+// file+book pairs; removing a row here is the only way to lift a block.
+function BlockedBookLinksSection() {
+    const [list, setList] = useState([])
+    const [error, setError] = useState(null)
+
+    const load = () => {
+        fetch('/api/blocked-book-links')
+            .then(r => r.ok ? r.json() : [])
+            .then(setList)
+            .catch(() => setList([]))
+    }
+    useEffect(load, [])
+
+    const remove = async (id) => {
+        if (!window.confirm('Remove this block? Automated jobs may re-link this file to this book again.')) return
+        setError(null)
+        const r = await fetch(`/api/blocked-book-links/${id}`, { method: 'DELETE' })
+        if (r.ok) load()
+        else { const b = await r.json().catch(() => ({})); setError(b.error || r.statusText) }
+    }
+
+    const fileName = (path) => (path ?? '').split(/[\\/]/).pop() ?? path
+
+    if (list.length === 0) return null
+
+    return (
+        <>
+            <h2 style={{ marginTop: '1.5rem' }}>Blocked book links</h2>
+            <p className="subtle">
+                Files unlinked from a book on the Duplicates page — each row is a permanent
+                &quot;never re-link this exact file to this exact book&quot; rule that every automated matching
+                path and apply action checks. Remove a row if that unlink turns out to have been a mistake.
+            </p>
+            {error ? <p className="error">{error}</p> : null}
+            <table className="grid" style={{ maxWidth: 900 }}>
+                <thead>
+                    <tr>
+                        <th>File</th>
+                        <th>Blocked from</th>
+                        <th>Blocked</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {list.map(b => (
+                        <tr key={b.id}>
+                            <td style={{ fontSize: '0.85em', wordBreak: 'break-all' }}>{fileName(b.fullPath)}</td>
+                            <td className="subtle">{b.bookTitle ?? `book #${b.bookId}`}{b.authorName ? ` — ${b.authorName}` : ''}</td>
+                            <td className="subtle">{new Date(b.blockedAt).toLocaleDateString()}</td>
+                            <td><button className="btn-danger" onClick={() => remove(b.id)}>Remove</button></td>
+                        </tr>
+                    ))}
                 </tbody>
             </table>
         </>

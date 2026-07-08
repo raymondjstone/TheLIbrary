@@ -53,7 +53,10 @@ public sealed class LlmIdentificationService
             try { _lastResult = await RunAsync(hostCt); }
             catch (OperationCanceledException) when (hostCt.IsCancellationRequested) { }
             catch (Exception ex) { _log.LogError(ex, "LLM identification failed"); }
-            finally { _isRunning = false; _currentMessage = null; _coordinator.Release(); }
+            // _currentMessage is left holding the "Done — …" / "Skipped — …" summary so
+            // the Sync page shows the run's outcome (same as resolve-isbns / promote-manual-books)
+            // instead of reverting to blank the instant a (often very short) run finishes.
+            finally { _isRunning = false; _coordinator.Release(); }
         }, hostCt);
         return true;
     }

@@ -52,6 +52,13 @@ public class BooksControllerCoverageTests
         var file = await v.LocalBookFiles.FindAsync(1);
         Assert.Null(file!.BookId);              // detached from the book
         Assert.True(file.ManuallyUnmatched);    // sync won't re-link it
+
+        var block = await v.BlockedBookLinks.FirstOrDefaultAsync(b => b.FullPath == "/lib/Auth/wrong.epub" && b.BookId == 10);
+        Assert.NotNull(block);                  // permanently blocked from re-linking to this book
+
+        var logged = await v.ActivityLog.FirstOrDefaultAsync(a => a.Action == "unlink");
+        Assert.NotNull(logged);
+        Assert.Equal(10, logged!.BookId);
     }
 
     [Fact]

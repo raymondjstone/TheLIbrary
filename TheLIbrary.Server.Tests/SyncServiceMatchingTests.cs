@@ -28,6 +28,34 @@ public class SyncServiceMatchingTests
         Assert.Equal(1, insert.AuthorId);
     }
 
+    // A file explicitly unlinked from a book (Duplicates page "Unlink") must never
+    // be silently re-matched to that same book by the classic sync auto-matcher,
+    // even though title/author still resolve to it exactly as before.
+    [Fact]
+    public void MatchAuthorFilesForTests_Never_Relinks_A_Blocked_File_And_Book_Pair()
+    {
+        const string path = "C:\\lib\\Terry Brooks\\book.epub";
+        var author = new Author { Id = 1, Name = "Terry Brooks" };
+        var entries = new Dictionary<string, List<CalibreBookEntry>>(StringComparer.Ordinal)
+        {
+            [TitleNormalizer.NormalizeAuthor("Terry Brooks")] =
+            [new("C:\\lib", "Terry Brooks", "Terry Brooks - Magic Kingdom for Sale", path, 1, DateTime.UtcNow)]
+        };
+        var books = new Dictionary<int, List<Book>>
+        {
+            [1] = [new Book { Id = 10, AuthorId = 1, Title = "Magic Kingdom for Sale", NormalizedTitle = TitleNormalizer.Normalize("Magic Kingdom for Sale"), OpenLibraryWorkKey = "OL10W" }]
+        };
+        var blockedLinks = new HashSet<(string Path, int BookId)> { (path, 10) };
+
+        var result = SyncService.MatchAuthorFilesForTests(
+            author, entries, books, new Dictionary<int, List<int>>(), new Dictionary<string, LocalBookFile>(StringComparer.Ordinal),
+            blockedLinks);
+
+        var insert = Assert.Single(result.Inserts);
+        Assert.Null(insert.BookId);     // matched title exists, but this exact pairing is blocked
+        Assert.Equal(1, insert.AuthorId);
+    }
+
     [Fact]
     public void MatchAuthorFilesForTests_Uses_NonPenName_Child_Books_For_Canonical()
     {

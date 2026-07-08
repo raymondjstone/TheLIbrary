@@ -442,6 +442,12 @@ public sealed class SyncService
         var toInsert = new List<LocalBookFile>();
         var toUpdate = new List<LocalBookFile>();
 
+        // Files explicitly unlinked from a specific book on the Duplicates page must
+        // never be silently re-matched to that same book by this auto-matcher.
+        // Preloaded once (not a per-file query) since this loop can run over tens of
+        // thousands of files.
+        var blockedLinks = await LinkBlocklist.LoadAllAsync(db, ct);
+
         foreach (var author in authors)
         {
             ct.ThrowIfCancellationRequested();
@@ -461,7 +467,7 @@ public sealed class SyncService
                 continue;
             }
 
-            MatchAuthorFiles(author, entriesByFolderKey, booksByAuthorId, nonPenNameChildrenByCanonical, existingByPath, processed, toInsert, toUpdate);
+            MatchAuthorFiles(author, entriesByFolderKey, booksByAuthorId, nonPenNameChildrenByCanonical, existingByPath, processed, toInsert, toUpdate, blockedLinks);
             processedAuthorIds.Add(author.Id);
             MutateState(s => s.AuthorsProcessed++);
         }
@@ -619,7 +625,8 @@ public sealed class SyncService
         Dictionary<string, LocalBookFile> existingByPath,
         HashSet<string> processed,
         List<LocalBookFile> toInsert,
-        List<LocalBookFile> toUpdate)
+        List<LocalBookFile> toUpdate,
+        HashSet<(string Path, int BookId)>? blockedLinks = null)
     {
         static string Canon(string p) =>
             p.Normalize(System.Text.NormalizationForm.FormC).ToUpperInvariant();
@@ -683,6 +690,12 @@ public sealed class SyncService
                 }
                 if (matchedBook is not null) break;
             }
+
+            // This exact file was previously unlinked from this exact book (a false
+            // match undone on the Duplicates page) — never silently re-match it.
+            if (matchedBook is not null && blockedLinks is not null
+                && blockedLinks.Contains((entry.FullPath, matchedBook.Id)))
+                matchedBook = null;
 
             UpsertLocalFile(entry, author.Id, matchedBook?.Id, existingByPath, canon, toInsert, toUpdate);
             processed.Add(canon);
@@ -757,12 +770,13 @@ public sealed class SyncService
             Dictionary<string, List<CalibreBookEntry>> entriesByFolderKey,
             Dictionary<int, List<Book>> booksByAuthorId,
             Dictionary<int, List<int>> nonPenNameChildrenByCanonical,
-            Dictionary<string, LocalBookFile> existingByPath)
+            Dictionary<string, LocalBookFile> existingByPath,
+            HashSet<(string Path, int BookId)>? blockedLinks = null)
     {
         var processed = new HashSet<string>(StringComparer.Ordinal);
         var toInsert = new List<LocalBookFile>();
         var toUpdate = new List<LocalBookFile>();
-        MatchAuthorFiles(author, entriesByFolderKey, booksByAuthorId, nonPenNameChildrenByCanonical, existingByPath, processed, toInsert, toUpdate);
+        MatchAuthorFiles(author, entriesByFolderKey, booksByAuthorId, nonPenNameChildrenByCanonical, existingByPath, processed, toInsert, toUpdate, blockedLinks);
         return (toInsert, toUpdate, processed);
     }
 

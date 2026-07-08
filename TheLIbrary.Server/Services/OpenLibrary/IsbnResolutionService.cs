@@ -84,15 +84,22 @@ public sealed class IsbnResolutionService
             CoverId = doc?.CoverId,
         };
 
-        // Run the fallback chain when OpenLibrary had nothing (common for
-        // self-published / KDP / indie), OR when it found the work but with NO author
-        // — OL records are often authorless, and "we don't know the author" is far
-        // less useful than naming it. The chain fills whatever's still missing (title
-        // and/or author) from the first source that has it, keeping OL's work key and
-        // title. If nothing usable results and a source was temporarily unavailable,
-        // don't cache — retry later.
-        if ((doc is null || string.IsNullOrWhiteSpace(row.AuthorName)) && _providers.Count > 0)
+        // Run the fallback chain whenever we don't actually HAVE a title yet (common
+        // for self-published / KDP / indie — OL simply has no record), OR when we have
+        // a title but NO author — OL records are often authorless, and "we don't know
+        // the author" is far less useful than naming it. Checking row.Title directly
+        // (not just "did OL return a doc object") matters: OL's search can return a doc
+        // with a Key and an author but a blank title, and that must still trigger the
+        // fallback chain — a doc existing is not the same as having a usable title.
+        if ((row.Title is null || string.IsNullOrWhiteSpace(row.AuthorName)) && _providers.Count > 0)
         {
+            // When we had NO title yet, a title is all we actually need — the file
+            // keeps its existing/folder author regardless of what a fallback source
+            // says (Apply never re-files across authors on its own), so there's no
+            // reason to keep burning calls on later sources just to chase an author we
+            // won't use. Only when a title is ALREADY in hand are we here purely to
+            // backfill the author, so that case still chains through every source.
+            var needsTitleOnly = row.Title is null;
             var creds = await LoadCredentialsAsync(ct);
             var anyUnavailable = false;
             var anyDefinitiveMiss = false;
@@ -105,7 +112,8 @@ public sealed class IsbnResolutionService
                     row.Title ??= r.Title;                       // keep OL's title if it had one
                     row.AuthorName ??= r.Author;
                     row.FirstPublishYear ??= r.FirstPublishYear;
-                    if (!string.IsNullOrWhiteSpace(row.AuthorName)) break; // got the author we needed
+                    if (needsTitleOnly ? row.Title is not null : !string.IsNullOrWhiteSpace(row.AuthorName))
+                        break; // got what we came for — a title, or (when enriching) the author
                 }
                 else if (r.Status == IsbnLookupStatus.Unavailable) anyUnavailable = true;
                 else if (r.Status == IsbnLookupStatus.Miss) anyDefinitiveMiss = true;
