@@ -11,6 +11,8 @@ public sealed record PushoverResult(bool Sent, string? Error);
 // effect without restarting. Returns Sent=false (with a reason) instead of
 // throwing so the caller — AuthorRefresher — can log per-book outcomes and
 // continue with the next book.
+//
+// Logs every notification sent to the Activity page for audit trail purposes.
 public sealed class PushoverClient
 {
     private const string Endpoint = "https://api.pushover.net/1/messages.json";
@@ -70,6 +72,7 @@ public sealed class PushoverClient
         };
         if (!string.IsNullOrWhiteSpace(url)) form["url"] = url;
 
+        PushoverResult result;
         try
         {
             using var client = _http.CreateClient();
@@ -81,15 +84,45 @@ public sealed class PushoverClient
                 _log.LogWarning(
                     "Pushover send failed: {Status} {Body}",
                     response.StatusCode, body);
-                return new PushoverResult(false, $"{(int)response.StatusCode} {response.ReasonPhrase}: {body}");
+                result = new PushoverResult(false, $"{(int)response.StatusCode} {response.ReasonPhrase}: {body}");
             }
-            return new PushoverResult(true, null);
+            else
+            {
+                result = new PushoverResult(true, null);
+            }
         }
         catch (Exception ex)
         {
             _log.LogWarning(ex, "Pushover send threw");
-            return new PushoverResult(false, ex.Message);
+            result = new PushoverResult(false, ex.Message);
         }
+
+        // Log every notification attempt to the Activity page
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+
+            var detail = result.Sent
+                ? $"Notification sent: \"{title}\" — {message}"
+                : $"Notification failed: \"{title}\" — {message} (Error: {result.Error})";
+
+            ActivityLogger.Record(
+                db,
+                action: "pushover-notification",
+                detail: detail,
+                source: "pushover",
+                bookId: null);
+
+            await db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            // Don't fail the notification if activity logging fails
+            _log.LogWarning(ex, "Failed to log Pushover notification to activity page");
+        }
+
+        return result;
     }
 
     private static async Task<(string? Token, string? User)> LoadAsync(LibraryDbContext db, CancellationToken ct)

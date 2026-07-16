@@ -104,6 +104,7 @@ public static class AppSettingKeys
     public const string PromoteManualBooksMaxPerRun = "PromoteManualBooksMaxPerRun"; // OL searches/run
     public const string ResolveWorksMaxPerRun = "ResolveWorksMaxPerRun";             // OL lookups/run
     public const string ResolveIsbnsMaxPerRun = "ResolveIsbnsMaxPerRun";             // OL lookups/run
+    public const string RetryIsbnMissesMaxPerRun = "RetryIsbnMissesMaxPerRun";       // ISBNs reprocessed/run
     public const string AssignAuthorsMaxPerRun = "AssignAuthorsMaxPerRun";           // OL lookups/run
     public const string AutoReplaceDamagedMaxPerRun = "AutoReplaceDamagedMaxPerRun"; // indexer grabs/run
     public const string PruneAuthorsMaxPerRun = "PruneAuthorsMaxPerRun";             // deletions/run
@@ -185,4 +186,18 @@ public static class AppSettingKeys
     // not balance. Beta endpoints; write-only from the UI.
     public const string LlmOpenAiAdminKey = "LlmOpenAiAdminKey";
     public const string LlmAnthropicAdminKey = "LlmAnthropicAdminKey";
+
+    // How many duplicate groups the "Content-verify & archive duplicates" job
+    // checks per run. Text extraction is comparatively expensive, so it's capped.
+    // Unset/invalid = DuplicateContentArchiveService.MaxPerRun.
+    public const string VerifyArchiveDuplicatesMaxPerRun = "VerifyArchiveDuplicatesMaxPerRun";
+
+    // Minimum word-overlap percentage (0-100) two duplicate copies' extracted text
+    // must reach before the content-verified auto-archive job will touch them.
+    // Unset/invalid = DuplicateContentArchiveService.DefaultMatchThresholdPercent (90).
+    public const string DuplicateContentMatchThreshold = "DuplicateContentMatchThreshold";
+
+    // How many scan rows the "Review unapplicable scans" job processes per run.
+    // Unset/invalid = ReviewUnapplicableScansService.MaxPerRun.
+    public const string ReviewUnapplicableScansMaxPerRun = "ReviewUnapplicableScansMaxPerRun";
 }

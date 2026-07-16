@@ -693,8 +693,11 @@ public sealed class SyncService
 
             // This exact file was previously unlinked from this exact book (a false
             // match undone on the Duplicates page) — never silently re-match it.
+            // Compared canonically (like every other path check in this method) so a
+            // CIFS/NAS mount handing back different casing on a later scan can't
+            // slip the block.
             if (matchedBook is not null && blockedLinks is not null
-                && blockedLinks.Contains((entry.FullPath, matchedBook.Id)))
+                && blockedLinks.Contains((canon, matchedBook.Id)))
                 matchedBook = null;
 
             UpsertLocalFile(entry, author.Id, matchedBook?.Id, existingByPath, canon, toInsert, toUpdate);
@@ -740,6 +743,77 @@ public sealed class SyncService
 
         // 3) Raw stem as the catch-all fallback.
         if (emitted.Add(stem)) yield return stem;
+    }
+
+    // Minimum fuzzy score for auto-linking a content guess to one of the author's
+    // EXISTING books. High on purpose: a scraped title must really be one of their
+    // known titles, not just land near one. (Both sides are normalized first, so
+    // articles/punctuation don't count.)
+    internal const double KnownTitleMinScore = 0.82;
+
+    // A trailing "Book 3" / "Vol. 2" / "Part 1" / "#4" descriptor on a guessed
+    // title ("High Druid of Shannara - Book 1") — stripped to form an extra match
+    // candidate so the bare title can hit the real book.
+    private static readonly System.Text.RegularExpressions.Regex TrailingVolumeRx = new(
+        @"[\s:–—-]+(?:book|vol(?:ume)?|part|#)\s*\.?\s*\d+(?:\.\d+)?\s*$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // Finds the author's own existing book that best matches a content-guess title,
+    // reusing the same author-prefix strip + series-filename parsing + Jaro-Winkler
+    // fuzzy as the unmatched-file suggestions. Returns null when nothing clears the
+    // floor — the caller then refuses rather than inventing an OpenLibrary work.
+    // When the guess carries a series position, a same-position book is nudged up so
+    // "X - Book 1" picks position 1 among several identically-prefixed titles.
+    // Shared by AuthorsController.ApplyContentGuessCoreAsync (the live Apply path)
+    // and ReviewUnapplicableScansService (the backlog-dismissal job) — the two must
+    // never diverge, or the job can permanently dismiss a scan Apply would match.
+    internal static async Task<Book?> FindBestKnownBookAsync(
+        LibraryDbContext db, Author author, string guessedTitle, string? seriesPosition, CancellationToken ct)
+    {
+        var foldedIds = new List<int> { author.Id };
+        foldedIds.AddRange(await db.Authors.AsNoTracking()
+            .Where(a => a.LinkedToAuthorId == author.Id && !a.IsPenName)
+            .Select(a => a.Id).ToListAsync(ct));
+
+        var authorNorm = TitleNormalizer.Normalize(author.Name);
+        var books = (await db.Books.AsNoTracking()
+            .Where(b => foldedIds.Contains(b.AuthorId) && !b.Suppressed && !b.Foreign)
+            .Select(b => new { b.Id, b.Title, b.NormalizedTitle, b.SeriesPosition })
+            .ToListAsync(ct))
+            // Never match a phantom book titled as the author themself.
+            .Where(b => string.IsNullOrEmpty(authorNorm)
+                || (b.NormalizedTitle ?? TitleNormalizer.Normalize(b.Title)) != authorNorm)
+            .ToList();
+        if (books.Count == 0) return null;
+
+        var stems = TitleStemCandidates(guessedTitle, author).ToList();
+        var bare = TrailingVolumeRx.Replace(guessedTitle, "").Trim();
+        if (bare.Length > 0 && !stems.Contains(bare)) stems.Add(bare);
+
+        var candidates = stems
+            .SelectMany(TitleNormalizer.FolderTitleCandidates)
+            .Where(c => !string.IsNullOrEmpty(c)
+                        && c != authorNorm
+                        && !(authorNorm.Length > 0 && c.StartsWith(authorNorm + " ", StringComparison.Ordinal)))
+            .Distinct()
+            .ToList();
+        if (candidates.Count == 0) return null;
+
+        var hasPos = !string.IsNullOrWhiteSpace(seriesPosition);
+        int? bestId = null;
+        double bestScore = 0;
+        foreach (var b in books)
+        {
+            var bn = b.NormalizedTitle ?? TitleNormalizer.Normalize(b.Title);
+            double score = 0;
+            foreach (var c in candidates) score = Math.Max(score, FuzzyScore.JaroWinkler(bn, c));
+            if (hasPos && b.SeriesPosition == seriesPosition) score += 0.03; // position tiebreak
+            if (score > bestScore) { bestScore = score; bestId = b.Id; }
+        }
+
+        return bestId is int id && bestScore >= KnownTitleMinScore
+            ? await db.Books.FirstOrDefaultAsync(b => b.Id == id, ct)
+            : null;
     }
 
     // Returns `stem` with a leading "<Author> - " or trailing " - <Author>"

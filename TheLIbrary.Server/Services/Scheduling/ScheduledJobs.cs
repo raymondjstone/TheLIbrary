@@ -50,6 +50,9 @@ public sealed class ScheduledJobs
     private readonly ReadEditionPropagationService _markEditionsRead;
     private readonly SeriesCoAuthorStarService _starSeriesCoAuthors;
     private readonly IsbnResolutionCatchupService _resolveIsbns;
+    private readonly IsbnMissRetryService _retryIsbnMisses;
+    private readonly DuplicateContentArchiveService _verifyArchiveDuplicates;
+    private readonly ReviewUnapplicableScansService _reviewUnapplicableScans;
     private readonly ScheduleService _schedules;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ScheduledJobs> _log;
@@ -86,6 +89,9 @@ public sealed class ScheduledJobs
         ReadEditionPropagationService markEditionsRead,
         SeriesCoAuthorStarService starSeriesCoAuthors,
         IsbnResolutionCatchupService resolveIsbns,
+        IsbnMissRetryService retryIsbnMisses,
+        DuplicateContentArchiveService verifyArchiveDuplicates,
+        ReviewUnapplicableScansService reviewUnapplicableScans,
         ScheduleService schedules,
         IHostApplicationLifetime lifetime,
         ILogger<ScheduledJobs> log)
@@ -99,6 +105,9 @@ public sealed class ScheduledJobs
         _llmIdentify = llmIdentify; _llmTitleMatch = llmTitleMatch; _markOtherEditions = markOtherEditions; _markEditionsRead = markEditionsRead;
         _starSeriesCoAuthors = starSeriesCoAuthors;
         _resolveIsbns = resolveIsbns;
+        _retryIsbnMisses = retryIsbnMisses;
+        _verifyArchiveDuplicates = verifyArchiveDuplicates;
+        _reviewUnapplicableScans = reviewUnapplicableScans;
         _schedules = schedules; _lifetime = lifetime; _log = log;
     }
 
@@ -337,6 +346,24 @@ public sealed class ScheduledJobs
         ScheduleJobIds.ResolveIsbns, manualTrigger,
         ct => _resolveIsbns.TryStart(ct, out var err) ? (true, err) : (false, err),
         () => _resolveIsbns.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunRetryIsbnMisses(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.RetryIsbnMisses, manualTrigger,
+        ct => _retryIsbnMisses.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _retryIsbnMisses.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunVerifyArchiveDuplicates(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.VerifyArchiveDuplicates, manualTrigger,
+        ct => _verifyArchiveDuplicates.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _verifyArchiveDuplicates.IsRunning);
+
+    [AutomaticRetry(Attempts = 0)]
+    public Task RunReviewUnapplicableScans(bool manualTrigger = false) => RunWithPolling(
+        ScheduleJobIds.ReviewUnapplicableScans, manualTrigger,
+        ct => _reviewUnapplicableScans.TryStart(ct, out var err) ? (true, err) : (false, err),
+        () => _reviewUnapplicableScans.IsRunning);
 
     internal Task RunWithPollingForTests(
         IReadOnlyDictionary<string, ScheduleEntry> schedules,

@@ -166,7 +166,13 @@ public partial class AuthorsController : ControllerBase
 
     public sealed record StarredAuthorRow(
         int Id, string Name, int Priority,
-        int BookCount, int EbookCount, int UnmatchedCount);
+        int BookCount, int EbookCount,
+        // Obtained = ebook-owned (a local file is linked) OR physical-owned
+        // (ManuallyOwned / OwnedDifferentEdition, no file) — the exact same
+        // "obtained by any manner" definition as OwnedCount on the main author
+        // list (List() above). UnobtainedCount is simply BookCount - OwnedCount.
+        int OwnedCount, int UnobtainedCount,
+        int UnmatchedCount);
 
     [HttpGet("starred")]
     public async Task<IReadOnlyList<StarredAuthorRow>> Starred(CancellationToken ct)
@@ -181,6 +187,12 @@ public partial class AuthorsController : ControllerBase
 
         var ids = authors.Select(a => a.Id).ToList();
 
+        // Three plain LINQ counts (translatable by every EF provider, including
+        // the InMemory one the HTTP integration tests run against — List()'s raw
+        // SqlQuery above isn't an option here, that path has no HTTP test
+        // coverage exercising it). "Obtained" mirrors List()'s OwnedCount
+        // definition: ebook-owned (a file is linked) OR physical-owned
+        // (ManuallyOwned / OwnedDifferentEdition, no file).
         var bookCounts = await _db.Books.AsNoTracking()
             .Where(b => ids.Contains(b.AuthorId))
             .GroupBy(b => b.AuthorId)
@@ -189,6 +201,13 @@ public partial class AuthorsController : ControllerBase
 
         var ebookCounts = await _db.Books.AsNoTracking()
             .Where(b => ids.Contains(b.AuthorId) && b.LocalFiles.Any())
+            .GroupBy(b => b.AuthorId)
+            .Select(g => new { AuthorId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.AuthorId, x => x.Count, ct);
+
+        var physicalCounts = await _db.Books.AsNoTracking()
+            .Where(b => ids.Contains(b.AuthorId) && !b.LocalFiles.Any()
+                        && (b.ManuallyOwned || b.OwnedDifferentEdition))
             .GroupBy(b => b.AuthorId)
             .Select(g => new { AuthorId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.AuthorId, x => x.Count, ct);
@@ -214,12 +233,16 @@ public partial class AuthorsController : ControllerBase
             .GroupBy(f => f.AuthorId!.Value)
             .ToDictionary(g => g.Key, g => g.Count());
 
-        return authors.Select(a => new StarredAuthorRow(
-            a.Id, a.Name, a.Priority,
-            bookCounts.GetValueOrDefault(a.Id),
-            ebookCounts.GetValueOrDefault(a.Id),
-            unmatchedDict.GetValueOrDefault(a.Id)
-        )).ToList();
+        return authors.Select(a =>
+        {
+            var total = bookCounts.GetValueOrDefault(a.Id);
+            var ebook = ebookCounts.GetValueOrDefault(a.Id);
+            var owned = ebook + physicalCounts.GetValueOrDefault(a.Id);
+            return new StarredAuthorRow(
+                a.Id, a.Name, a.Priority,
+                total, ebook, owned, total - owned,
+                unmatchedDict.GetValueOrDefault(a.Id));
+        }).ToList();
     }
 
     public sealed record StalledAuthorRow(
@@ -1066,6 +1089,8 @@ public partial class AuthorsController : ControllerBase
             if (book is null) { errors.Add($"book {item.BookId}: not found"); skipped++; continue; }
             if (!await BookBelongsToAuthorViewAsync(book, id, ct))
             { errors.Add($"book {item.BookId}: not under this author"); skipped++; continue; }
+            if (await LinkBlocklist.IsBlockedAsync(_db, file.FullPath, book.Id, ct))
+            { errors.Add($"file {item.FileId}: blocked from linking to book {item.BookId}"); skipped++; continue; }
 
             file.AuthorId = id;
             file.BookId = book.Id;
@@ -1135,6 +1160,8 @@ public partial class AuthorsController : ControllerBase
         if (book is null) return NotFound(new { error = "Book not found" });
         if (!await BookBelongsToAuthorViewAsync(book, id, ct))
             return BadRequest(new { error = "Book does not belong to this author" });
+        if (await LinkBlocklist.IsBlockedAsync(_db, file.FullPath, book.Id, ct))
+            return BadRequest(new { error = "This file was previously unlinked from this exact book — it's blocked from being re-linked to it. Remove the block in Settings if this match is actually correct." });
 
         file.AuthorId = id;
         file.BookId = book.Id;
@@ -1171,6 +1198,8 @@ public partial class AuthorsController : ControllerBase
         if (book is null) return NotFound(new { error = "Book not found" });
         if (!await BookBelongsToAuthorViewAsync(book, id, ct))
             return BadRequest(new { error = "Book does not belong to this author" });
+        if (await LinkBlocklist.IsBlockedAsync(_db, file.FullPath, book.Id, ct))
+            return BadRequest(new { error = "This file was previously unlinked from this exact book — it's blocked from being re-linked to it. Remove the block in Settings if this match is actually correct." });
 
         // Folder-driven move into this author's folder (sets AuthorId/AuthorFolder/
         // FullPath, resets integrity, prunes the now-empty source folder), then link.
@@ -1823,7 +1852,7 @@ public partial class AuthorsController : ControllerBase
 
         if (doc is null && !string.IsNullOrWhiteSpace(scan.Title))
         {
-            var known = await FindBestKnownBookAsync(currentAuthor, scan.Title!, scan.SeriesPosition, ct);
+            var known = await SyncService.FindBestKnownBookAsync(_db, currentAuthor, scan.Title!, scan.SeriesPosition, ct);
             if (known is not null && await LinkBlocklist.IsBlockedAsync(_db, file.FullPath, known.Id, ct))
                 known = null; // this exact pairing was explicitly unlinked before — never re-add it
             if (known is not null)
@@ -2073,73 +2102,6 @@ public partial class AuthorsController : ControllerBase
                 && (c.Isbn != null || c.Author != null || c.Title != null), ct)
             : 0;
         return Ok(new AssignAuthorsAllResult(assigned, skipped, failed, remaining, lastId));
-    }
-
-    // Minimum fuzzy score for auto-linking a content guess to one of the author's
-    // EXISTING books. High on purpose: a scraped title must really be one of their
-    // known titles, not just land near one. (Both sides are normalized first, so
-    // articles/punctuation don't count.)
-    private const double KnownTitleMinScore = 0.82;
-
-    // A trailing "Book 3" / "Vol. 2" / "Part 1" / "#4" descriptor on a guessed
-    // title ("High Druid of Shannara - Book 1") — stripped to form an extra match
-    // candidate so the bare title can hit the real book.
-    private static readonly System.Text.RegularExpressions.Regex TrailingVolumeRx = new(
-        @"[\s:–—-]+(?:book|vol(?:ume)?|part|#)\s*\.?\s*\d+(?:\.\d+)?\s*$",
-        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
-
-    // Finds the author's own existing book that best matches a content-guess title,
-    // reusing the same author-prefix strip + series-filename parsing + Jaro-Winkler
-    // fuzzy as the unmatched-file suggestions. Returns null when nothing clears the
-    // floor — the caller then refuses rather than inventing an OpenLibrary work.
-    // When the guess carries a series position, a same-position book is nudged up so
-    // "X - Book 1" picks position 1 among several identically-prefixed titles.
-    private async Task<Book?> FindBestKnownBookAsync(Author author, string guessedTitle, string? seriesPosition, CancellationToken ct)
-    {
-        var foldedIds = new List<int> { author.Id };
-        foldedIds.AddRange(await _db.Authors.AsNoTracking()
-            .Where(a => a.LinkedToAuthorId == author.Id && !a.IsPenName)
-            .Select(a => a.Id).ToListAsync(ct));
-
-        var authorNorm = TitleNormalizer.Normalize(author.Name);
-        var books = (await _db.Books.AsNoTracking()
-            .Where(b => foldedIds.Contains(b.AuthorId) && !b.Suppressed && !b.Foreign)
-            .Select(b => new { b.Id, b.Title, b.NormalizedTitle, b.SeriesPosition })
-            .ToListAsync(ct))
-            // Never match a phantom book titled as the author themself.
-            .Where(b => string.IsNullOrEmpty(authorNorm)
-                || (b.NormalizedTitle ?? TitleNormalizer.Normalize(b.Title)) != authorNorm)
-            .ToList();
-        if (books.Count == 0) return null;
-
-        var stems = SyncService.TitleStemCandidates(guessedTitle, author).ToList();
-        var bare = TrailingVolumeRx.Replace(guessedTitle, "").Trim();
-        if (bare.Length > 0 && !stems.Contains(bare)) stems.Add(bare);
-
-        var candidates = stems
-            .SelectMany(TitleNormalizer.FolderTitleCandidates)
-            .Where(c => !string.IsNullOrEmpty(c)
-                        && c != authorNorm
-                        && !(authorNorm.Length > 0 && c.StartsWith(authorNorm + " ", StringComparison.Ordinal)))
-            .Distinct()
-            .ToList();
-        if (candidates.Count == 0) return null;
-
-        var hasPos = !string.IsNullOrWhiteSpace(seriesPosition);
-        int? bestId = null;
-        double bestScore = 0;
-        foreach (var b in books)
-        {
-            var bn = b.NormalizedTitle ?? TitleNormalizer.Normalize(b.Title);
-            double score = 0;
-            foreach (var c in candidates) score = Math.Max(score, FuzzyScore.JaroWinkler(bn, c));
-            if (hasPos && b.SeriesPosition == seriesPosition) score += 0.03; // position tiebreak
-            if (score > bestScore) { bestScore = score; bestId = b.Id; }
-        }
-
-        return bestId is int id && bestScore >= KnownTitleMinScore
-            ? await _db.Books.FirstOrDefaultAsync(b => b.Id == id, ct)
-            : null;
     }
 
     public sealed record BulkApplyResult(int Applied, int Failed, int Remaining);

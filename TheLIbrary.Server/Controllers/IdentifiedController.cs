@@ -48,6 +48,13 @@ public class IdentifiedController : ControllerBase
         string Source,
         int? AuthorId,
         string? LinkedAuthorName,
+        // The author's CURRENT folder name on disk (falls back to their display
+        // name when no folder name is recorded) — the ground truth for "which
+        // author bucket this tracked file actually sits under right now" (the
+        // link is folder-driven, and Author.Name can drift from the folder after
+        // a rename). Null for untracked rows. Used to group the Tracked section by
+        // the real, current folder rather than a possibly-stale display name.
+        string? AuthorFolderName,
         string? Isbn,
         string? Title,
         string? Author,
@@ -55,15 +62,44 @@ public class IdentifiedController : ControllerBase
         string? SeriesPosition,
         IReadOnlyList<string> AlsoBy,
         IReadOnlyList<SeriesListingRow> SeriesCatalog,
-        DateTime ScannedAt);
+        DateTime ScannedAt,
+        // Where this row's ISBN guess stands, computed server-side from the
+        // ALREADY-CACHED IsbnResolutions table (no live OpenLibrary calls) — see
+        // ResolveIsbnStatus. Every ISBN-bearing unmatched row lands in exactly ONE
+        // of the three buckets (no silent 4th "excluded" state):
+        //   "waiting"  — Apply has nothing to use yet, for any reason: never
+        //                attempted, a confirmed miss (no source had it), or a
+        //                fallback-provider title with no OpenLibrary work key.
+        //   "matched"  — resolved to a work whose author agrees (or is unconfirmed).
+        //   "reassign" — resolved to a work by a DIFFERENT author.
+        // Null only when not applicable at all: no ISBN, or already matched to a book.
+        string? IsbnStatus = null);
+
+    // Tracked section page size — kept fixed so a caller can't request a huge page
+    // and blow the same OL/response-size budget this cap always protected.
+    public const int TrackedPageSize = 100;
+
+    public sealed record IdentifiedListResult(
+        IReadOnlyList<IdentifiedRow> Rows,
+        int TrackedTotal,
+        int TrackedPage,
+        int TrackedPageSize,
+        int TrackedPageCount);
 
     /// <summary>
     /// Unreviewed content-scan guesses that found something, newest first.
-    /// Optional ?authorId filter. GET /api/identified
+    /// Optional ?authorId filter. Optional ?isbnStatus=waiting|matched|reassign
+    /// filters to that ISBN-resolution bucket BEFORE paging (see
+    /// ComputeIsbnStatusMatchIdsAsync) — otherwise, on a large tracked backlog,
+    /// the filter would only ever see whichever ~100 rows land on the current
+    /// newest-scanned-first page, most of which may not even carry an ISBN. The
+    /// tracked section is paged (100/page, ?trackedPage=0-based); untracked is
+    /// returned in full. GET /api/identified
     /// </summary>
     [HttpGet]
-    public async Task<IReadOnlyList<IdentifiedRow>> Get(
-        [FromQuery] int? authorId = null, [FromQuery] bool starredOnly = false, CancellationToken ct = default)
+    public async Task<IdentifiedListResult> Get(
+        [FromQuery] int? authorId = null, [FromQuery] bool starredOnly = false,
+        [FromQuery] int trackedPage = 0, [FromQuery] string? isbnStatus = null, CancellationToken ct = default)
     {
         var q = _db.BookContentScans.AsNoTracking()
             .Where(c => !c.Reviewed
@@ -87,12 +123,16 @@ public class IdentifiedController : ControllerBase
         // (__unknown) guesses are a small set (sub-1000) and the ones a human most
         // needs to action, so a single shared cap ordered by date wrongly buries
         // them under the tracked flood. Query the two groups SEPARATELY: return
-        // every untracked row (uncapped within a safety ceiling), and cap only the
+        // every untracked row (uncapped within a safety ceiling), and page only the
         // tracked group. The client renders them in their own sections.
         const int untrackedCeiling = 10000;
-        const int trackedCap = 2000;
+        var trackedPageIndex = Math.Max(0, trackedPage);
 
-        async Task<List<IdentifiedRow>> FetchAsync(IQueryable<BookContentScan> src, int take)
+        HashSet<int>? isbnStatusIds = null;
+        if (!string.IsNullOrWhiteSpace(isbnStatus) && isbnStatus != "all")
+            isbnStatusIds = await ComputeIsbnStatusMatchIdsAsync(q, isbnStatus, ct);
+
+        async Task<List<IdentifiedRow>> FetchAsync(IQueryable<BookContentScan> src, int take, int skip = 0)
         {
             var rows = await src
                 .OrderByDescending(c => c.ScannedAt)
@@ -103,6 +143,10 @@ public class IdentifiedController : ControllerBase
                     LinkedAuthorName = c.AuthorId != null
                         ? _db.Authors.Where(a => a.Id == c.AuthorId).Select(a => a.Name).FirstOrDefault()
                         : null,
+                    AuthorFolderName = c.AuthorId != null
+                        ? _db.Authors.Where(a => a.Id == c.AuthorId)
+                            .Select(a => a.CalibreFolderName ?? a.Name).FirstOrDefault()
+                        : null,
                     FileId = _db.LocalBookFiles.Where(f => f.FullPath == c.FullPath).Select(f => (int?)f.Id).FirstOrDefault(),
                     // The book this file is already matched to (if any) and that book's
                     // real title — so the client never offers to overwrite a settled
@@ -111,11 +155,13 @@ public class IdentifiedController : ControllerBase
                     MatchedTitle = _db.LocalBookFiles.Where(f => f.FullPath == c.FullPath && f.BookId != null)
                         .Select(f => f.Book!.Title).FirstOrDefault(),
                 })
+                .Skip(skip)
                 .Take(take)
                 .ToListAsync(ct);
 
             return rows.Select(r => new IdentifiedRow(
                 r.Id, r.FileId, r.MatchedBookId, r.MatchedTitle, r.FullPath, FormatOf(r.FullPath), r.Source, r.AuthorId, r.LinkedAuthorName,
+                r.AuthorFolderName,
                 r.Isbn, r.Title, r.Author, r.Series, r.SeriesPosition,
                 string.IsNullOrEmpty(r.AlsoByTitles) ? Array.Empty<string>() : r.AlsoByTitles.Split(';'),
                 ParseCatalog(r.SeriesCatalogJson),
@@ -128,17 +174,118 @@ public class IdentifiedController : ControllerBase
         //   2. it suggests a title/ISBN for a local file that is NOT currently matched
         //      to a book (the "match this file" action).
         // Once neither holds — the file got matched, or its row no longer has a
-        // catalogue — the line is dropped so it stops eating one of the 2000 tracked
-        // slots. The unmatched check is explicit (a LocalBookFile at this path with no
+        // catalogue — the line is dropped so it stops eating one of the tracked
+        // page's slots. The unmatched check is explicit (a LocalBookFile at this path with no
         // BookId) rather than relying on matched rows having had their title nulled.
-        var untracked = await FetchAsync(q.Where(c => c.Source == "untracked"), untrackedCeiling);
-        var tracked = await FetchAsync(
-            q.Where(c => c.Source != "untracked"
-                && (c.SeriesCatalogJson != null
-                    || ((c.Title != null || c.Isbn != null)
-                        && _db.LocalBookFiles.Any(f => f.FullPath == c.FullPath && f.BookId == null)))),
-            trackedCap);
-        return untracked.Concat(tracked).ToList();
+        var trackedQuery = q.Where(c => c.Source != "untracked"
+            && (c.SeriesCatalogJson != null
+                || ((c.Title != null || c.Isbn != null)
+                    && _db.LocalBookFiles.Any(f => f.FullPath == c.FullPath && f.BookId == null))));
+        var untrackedQuery = q.Where(c => c.Source == "untracked");
+        if (isbnStatusIds is not null)
+        {
+            trackedQuery = trackedQuery.Where(c => isbnStatusIds.Contains(c.Id));
+            untrackedQuery = untrackedQuery.Where(c => isbnStatusIds.Contains(c.Id));
+        }
+        var trackedTotal = await trackedQuery.CountAsync(ct);
+        var trackedPageCount = trackedTotal == 0 ? 1 : (trackedTotal + TrackedPageSize - 1) / TrackedPageSize;
+
+        var untracked = await FetchAsync(untrackedQuery, untrackedCeiling);
+        var tracked = await FetchAsync(trackedQuery, TrackedPageSize, skip: trackedPageIndex * TrackedPageSize);
+        var combined = await AttachIsbnStatusAsync(untracked.Concat(tracked).ToList(), ct);
+        return new IdentifiedListResult(
+            combined, trackedTotal, trackedPageIndex, TrackedPageSize, trackedPageCount);
+    }
+
+    // The candidate shape shared by the pre-paging ISBN-status scan and the
+    // post-paging display attachment below — just enough to resolve status
+    // without touching the NAS-backed columns (path etc.).
+    private sealed record IsbnStatusCandidate(int Id, string? Isbn, int? AuthorId);
+
+    // Resolves ALL matching scan ids for a requested ISBN status BEFORE paging —
+    // this is what the Tracked section's Skip/Take runs against, so the filter
+    // finds the actual matching rows regardless of where they fall in the
+    // (unrelated) newest-scanned-first ordering, instead of only ever seeing
+    // whatever happens to land on the currently-loaded page. Bulk queries against
+    // the cached IsbnResolutions table — no live OpenLibrary calls.
+    private async Task<HashSet<int>> ComputeIsbnStatusMatchIdsAsync(
+        IQueryable<BookContentScan> baseQuery, string isbnStatus, CancellationToken ct)
+    {
+        var candidates = await baseQuery
+            .Where(c => c.Isbn != null
+                && _db.LocalBookFiles.Any(f => f.FullPath == c.FullPath && f.BookId == null))
+            .Select(c => new IsbnStatusCandidate(c.Id, c.Isbn, c.AuthorId))
+            .ToListAsync(ct);
+        if (candidates.Count == 0) return new HashSet<int>();
+
+        var (resolutions, authors) = await LoadIsbnStatusLookupsAsync(candidates, ct);
+        var result = new HashSet<int>();
+        foreach (var c in candidates)
+            if (ResolveIsbnStatus(c.Isbn, c.AuthorId, resolutions, authors) == isbnStatus)
+                result.Add(c.Id);
+        return result;
+    }
+
+    // Fills IsbnStatus for every row with an ISBN, from the ALREADY-CACHED
+    // IsbnResolutions table — a couple of bulk queries, not a live OpenLibrary call
+    // per row (that path is the isbn-title endpoint, used only for the on-demand
+    // title-column preview). Pure display attachment for the (already paged/
+    // filtered) result set — the actual filtering happens earlier, in
+    // ComputeIsbnStatusMatchIdsAsync, so a status filter isn't at the mercy of
+    // whichever rows happen to land on the current page.
+    private async Task<List<IdentifiedRow>> AttachIsbnStatusAsync(List<IdentifiedRow> rows, CancellationToken ct)
+    {
+        var candidates = rows.Where(r => r.BookId is null && !string.IsNullOrWhiteSpace(r.Isbn))
+            .Select(r => new IsbnStatusCandidate(r.Id, r.Isbn, r.AuthorId)).ToList();
+        if (candidates.Count == 0) return rows;
+
+        var (resolutions, authors) = await LoadIsbnStatusLookupsAsync(candidates, ct);
+        var statusById = candidates.ToDictionary(c => c.Id, c => ResolveIsbnStatus(c.Isbn, c.AuthorId, resolutions, authors));
+        return rows.Select(r => statusById.TryGetValue(r.Id, out var s) ? r with { IsbnStatus = s } : r).ToList();
+    }
+
+    private async Task<(Dictionary<string, IsbnResolution> Resolutions, Dictionary<int, Author> Authors)>
+        LoadIsbnStatusLookupsAsync(IReadOnlyList<IsbnStatusCandidate> candidates, CancellationToken ct)
+    {
+        var keys = candidates.Select(c => IsbnResolution.IsbnKey(c.Isbn)).Where(k => k is not null).Distinct().ToList();
+        var resolutions = await _db.IsbnResolutions.AsNoTracking()
+            .Where(r => keys.Contains(r.Isbn))
+            .ToDictionaryAsync(r => r.Isbn, ct);
+
+        var authorIds = candidates.Where(c => c.AuthorId is not null).Select(c => c.AuthorId!.Value).Distinct().ToList();
+        var authors = await _db.Authors.AsNoTracking()
+            .Where(a => authorIds.Contains(a.Id))
+            .ToDictionaryAsync(a => a.Id, ct);
+
+        return (resolutions, authors);
+    }
+
+    // Every candidate lands in exactly one bucket — see the IsbnStatus doc comment
+    // above for what each means. Deliberately no 4th "excluded" outcome: a
+    // malformed ISBN, a never-attempted one, a confirmed miss, and a
+    // fallback-provider title with no OpenLibrary work key all mean the same
+    // thing to Apply — "nothing usable yet" — so they're all "waiting" rather
+    // than silently invisible to every filter bucket.
+    private static string ResolveIsbnStatus(
+        string? isbn, int? authorId,
+        Dictionary<string, IsbnResolution> resolutions, Dictionary<int, Author> authors)
+    {
+        var key = IsbnResolution.IsbnKey(isbn);
+        if (key is null || !resolutions.TryGetValue(key, out var res) || string.IsNullOrWhiteSpace(res.WorkKey))
+            return "waiting";
+
+        bool? matches = null;
+        if (authorId is int aid && authors.TryGetValue(aid, out var author)
+            && (res.AuthorName is not null || res.AuthorKey is not null))
+        {
+            var doc = new WorkSearchDoc
+            {
+                AuthorNames = res.AuthorName is null ? null : new() { res.AuthorName },
+                AuthorKeys = res.AuthorKey is null ? null : new() { res.AuthorKey },
+            };
+            matches = IsbnAuthorAgreement.Matches(doc, author);
+        }
+        return matches == false ? "reassign" : "matched";
     }
 
     // Bibliography-section headers that name a *category*, not a real series, and
@@ -767,6 +914,73 @@ public class IdentifiedController : ControllerBase
             bookId = outcome.BookId,
             path = outcome.Path,
         });
+    }
+
+    public sealed record BulkReassignResult(int Reassigned, int Failed, int Remaining);
+
+    // Bulk-drives the per-row "↪ Reassign to «author»" action for every row whose
+    // ISBN status is "reassign" — i.e. the cached OpenLibrary resolution for its
+    // ISBN is by a DIFFERENT author than the file's current folder, so plain Apply
+    // refuses it. Everything needed (work key, title, author) is already sitting
+    // in the IsbnResolutions cache — no live OpenLibrary calls — so this is the
+    // same cheap bulk pattern as apply-isbn-all: capped per call, newest-first,
+    // and ONE row's failure (file moved, blocked link, …) is logged and skipped
+    // rather than aborting the batch, so every other row in it still gets a shot.
+    // A row that fails is left unreviewed for the next run rather than marked
+    // reviewed — same as a per-row failure, it just sits for manual attention.
+    // POST /api/identified/reassign-all-isbn
+    [HttpPost("reassign-all-isbn")]
+    public async Task<ActionResult<BulkReassignResult>> ReassignAllIsbnMismatches(
+        [FromServices] UntrackedAuthorAssigner assigner, CancellationToken ct)
+    {
+        const int cap = 100;
+        var baseQuery = _db.BookContentScans.AsNoTracking().Where(c => !c.Reviewed);
+
+        var reassignIds = await ComputeIsbnStatusMatchIdsAsync(baseQuery, "reassign", ct);
+        if (reassignIds.Count == 0) return Ok(new BulkReassignResult(0, 0, 0));
+
+        var scans = await _db.BookContentScans
+            .Where(c => reassignIds.Contains(c.Id))
+            .OrderByDescending(c => c.Id) // newest first, matching the Identified page's display order
+            .Take(cap)
+            .ToListAsync(ct);
+
+        int reassigned = 0, failed = 0;
+        foreach (var scan in scans)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var key = IsbnResolution.IsbnKey(scan.Isbn);
+                var res = key is null ? null : await _db.IsbnResolutions.AsNoTracking().FirstOrDefaultAsync(r => r.Isbn == key, ct);
+                if (res is null || string.IsNullOrWhiteSpace(res.WorkKey))
+                {
+                    // The cached resolution changed (or was cleared) since this scan
+                    // was picked as a candidate — no longer actionable this way.
+                    failed++;
+                    continue;
+                }
+
+                var outcome = await assigner.AssignToWorkAsync(
+                    scan, res.WorkKey, res.Title, res.FirstPublishYear, res.CoverId,
+                    res.AuthorName, res.AuthorKey, res.AuthorName, ct);
+                if (!outcome.Assigned)
+                {
+                    _log.LogInformation("reassign-all-isbn: scan #{Id} not reassigned: {Reason}", scan.Id, outcome.Reason);
+                    failed++;
+                    continue;
+                }
+                reassigned++;
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "reassign-all-isbn: scan #{Id} threw; leaving for a later retry.", scan.Id);
+                failed++;
+            }
+        }
+
+        var remainingIds = await ComputeIsbnStatusMatchIdsAsync(baseQuery, "reassign", ct);
+        return Ok(new BulkReassignResult(reassigned, failed, remainingIds.Count));
     }
 
     /// <summary>

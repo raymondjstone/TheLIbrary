@@ -98,6 +98,42 @@ public class BooksControllerDuplicateArchiveTests
         Assert.Empty(after);
     }
 
+    // Whole-group "this entire match is wrong" case: bulk 'unlink' must detach
+    // EVERY given file (not just the extras), block each (path, book) pair so
+    // nothing silently re-links it, and leave the files on disk untouched.
+    [Fact]
+    public async Task Unlink_Action_Detaches_Every_File_And_Blocks_Each_Pair()
+    {
+        await using var db = CreateDb();
+        db.Authors.Add(new Author { Id = 1, Name = "Wrong Author" });
+        db.Books.Add(new Book { Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL10W", Title = "Mismatched Book", NormalizedTitle = "mismatched book" });
+        db.LocalBookFiles.AddRange(
+            new LocalBookFile { Id = 1, BookId = 10, AuthorId = 1, FullPath = "/Books/Collection/A/Wrong Author - one.epub" },
+            new LocalBookFile { Id = 2, BookId = 10, AuthorId = 1, FullPath = "/Books/Collection/A/Wrong Author - two.epub" },
+            new LocalBookFile { Id = 3, BookId = null, AuthorId = 1, FullPath = "/Books/Collection/A/Wrong Author - already-unlinked.epub" });
+        await db.SaveChangesAsync();
+
+        var sut = new BooksController(db, httpFactory: null!, new FakeFileSystem());
+        var result = await sut.ApplyDuplicateAction(
+            new BooksController.DuplicateActionRequest(new[] { 1, 2, 3 }, "unlink", null), CancellationToken.None);
+
+        var ok = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(result.Result);
+        var body = Assert.IsType<BooksController.DuplicateActionResult>(ok.Value);
+        Assert.Equal(2, body.Unlinked); // #3 was already unlinked — quietly skipped, not double-counted
+
+        var one = await db.LocalBookFiles.FirstAsync(f => f.Id == 1);
+        var two = await db.LocalBookFiles.FirstAsync(f => f.Id == 2);
+        Assert.Null(one.BookId);
+        Assert.Null(two.BookId);
+        Assert.True(one.ManuallyUnmatched);
+        Assert.True(two.ManuallyUnmatched);
+
+        // Both (path, book) pairs are permanently blocked from re-linking.
+        Assert.Equal(2, await db.BlockedBookLinks.CountAsync(b => b.BookId == 10));
+        Assert.True(await db.BlockedBookLinks.AnyAsync(b => b.FullPath == one.FullPath && b.BookId == 10));
+        Assert.True(await db.BlockedBookLinks.AnyAsync(b => b.FullPath == two.FullPath && b.BookId == 10));
+    }
+
     private static LibraryDbContext CreateDb()
         => new(new DbContextOptionsBuilder<LibraryDbContext>()
             .UseInMemoryDatabase($"dedupe-archive-{Guid.NewGuid():N}").Options);

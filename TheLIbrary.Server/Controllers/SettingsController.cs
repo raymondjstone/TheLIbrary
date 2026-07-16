@@ -513,7 +513,9 @@ public class SettingsController : ControllerBase
     }
 
     public sealed record JobLimitsDto(
-        int PromoteManualBooks, int ResolveWorks, int ResolveIsbns, int AssignAuthors, int AutoReplaceDamaged, int PruneAuthors);
+        int PromoteManualBooks, int ResolveWorks, int ResolveIsbns, int RetryIsbnMisses,
+        int AssignAuthors, int AutoReplaceDamaged, int PruneAuthors, int VerifyArchiveDuplicates,
+        int ReviewUnapplicableScans);
 
     // Per-run caps for the capped background jobs that don't already have their own
     // Settings control. Each falls back to the job's built-in default const, so an
@@ -525,32 +527,43 @@ public class SettingsController : ControllerBase
             .Where(s => s.Key == AppSettingKeys.PromoteManualBooksMaxPerRun
                      || s.Key == AppSettingKeys.ResolveWorksMaxPerRun
                      || s.Key == AppSettingKeys.ResolveIsbnsMaxPerRun
+                     || s.Key == AppSettingKeys.RetryIsbnMissesMaxPerRun
                      || s.Key == AppSettingKeys.AssignAuthorsMaxPerRun
                      || s.Key == AppSettingKeys.AutoReplaceDamagedMaxPerRun
-                     || s.Key == AppSettingKeys.PruneAuthorsMaxPerRun)
+                     || s.Key == AppSettingKeys.PruneAuthorsMaxPerRun
+                     || s.Key == AppSettingKeys.VerifyArchiveDuplicatesMaxPerRun
+                     || s.Key == AppSettingKeys.ReviewUnapplicableScansMaxPerRun)
             .ToDictionaryAsync(s => s.Key, s => s.Value, ct);
         return new JobLimitsDto(
             ReadInt(rows, AppSettingKeys.PromoteManualBooksMaxPerRun, Services.Sync.ManualBookPromotionService.MaxPerRun),
             ReadInt(rows, AppSettingKeys.ResolveWorksMaxPerRun, Services.Sync.WorkResolutionService.MaxPerRun),
             ReadInt(rows, AppSettingKeys.ResolveIsbnsMaxPerRun, Services.Sync.IsbnResolutionCatchupService.MaxPerRun),
+            ReadInt(rows, AppSettingKeys.RetryIsbnMissesMaxPerRun, Services.Sync.IsbnMissRetryService.MaxPerRun),
             ReadInt(rows, AppSettingKeys.AssignAuthorsMaxPerRun, Services.Sync.UntrackedAuthorAssignmentService.MaxPerRun),
             ReadInt(rows, AppSettingKeys.AutoReplaceDamagedMaxPerRun, Services.Download.AutoReplaceDamagedService.MaxPerRun),
-            ReadInt(rows, AppSettingKeys.PruneAuthorsMaxPerRun, Services.Sync.AuthorPruneService.MaxPerRun));
+            ReadInt(rows, AppSettingKeys.PruneAuthorsMaxPerRun, Services.Sync.AuthorPruneService.MaxPerRun),
+            ReadInt(rows, AppSettingKeys.VerifyArchiveDuplicatesMaxPerRun, Services.Sync.DuplicateContentArchiveService.MaxPerRun),
+            ReadInt(rows, AppSettingKeys.ReviewUnapplicableScansMaxPerRun, Services.Sync.ReviewUnapplicableScansService.MaxPerRun));
     }
 
     [HttpPut("job-limits")]
     public async Task<ActionResult<JobLimitsDto>> SetJobLimits([FromBody] JobLimitsDto body, CancellationToken ct)
     {
         if (body.PromoteManualBooks <= 0 || body.ResolveWorks <= 0 || body.ResolveIsbns <= 0
-            || body.AssignAuthors <= 0 || body.AutoReplaceDamaged <= 0 || body.PruneAuthors <= 0)
+            || body.RetryIsbnMisses <= 0
+            || body.AssignAuthors <= 0 || body.AutoReplaceDamaged <= 0 || body.PruneAuthors <= 0
+            || body.VerifyArchiveDuplicates <= 0 || body.ReviewUnapplicableScans <= 0)
             return BadRequest(new { error = "Each per-run limit must be greater than zero." });
 
         await UpsertSettingAsync(AppSettingKeys.PromoteManualBooksMaxPerRun, body.PromoteManualBooks.ToString(), ct);
         await UpsertSettingAsync(AppSettingKeys.ResolveWorksMaxPerRun, body.ResolveWorks.ToString(), ct);
         await UpsertSettingAsync(AppSettingKeys.ResolveIsbnsMaxPerRun, body.ResolveIsbns.ToString(), ct);
+        await UpsertSettingAsync(AppSettingKeys.RetryIsbnMissesMaxPerRun, body.RetryIsbnMisses.ToString(), ct);
         await UpsertSettingAsync(AppSettingKeys.AssignAuthorsMaxPerRun, body.AssignAuthors.ToString(), ct);
         await UpsertSettingAsync(AppSettingKeys.AutoReplaceDamagedMaxPerRun, body.AutoReplaceDamaged.ToString(), ct);
         await UpsertSettingAsync(AppSettingKeys.PruneAuthorsMaxPerRun, body.PruneAuthors.ToString(), ct);
+        await UpsertSettingAsync(AppSettingKeys.VerifyArchiveDuplicatesMaxPerRun, body.VerifyArchiveDuplicates.ToString(), ct);
+        await UpsertSettingAsync(AppSettingKeys.ReviewUnapplicableScansMaxPerRun, body.ReviewUnapplicableScans.ToString(), ct);
         await _db.SaveChangesAsync(ct);
         return body;
     }
@@ -632,6 +645,34 @@ public class SettingsController : ControllerBase
         await UpsertSettingAsync(AppSettingKeys.DuplicateFormatPreference, string.Join(';', cleaned), ct);
         await _db.SaveChangesAsync(ct);
         return new DuplicateFormatPreferenceDto(cleaned);
+    }
+
+    public sealed record DuplicateContentMatchThresholdDto(double Percent);
+
+    // Minimum word-overlap percentage two duplicate copies' extracted text must
+    // reach before the content-verified auto-archive job (verify-archive-duplicates)
+    // will touch them. Unset = the job's own default (90%).
+    [HttpGet("duplicate-content-match-threshold")]
+    public async Task<DuplicateContentMatchThresholdDto> GetDuplicateContentMatchThreshold(CancellationToken ct)
+    {
+        var row = await _db.AppSettings.AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Key == AppSettingKeys.DuplicateContentMatchThreshold, ct);
+        var pct = double.TryParse(row?.Value, out var v) && v is > 0 and <= 100
+            ? v
+            : Services.Sync.DuplicateContentArchiveService.DefaultMatchThresholdPercent;
+        return new DuplicateContentMatchThresholdDto(pct);
+    }
+
+    [HttpPut("duplicate-content-match-threshold")]
+    public async Task<ActionResult<DuplicateContentMatchThresholdDto>> SetDuplicateContentMatchThreshold(
+        [FromBody] DuplicateContentMatchThresholdDto body, CancellationToken ct)
+    {
+        if (body.Percent is <= 0 or > 100)
+            return BadRequest(new { error = "Percent must be greater than 0 and at most 100." });
+
+        await UpsertSettingAsync(AppSettingKeys.DuplicateContentMatchThreshold, body.Percent.ToString(System.Globalization.CultureInfo.InvariantCulture), ct);
+        await _db.SaveChangesAsync(ct);
+        return new DuplicateContentMatchThresholdDto(body.Percent);
     }
 
     public sealed record ArchiveFolderDto(string FolderName);

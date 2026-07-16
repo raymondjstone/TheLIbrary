@@ -52,6 +52,9 @@ public static class ScheduleJobIds
     public const string MarkEditionsRead = "mark-editions-read";
     public const string StarSeriesCoAuthors = "star-series-coauthors";
     public const string ResolveIsbns = "resolve-isbns";
+    public const string RetryIsbnMisses = "retry-isbn-misses";
+    public const string VerifyArchiveDuplicates = "verify-archive-duplicates";
+    public const string ReviewUnapplicableScans = "review-unapplicable-scans";
 
     public static readonly IReadOnlyList<string> All = new[]
     {
@@ -62,7 +65,8 @@ public static class ScheduleJobIds
         ArchiveForeign, MergeLinkedAuthors, CheckIntegrity, PruneStaleFiles,
         ContentScan, AssignAuthors, IndexFullText, PruneAuthors, DuplicateAutoArchive,
         SeriesWatch, AutoReplaceDamaged, ResolveWorks, LlmIdentify, LlmTitleMatch,
-        MarkOtherEditions, MarkEditionsRead, StarSeriesCoAuthors, ResolveIsbns
+        MarkOtherEditions, MarkEditionsRead, StarSeriesCoAuthors, ResolveIsbns,
+        RetryIsbnMisses, VerifyArchiveDuplicates, ReviewUnapplicableScans
     };
 
     // Default crons are staggered across the small hours so if every job is
@@ -171,5 +175,27 @@ public static class ScheduleJobIds
             // ships DISABLED — opt in on the Schedules page (or trigger once to work
             // the backlog); new scans populate the cache without it.
             [ResolveIsbns] = new() { Cron = "30 16 * * *", Enabled = false },
+            // Reprocesses IsbnResolutions rows with no title (confirmed misses),
+            // oldest-first, gated on Google Books being configured and stopping the
+            // moment Google's daily quota latches exhausted. 08:30 UTC — Google's
+            // quota resets at midnight PACIFIC time (~07:00 UTC in PDT / ~08:00 UTC
+            // in PST), not UTC midnight, so this runs comfortably after the real
+            // reset in either DST state, giving it first crack at the fresh quota
+            // before daytime consumers (content-scan, the Identified page) start
+            // competing for it. Ships DISABLED — opt in on the Schedules page (or
+            // trigger once to work the backlog).
+            [RetryIsbnMisses] = new() { Cron = "30 8 * * *", Enabled = false },
+            // Content-verified auto-archive: like DuplicateAutoArchive, but only
+            // acts when every extra copy's extracted text matches the keeper's
+            // within DuplicateContentMatchThreshold (default 90%) — any copy that
+            // can't be confirmed similar enough leaves the WHOLE group untouched
+            // for manual review. Heavier (opens/converts every file) and moves
+            // files, so it ships DISABLED — opt in on the Schedules page.
+            [VerifyArchiveDuplicates] = new() { Cron = "50 3 * * *", Enabled = false },
+            // Auto-mark content-scan rows as reviewed when their title guess doesn't
+            // match any of the author's known books (can't be auto-applied). Clears
+            // UI noise from the Identified page. Cheap DB query/flag flip, runs daily
+            // at 06:30 by default.
+            [ReviewUnapplicableScans] = new() { Cron = "30 6 * * *", Enabled = true },
         };
 }

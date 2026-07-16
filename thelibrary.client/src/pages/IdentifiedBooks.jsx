@@ -16,7 +16,7 @@ const fileStem = (path) => {
 function rowSearchText(r) {
     const parts = [
         r.path, r.source, r.author, r.title, r.series, r.seriesPosition,
-        r.isbn, r.linkedAuthorName, r.format,
+        r.isbn, r.linkedAuthorName, r.authorFolderName, r.format,
         ...(r.alsoBy ?? []),
         ...(r.seriesCatalog ?? []).flatMap(s => [s.series, s.genre, ...(s.titles ?? [])]),
     ]
@@ -38,6 +38,15 @@ export default function IdentifiedBooks() {
     const [expanded, setExpanded] = useState(() => new Set())
     const [filter, setFilter] = useState('')
     const [starredOnly, setStarredOnly] = useState(false)
+    // 'all' | 'waiting' | 'matched' | 'reassign' — matches row.isbnStatus, computed
+    // server-side from the cached IsbnResolutions table (GET /api/identified).
+    const [isbnStatusFilter, setIsbnStatusFilter] = useState('all')
+    // Tracked section is paged server-side (100/page); untracked is always shown
+    // in full. trackedPage is 0-based; the other two come back from the server.
+    const [trackedPage, setTrackedPage] = useState(0)
+    const [trackedTotal, setTrackedTotal] = useState(0)
+    const [trackedPageCount, setTrackedPageCount] = useState(1)
+    const [trackedPageSize, setTrackedPageSize] = useState(100)
     // Lazily-resolved "what title would this ISBN use" for rows that have an ISBN
     // but no guessed/known title. id -> { state:'loading'|'done'|'none', title, author, matches }.
     const [isbnTitles, setIsbnTitles] = useState({})
@@ -45,12 +54,14 @@ export default function IdentifiedBooks() {
     const [titleEdit, setTitleEdit] = useState(null) // { id, current }
     const [workSearch, setWorkSearch] = useState(null) // { id, initialQuery }
 
-    // Filter rows on the entered text appearing in ANY column.
+    // Text filter only — ISBN status is filtered server-side (query param on
+    // load()) so it runs BEFORE pagination and actually finds matching rows
+    // wherever they fall, rather than only ever seeing whatever's on the current
+    // tracked page.
     const filtered = useMemo(() => {
         if (!rows) return rows
         const q = filter.trim().toLowerCase()
-        if (!q) return rows
-        return rows.filter(r => rowSearchText(r).includes(q))
+        return q ? rows.filter(r => rowSearchText(r).includes(q)) : rows
     }, [rows, filter])
 
     const toggleCatalog = (id) =>
@@ -65,12 +76,23 @@ export default function IdentifiedBooks() {
         const qs = new URLSearchParams()
         if (authorId) qs.set('authorId', authorId)
         if (starredOnly) qs.set('starredOnly', 'true')
+        if (trackedPage) qs.set('trackedPage', String(trackedPage))
+        if (isbnStatusFilter !== 'all') qs.set('isbnStatus', isbnStatusFilter)
         fetch(`/api/identified${qs.toString() ? `?${qs}` : ''}`)
             .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
-            .then(setRows)
+            .then(body => {
+                setRows(body.rows)
+                setTrackedTotal(body.trackedTotal ?? 0)
+                setTrackedPageCount(body.trackedPageCount ?? 1)
+                setTrackedPageSize(body.trackedPageSize ?? 100)
+            })
             .catch(e => { setError(String(e)); setRows([]) })
     }
-    useEffect(load, [authorId, starredOnly])
+    useEffect(load, [authorId, starredOnly, trackedPage, isbnStatusFilter])
+    // A new author/starred/ISBN-status filter starts back at the first tracked
+    // page — the old page index otherwise points at a totally different (or
+    // nonexistent) slice under the new filter.
+    useEffect(() => { setTrackedPage(0) }, [authorId, starredOnly, isbnStatusFilter])
 
     // For rows that carry an ISBN but no guessed/known title, resolve what title the
     // ISBN would actually end up using (the same OpenLibrary lookup Apply does) and
@@ -174,6 +196,41 @@ export default function IdentifiedBooks() {
         }
     }
 
+    // Bulk-drives the per-row "↪ Reassign to «author»" action for every row whose
+    // ISBN status is "reassign" (the ISBN's cached OpenLibrary resolution is by a
+    // different author than the file's current folder). Same capped-batch loop as
+    // Apply all ISBN matches; the backend already continues past a single row's
+    // failure (file moved, blocked link, …), so this just keeps calling until
+    // Remaining hits 0.
+    const [reassignAllBusy, setReassignAllBusy] = useState(false)
+    const [reassignAllProgress, setReassignAllProgress] = useState(null) // { reassigned, failed, remaining }
+    const reassignAllIsbn = async () => {
+        if (!window.confirm('Reassign every "needs reassigned to other author" row to the author its ISBN actually resolves to? Each file is moved into that author\'s folder and linked to the book. One file failing won\'t stop the rest.')) return
+        setReassignAllBusy(true)
+        setError(null)
+        const totals = { reassigned: 0, failed: 0 }
+        try {
+            for (let guard = 0; guard < 100000; guard++) {
+                const r = await fetch('/api/identified/reassign-all-isbn', { method: 'POST' })
+                const body = await r.json().catch(() => ({}))
+                if (!r.ok) throw new Error(body.error || `${r.status} ${r.statusText}`)
+                totals.reassigned += body.reassigned ?? 0
+                totals.failed += body.failed ?? 0
+                const remaining = body.remaining ?? 0
+                setReassignAllProgress({ ...totals, remaining })
+                if (guard % 5 === 0 || remaining === 0) load()
+                if (remaining === 0) break
+                // No progress this batch — stop instead of spinning on the same rows.
+                if ((body.reassigned ?? 0) === 0 && (body.failed ?? 0) === 0) break
+            }
+        } catch (e) {
+            setError(String(e.message || e))
+        } finally {
+            setReassignAllBusy(false)
+            setReassignAllProgress(null)
+        }
+    }
+
     // Apply ALL content guesses (ISBN, else title vs the author's known books) for
     // tracked unmatched files. Driven in capped batches via a scan-id cursor so a big
     // backlog can't time out; inline progress, no dialogs.
@@ -212,6 +269,10 @@ export default function IdentifiedBooks() {
     const guessApplicable = (rows ?? []).filter(r => r.fileId != null && r.bookId == null && (r.isbn || r.title)).length
     const catalogApplicable = (rows ?? []).filter(r => r.authorId != null && r.seriesCatalog?.length > 0).length
     const untrackedAssignable = (rows ?? []).filter(r => r.source === 'untracked' && (r.author || r.isbn || r.title)).length
+    // Reflects only what's on the currently loaded page — like isbnApplicable
+    // above, the bulk action itself (reassignAllIsbn) finds every match across
+    // the whole backlog server-side, not just what's counted here.
+    const reassignApplicable = (rows ?? []).filter(r => r.isbnStatus === 'reassign').length
 
     const [catalogBusy, setCatalogBusy] = useState(false)
     const [catalogProgress, setCatalogProgress] = useState(null)
@@ -345,8 +406,27 @@ export default function IdentifiedBooks() {
             const r = await fetch(`/api/authors/apply-content-guess/${id}`, { method: 'POST' })
             const body = await r.json().catch(() => ({}))
             if (!r.ok) throw new Error(body.error || r.statusText)
-            if (!body.applied && body.reason) setError(body.reason)
-            setRows(prev => prev.filter(x => x.id !== id))
+            // For expected non-matches (title doesn't match known books, ISBN belongs to
+            // different author, no OL work found), the server marks the row as reviewed
+            // so it won't reappear on reload. Silently remove these from the list since
+            // they can't be auto-applied and keeping them is pointless. Only show errors
+            // for unexpected failures.
+            const isExpectedNonMatch = body.reason && (
+                body.reason.includes("doesn't closely match any of") ||
+                body.reason.includes("different author") ||
+                body.reason.includes("No OpenLibrary work found")
+            )
+            if (!body.applied && body.reason && !isExpectedNonMatch) {
+                setError(body.reason)
+            }
+            // The row only leaves the list when the server actually marked the scan
+            // reviewed (applied, or one of the expected-non-match dismissals above).
+            // Other 200 responses (e.g. a transient OpenLibrary lookup failure) leave
+            // the scan unreviewed server-side so it can be retried — removing the row
+            // here too would show it as handled when it isn't, until a reload.
+            if (body.applied || isExpectedNonMatch) {
+                setRows(prev => prev.filter(x => x.id !== id))
+            }
         } catch (e) {
             setError(String(e.message || e))
         } finally {
@@ -564,7 +644,7 @@ export default function IdentifiedBooks() {
                     onClose={() => setAddAuthor(false)} />
             )}
 
-            {(rows !== null && (rows.length > 0 || starredOnly)) && (
+            {(rows !== null && (rows.length > 0 || starredOnly || isbnStatusFilter !== 'all')) && (
                 <div className="toolbar" style={{ marginBottom: '0.75rem', flexWrap: 'wrap' }}>
                     <input
                         type="search"
@@ -584,12 +664,28 @@ export default function IdentifiedBooks() {
                             onChange={e => setStarredOnly(e.target.checked)} />
                         <span className="subtle">Starred authors only</span>
                     </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                           title="Filter by where each row's ISBN guess stands, from the cached ISBN lookup table — 'Waiting' covers anything Apply can't use yet (never resolved, a confirmed miss, or a fallback source's title with no OpenLibrary work key)">
+                        <span className="subtle">ISBN status</span>
+                        <select value={isbnStatusFilter} onChange={e => setIsbnStatusFilter(e.target.value)}>
+                            <option value="all">All</option>
+                            <option value="waiting">Waiting for ISBN match</option>
+                            <option value="matched">ISBN matched</option>
+                            <option value="reassign">Needs reassigned to other author</option>
+                        </select>
+                    </label>
+                    {isbnStatusFilter !== 'all' && (
+                        <span className="subtle">
+                            {trackedTotal.toLocaleString()} tracked match
+                            {' '}<button className="btn-ghost" onClick={() => setIsbnStatusFilter('all')}>clear</button>
+                        </span>
+                    )}
                 </div>
             )}
 
             {isbnApplicable > 0 && (
                 <div className="toolbar">
-                    <button onClick={applyAllIsbn} disabled={bulkBusy || applyAllBusy}
+                    <button onClick={applyAllIsbn} disabled={bulkBusy || applyAllBusy || reassignAllBusy}
                             title="Match every file that has an ISBN guess to its OpenLibrary work (high confidence)">
                         {bulkBusy
                             ? `Applying… ${isbnAllProgress?.applied ?? 0} matched${isbnAllProgress?.remaining != null ? `, ${isbnAllProgress.remaining.toLocaleString()} left` : ''}`
@@ -599,9 +695,21 @@ export default function IdentifiedBooks() {
                 </div>
             )}
 
+            {reassignApplicable > 0 && (
+                <div className="toolbar">
+                    <button onClick={reassignAllIsbn} disabled={reassignAllBusy || bulkBusy || applyAllBusy}
+                            title="Move every file whose ISBN resolves to a different author into that author's folder and link the book — like clicking each row's Reassign button">
+                        {reassignAllBusy
+                            ? `Reassigning… ${reassignAllProgress?.reassigned ?? 0} moved${reassignAllProgress?.remaining != null ? `, ${reassignAllProgress.remaining.toLocaleString()} left` : ''}`
+                            : `Reassign all ${reassignApplicable} to their ISBN author`}
+                    </button>
+                    <span className="subtle">Plain Apply refuses these because their ISBN's OpenLibrary work is by a different author than the current folder — this is the bulk override. Finds every match across the whole backlog, not just what's shown below; one file failing doesn't stop the rest.</span>
+                </div>
+            )}
+
             {guessApplicable > 0 && (
                 <div className="toolbar">
-                    <button onClick={applyAllGuesses} disabled={applyAllBusy || bulkBusy}
+                    <button onClick={applyAllGuesses} disabled={applyAllBusy || bulkBusy || reassignAllBusy}
                             title="Match every tracked unmatched file across the whole library to a book using its guess — ISBN if present, otherwise the title against the author's own known books. Runs in batches; the count can be large, so keep this tab open while it works.">
                         {applyAllBusy
                             ? `Applying… ${applyAllProgress?.applied ?? 0} matched${applyAllProgress?.remaining != null ? `, ${applyAllProgress.remaining.toLocaleString()} left` : ''}`
@@ -651,12 +759,17 @@ export default function IdentifiedBooks() {
             ) : rows.length === 0 ? (
                 starredOnly
                     ? <p className="subtle">No rows for starred (priority) authors. <button className="btn-ghost" onClick={() => setStarredOnly(false)}>Show all authors</button></p>
-                    : <p className="subtle">Nothing to review. Run the identify job to populate this.</p>
+                    : isbnStatusFilter !== 'all'
+                        ? <p className="subtle">No rows currently have that ISBN status. <button className="btn-ghost" onClick={() => setIsbnStatusFilter('all')}>Clear ISBN status filter</button></p>
+                        : <p className="subtle">Nothing to review. Run the identify job to populate this.</p>
             ) : filtered.length === 0 ? (
-                <p className="subtle">No rows match “{filter.trim()}”. <button className="btn-ghost" onClick={() => setFilter('')}>Clear filter</button></p>
+                <p className="subtle">
+                    No rows match the current filter{filter.trim() ? ` “${filter.trim()}”` : ''}
+                    {isbnStatusFilter !== 'all' ? ' (ISBN status filter is also narrowing the list)' : ''}.
+                    {' '}<button className="btn-ghost" onClick={() => { setFilter(''); setIsbnStatusFilter('all') }}>Clear filters</button>
+                </p>
             ) : (() => {
-                // Order every row by author so a given author's files sit together —
-                // the folder author for tracked rows, the guessed author otherwise —
+                // Order every row by author so a given author's files sit together,
                 // then by title within an author. Blank authors sort last.
                 const authorKey = (r) => (r.linkedAuthorName || r.author || '').trim().toLowerCase()
                 const byAuthor = (a, b) => {
@@ -665,8 +778,19 @@ export default function IdentifiedBooks() {
                     return ka.localeCompare(kb)
                         || (a.title || a.matchedTitle || '').localeCompare(b.title || b.matchedTitle || '')
                 }
+                // Tracked rows group by the author's CURRENT folder name on disk —
+                // the link is folder-driven, so the folder name (not Author.Name,
+                // which can drift after a rename until the folder itself is renamed)
+                // is the ground truth for "who this file is actually filed under".
+                const folderKey = (r) => (r.authorFolderName || r.linkedAuthorName || '').trim().toLowerCase()
+                const byAuthorFolder = (a, b) => {
+                    const ka = folderKey(a), kb = folderKey(b)
+                    if (!ka !== !kb) return ka ? -1 : 1
+                    return ka.localeCompare(kb)
+                        || (a.title || a.matchedTitle || '').localeCompare(b.title || b.matchedTitle || '')
+                }
                 const untracked = filtered.filter(r => r.source === 'untracked').sort(byAuthor)
-                const tracked   = filtered.filter(r => r.source !== 'untracked').sort(byAuthor)
+                const tracked   = filtered.filter(r => r.source !== 'untracked').sort(byAuthorFolder)
                 const tableProps = { busy, expanded, isbnTitles, reassignToIsbnAuthor, toggleCatalog, setPreview, apply, assignAuthor, assignUnknown, applyCatalog, dismiss, deleteFile, setAuthorEdit, setTitleEdit, setWorkSearch }
                 return (
                     <>
@@ -683,11 +807,28 @@ export default function IdentifiedBooks() {
 
                         <h2 style={{ marginTop: '2rem' }}>
                             Tracked
-                            <span className="subtle" style={{ fontWeight: 400, fontSize: '0.85em', marginLeft: '0.5rem' }}>({tracked.length})</span>
+                            <span className="subtle" style={{ fontWeight: 400, fontSize: '0.85em', marginLeft: '0.5rem' }}>
+                                ({trackedTotal.toLocaleString()})
+                            </span>
                         </h2>
                         <p className="subtle" style={{ marginBottom: '0.5rem' }}>
                             Files already in an author folder — waiting to be matched to a specific book.
                         </p>
+                        {trackedPageCount > 1 && (
+                            <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center', marginBottom: '0.5rem' }}>
+                                <button className="btn-ghost" disabled={trackedPage === 0}
+                                        onClick={() => setTrackedPage(p => Math.max(0, p - 1))}>
+                                    ← Prev
+                                </button>
+                                <span className="subtle">
+                                    Page {trackedPage + 1} of {trackedPageCount} ({trackedPageSize.toLocaleString()} per page)
+                                </span>
+                                <button className="btn-ghost" disabled={trackedPage >= trackedPageCount - 1}
+                                        onClick={() => setTrackedPage(p => Math.min(trackedPageCount - 1, p + 1))}>
+                                    Next →
+                                </button>
+                            </div>
+                        )}
                         {tracked.length === 0
                             ? <p className="subtle">None.</p>
                             : <RowTable rows={tracked} {...tableProps} />}

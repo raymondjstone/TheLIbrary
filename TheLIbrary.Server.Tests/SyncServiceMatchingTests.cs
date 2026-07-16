@@ -45,7 +45,10 @@ public class SyncServiceMatchingTests
         {
             [1] = [new Book { Id = 10, AuthorId = 1, Title = "Magic Kingdom for Sale", NormalizedTitle = TitleNormalizer.Normalize("Magic Kingdom for Sale"), OpenLibraryWorkKey = "OL10W" }]
         };
-        var blockedLinks = new HashSet<(string Path, int BookId)> { (path, 10) };
+        // Keyed by the same canonical (FormC + uppercase) form LinkBlocklist.LoadAllAsync
+        // produces — MatchAuthorFiles compares canonically so CIFS/NAS case drift can't
+        // slip a block.
+        var blockedLinks = new HashSet<(string Path, int BookId)> { (LinkBlocklist.Canon(path), 10) };
 
         var result = SyncService.MatchAuthorFilesForTests(
             author, entries, books, new Dictionary<int, List<int>>(), new Dictionary<string, LocalBookFile>(StringComparer.Ordinal),
@@ -54,6 +57,34 @@ public class SyncServiceMatchingTests
         var insert = Assert.Single(result.Inserts);
         Assert.Null(insert.BookId);     // matched title exists, but this exact pairing is blocked
         Assert.Equal(1, insert.AuthorId);
+    }
+
+    // A case-insensitive-but-case-preserving CIFS/NAS mount can hand back a
+    // differently-cased path for the same file between when it was blocked and a
+    // later scan — the block must still apply.
+    [Fact]
+    public void MatchAuthorFilesForTests_Blocks_Even_When_Scanned_Path_Casing_Differs()
+    {
+        const string scannedPath = "C:\\lib\\Terry Brooks\\Book.epub";
+        const string blockedPathDifferentCase = "c:\\lib\\terry brooks\\book.epub";
+        var author = new Author { Id = 1, Name = "Terry Brooks" };
+        var entries = new Dictionary<string, List<CalibreBookEntry>>(StringComparer.Ordinal)
+        {
+            [TitleNormalizer.NormalizeAuthor("Terry Brooks")] =
+            [new("C:\\lib", "Terry Brooks", "Terry Brooks - Magic Kingdom for Sale", scannedPath, 1, DateTime.UtcNow)]
+        };
+        var books = new Dictionary<int, List<Book>>
+        {
+            [1] = [new Book { Id = 10, AuthorId = 1, Title = "Magic Kingdom for Sale", NormalizedTitle = TitleNormalizer.Normalize("Magic Kingdom for Sale"), OpenLibraryWorkKey = "OL10W" }]
+        };
+        var blockedLinks = new HashSet<(string Path, int BookId)> { (LinkBlocklist.Canon(blockedPathDifferentCase), 10) };
+
+        var result = SyncService.MatchAuthorFilesForTests(
+            author, entries, books, new Dictionary<int, List<int>>(), new Dictionary<string, LocalBookFile>(StringComparer.Ordinal),
+            blockedLinks);
+
+        var insert = Assert.Single(result.Inserts);
+        Assert.Null(insert.BookId);
     }
 
     [Fact]

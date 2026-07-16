@@ -119,6 +119,9 @@ public sealed class ScheduleService
             ScheduleJobIds.MarkEditionsRead => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunMarkEditionsRead(true)),
             ScheduleJobIds.StarSeriesCoAuthors => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunStarSeriesCoAuthors(true)),
             ScheduleJobIds.ResolveIsbns => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunResolveIsbns(true)),
+            ScheduleJobIds.RetryIsbnMisses => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunRetryIsbnMisses(true)),
+            ScheduleJobIds.VerifyArchiveDuplicates => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunVerifyArchiveDuplicates(true)),
+            ScheduleJobIds.ReviewUnapplicableScans => BackgroundJob.Enqueue<ScheduledJobs>(j => j.RunReviewUnapplicableScans(true)),
             _ => throw new ArgumentException($"Unknown job id '{jobId}'", nameof(jobId)),
         };
     }
@@ -281,6 +284,15 @@ public sealed class ScheduleService
                     break;
                 case ScheduleJobIds.ResolveIsbns:
                     _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunResolveIsbns(), entry.Cron);
+                    break;
+                case ScheduleJobIds.RetryIsbnMisses:
+                    _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunRetryIsbnMisses(), entry.Cron);
+                    break;
+                case ScheduleJobIds.VerifyArchiveDuplicates:
+                    _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunVerifyArchiveDuplicates(), entry.Cron);
+                    break;
+                case ScheduleJobIds.ReviewUnapplicableScans:
+                    _recurring.AddOrUpdate<ScheduledJobs>(jobId, j => j.RunReviewUnapplicableScans(), entry.Cron);
                     break;
             }
             _log.LogInformation("Schedule {Job}: enabled with cron '{Cron}'", jobId, entry.Cron);

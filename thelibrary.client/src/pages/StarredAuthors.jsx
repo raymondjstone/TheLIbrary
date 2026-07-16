@@ -54,8 +54,10 @@ export default function StarredAuthors() {
                         <tr>
                             <th>Author</th>
                             <th style={{ textAlign: 'center' }}>Priority</th>
-                            <th style={{ textAlign: 'right' }}>Books</th>
+                            <th style={{ textAlign: 'right' }}>Publications</th>
                             <th style={{ textAlign: 'right' }}>Ebooks</th>
+                            <th style={{ textAlign: 'right' }} title="Obtained by any manner — an ebook file, or flagged owned (e.g. a physical copy)">Obtained</th>
+                            <th style={{ textAlign: 'right' }} title="Known publications not obtained at all">Not obtained</th>
                             <th style={{ textAlign: 'right' }}>Unmatched files</th>
                         </tr>
                     </thead>
@@ -68,6 +70,10 @@ export default function StarredAuthors() {
                                 </td>
                                 <td style={{ textAlign: 'right' }}>{a.bookCount}</td>
                                 <td style={{ textAlign: 'right' }}>{a.ebookCount}</td>
+                                <td style={{ textAlign: 'right' }}>{a.ownedCount}</td>
+                                <td style={{ textAlign: 'right', color: a.unobtainedCount > 0 ? 'var(--danger, #b91c1c)' : undefined }}>
+                                    {a.unobtainedCount > 0 ? a.unobtainedCount : '—'}
+                                </td>
                                 <td style={{ textAlign: 'right' }}>
                                     {a.unmatchedCount > 0 ? a.unmatchedCount : '—'}
                                 </td>

@@ -26,6 +26,12 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0
 # use the headless `ebook-convert` binary. --no-install-recommends keeps
 # the closure small, and a few packages get added back explicitly that
 # Calibre needs at runtime for image rendering / XML processing.
+#
+# tzdata: the IANA timezone database, so TimeZoneInfo.FindSystemTimeZoneById can
+# resolve "America/Los_Angeles" — Google Books API quotas reset at midnight Pacific
+# time, not UTC, and GoogleBooksRateLimiter needs this to track the daily-exhaustion
+# latch correctly (the app falls back to a fixed, DST-unaware UTC-8 approximation
+# without it, so this isn't required to avoid a crash, just to be fully correct).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         calibre \
@@ -33,5 +39,6 @@ RUN apt-get update \
         libopengl0 \
         libxkbcommon0 \
         libxcb-cursor0 \
+        tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && ebook-convert --version

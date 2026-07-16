@@ -119,7 +119,7 @@ public sealed class DuplicateAutoArchiveService
             foreach (var extra in copies.Where(c => c.File.Id != keeper.File.Id))
             {
                 _currentMessage = $"Archiving extra of book {bookId}";
-                if (await ArchiveAsync(extra.File, archiveLeaf, locations, db, ct)) filesArchived++;
+                if (await DuplicateFileArchiver.ArchiveAsync(extra.File, archiveLeaf, locations, _fs, _log, ct)) filesArchived++;
                 else warnings++;
             }
             await db.SaveChangesAsync(ct);
@@ -139,62 +139,6 @@ public sealed class DuplicateAutoArchiveService
             booksProcessed, filesArchived, warnings);
         _currentMessage = $"Done — archived {filesArchived} extra(s) across {booksProcessed} book(s)";
         return summary;
-    }
-
-    // Moves a file into the archive folder, preserving its library-relative
-    // subpath, with forward-slash paths (stored paths are always forward-slash on
-    // the Linux mount). Mirrors BooksController's archive action. Returns true on
-    // success; false (with the row left as-is) when the source can't be removed.
-    private async Task<bool> ArchiveAsync(
-        Data.Models.LocalBookFile file, string archiveLeaf, IReadOnlyList<string> locations, LibraryDbContext db, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(file.FullPath)) return false;
-        var location = locations.FirstOrDefault(l =>
-            file.FullPath.StartsWith(l.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase));
-        if (location is null) return false;
-
-        var libRoot = location.Replace('\\', '/').TrimEnd('/');
-        var relative = file.FullPath.Replace('\\', '/')[libRoot.Length..].TrimStart('/');
-        var destBase = (archiveLeaf.Contains('/') || archiveLeaf.Contains('\\'))
-            ? archiveLeaf.Replace('\\', '/').TrimEnd('/')
-            : $"{libRoot}/{archiveLeaf}";
-        var destPath = $"{destBase}/{relative}";
-        var destDir = destPath[..destPath.LastIndexOf('/')];
-
-        try
-        {
-            if (!await _fs.FileExistsAsync(file.FullPath, ct)) return false;
-            await _fs.CreateDirectoryAsync(destDir, ct);
-            var final = (await UniqueFileAsync(destPath, ct)).Replace('\\', '/');
-            await _fs.MoveFileAsync(file.FullPath, final, overwrite: false, ct);
-            if (await _fs.FileExistsAsync(file.FullPath, ct))
-            {
-                _log.LogWarning("Dup auto-archive: could not remove source {Path} — left as-is", file.FullPath);
-                return false; // never repoint while the live original survives
-            }
-            file.FullPath = final;
-            return true;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _log.LogWarning(ex, "Dup auto-archive: failed to archive {Path}", file.FullPath);
-            return false;
-        }
-    }
-
-    private async Task<string> UniqueFileAsync(string desired, CancellationToken ct)
-    {
-        if (!await _fs.FileExistsAsync(desired, ct) && !await _fs.DirectoryExistsAsync(desired, ct)) return desired;
-        var dir = desired[..desired.LastIndexOf('/')];
-        var name = desired[(desired.LastIndexOf('/') + 1)..];
-        var stem = Path.GetFileNameWithoutExtension(name);
-        var ext = Path.GetExtension(name);
-        for (var i = 2; i < 1000; i++)
-        {
-            var next = $"{dir}/{stem}_{i}{ext}";
-            if (!await _fs.FileExistsAsync(next, ct) && !await _fs.DirectoryExistsAsync(next, ct)) return next;
-        }
-        return $"{dir}/{stem}_{DateTime.UtcNow:yyyyMMddHHmmss}{ext}";
     }
 
     // A path is a real copy if it's an existing ebook file (by extension), or a

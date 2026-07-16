@@ -39,6 +39,9 @@ public class JobsController : ControllerBase
     private readonly ReadEditionPropagationService _markEditionsRead;
     private readonly SeriesCoAuthorStarService _starSeriesCoAuthors;
     private readonly IsbnResolutionCatchupService _resolveIsbns;
+    private readonly IsbnMissRetryService _retryIsbnMisses;
+    private readonly DuplicateContentArchiveService _verifyArchiveDuplicates;
+    private readonly ReviewUnapplicableScansService _reviewUnapplicableScans;
     private readonly BackgroundTaskCoordinator _coordinator;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly OpenLibraryRateLimiter _rateLimiter;
@@ -75,6 +78,9 @@ public class JobsController : ControllerBase
         ReadEditionPropagationService markEditionsRead,
         SeriesCoAuthorStarService starSeriesCoAuthors,
         IsbnResolutionCatchupService resolveIsbns,
+        IsbnMissRetryService retryIsbnMisses,
+        DuplicateContentArchiveService verifyArchiveDuplicates,
+        ReviewUnapplicableScansService reviewUnapplicableScans,
         BackgroundTaskCoordinator coordinator,
         IHostApplicationLifetime lifetime,
         OpenLibraryRateLimiter rateLimiter,
@@ -110,6 +116,9 @@ public class JobsController : ControllerBase
         _markEditionsRead = markEditionsRead;
         _starSeriesCoAuthors = starSeriesCoAuthors;
         _resolveIsbns = resolveIsbns;
+        _retryIsbnMisses = retryIsbnMisses;
+        _verifyArchiveDuplicates = verifyArchiveDuplicates;
+        _reviewUnapplicableScans = reviewUnapplicableScans;
         _coordinator = coordinator;
         _lifetime = lifetime;
         _rateLimiter = rateLimiter;
@@ -160,6 +169,9 @@ public class JobsController : ControllerBase
             markEditionsRead = new { isRunning = _markEditionsRead.IsRunning, message = _markEditionsRead.CurrentMessage },
             starSeriesCoAuthors = new { isRunning = _starSeriesCoAuthors.IsRunning, message = _starSeriesCoAuthors.CurrentMessage },
             resolveIsbns = new { isRunning = _resolveIsbns.IsRunning, message = _resolveIsbns.CurrentMessage },
+            retryIsbnMisses = new { isRunning = _retryIsbnMisses.IsRunning, message = _retryIsbnMisses.CurrentMessage },
+            verifyArchiveDuplicates = new { isRunning = _verifyArchiveDuplicates.IsRunning, message = _verifyArchiveDuplicates.CurrentMessage },
+            reviewUnapplicableScans = new { isRunning = _reviewUnapplicableScans.IsRunning, message = _reviewUnapplicableScans.CurrentMessage },
         });
     }
 
@@ -359,6 +371,30 @@ public class JobsController : ControllerBase
     public IActionResult StartResolveIsbns()
     {
         if (!_resolveIsbns.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("retry-isbn-misses/start")]
+    public IActionResult StartRetryIsbnMisses()
+    {
+        if (!_retryIsbnMisses.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("verify-archive-duplicates/start")]
+    public IActionResult StartVerifyArchiveDuplicates()
+    {
+        if (!_verifyArchiveDuplicates.TryStart(_lifetime.ApplicationStopping, out var err))
+            return Conflict(new { error = err });
+        return Accepted();
+    }
+
+    [HttpPost("review-unapplicable-scans/start")]
+    public IActionResult StartReviewUnapplicableScans()
+    {
+        if (!_reviewUnapplicableScans.TryStart(_lifetime.ApplicationStopping, out var err))
             return Conflict(new { error = err });
         return Accepted();
     }

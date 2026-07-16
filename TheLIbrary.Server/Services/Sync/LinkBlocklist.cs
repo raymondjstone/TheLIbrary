@@ -12,21 +12,29 @@ namespace TheLibrary.Server.Services.Sync;
 // Blocked book links).
 public static class LinkBlocklist
 {
+    // Same normalization SyncService uses for every other path comparison
+    // (FormC + uppercase) — case-insensitive-but-case-preserving CIFS/NAS mounts
+    // can hand back a differently-cased path for the same file between when it
+    // was blocked and a later scan, and an ordinal comparison would silently miss.
+    public static string Canon(string p) => p.Normalize(System.Text.NormalizationForm.FormC).ToUpperInvariant();
+
     public static async Task<bool> IsBlockedAsync(LibraryDbContext db, string? fullPath, int? bookId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(fullPath) || bookId is null) return false;
+        var canon = Canon(fullPath);
         return await db.BlockedBookLinks.AsNoTracking()
-            .AnyAsync(b => b.FullPath == fullPath && b.BookId == bookId, ct);
+            .AnyAsync(b => b.FullPath.ToUpper() == canon && b.BookId == bookId, ct);
     }
 
     // Bulk preload for hot loops (the classic sync's per-file reconciliation) that
-    // can't afford one query per file.
+    // can't afford one query per file. Keyed by the same canonical form IsBlockedAsync
+    // compares against, so callers must canonicalize the path they look up with too.
     public static async Task<HashSet<(string Path, int BookId)>> LoadAllAsync(LibraryDbContext db, CancellationToken ct)
     {
         var rows = await db.BlockedBookLinks.AsNoTracking()
             .Select(b => new { b.FullPath, b.BookId })
             .ToListAsync(ct);
-        return rows.Select(r => (r.FullPath, r.BookId)).ToHashSet();
+        return rows.Select(r => (Canon(r.FullPath), r.BookId)).ToHashSet();
     }
 
     // Records a new block. Idempotent — calling it twice for the same pair is a no-op.

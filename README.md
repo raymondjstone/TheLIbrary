@@ -62,13 +62,13 @@ and wishlist.
 | Physical Only | `/physical-only` | Books marked **physically owned** (print copy) that have no ebook file here and are **not** flagged "got in a different edition" — i.e. works you hold on paper but might still want digitally. Grouped by author. Backed by `GET /api/books/physical-only` |
 | Activity | `/activity` | Read-only audit trail of consequential actions — files archived / deleted / auto-archived, **manual books added** (`manual-add`), and **manual books promoted** to their real OpenLibrary work (`promote-manual`, by the author-refresh or promote-manual-books job), plus **manual authors added** (`manual-author-add`) and **promoted** (`promote-manual-author`) — what changed, when, and what triggered it (`user` vs a job). Each row carries the book/author title and details. Backed by `GET /api/activity` and the `ActivityLog` table |
 | Health | `/health` | Operational view: backlogs (unmatched files, untracked scans, `__unknown` files, and **untracked-not-yet-LLM-parsed** — the `llm-identify` job's remaining candidates), the LLM job's daily calls-left and (when provider **admin keys** are set in Settings) the real **$ spend over the last 30 days** per provider — spend, not remaining balance, since the providers don't expose a credit balance via the API; authors by status and **by creation source** (provenance), authors created over the last 14 days, the count `prune-authors` would remove, and current job state |
-| Starred Authors | `/starred` | Authors with priority ≥ 1 |
+| Starred Authors | `/starred` | Authors with priority ≥ 1, with per-author publication count, how many are **obtained** (ebook file linked, or flagged owned another way — physical/different-edition), how many are **not obtained at all**, and unmatched local files. Backed by `GET /api/authors/starred` |
 | Recommendations | `/recommendations` | "Authors you might want to watch" — un-starred authors already in your catalogue ranked by how well their genres overlap the books you own, plus co-authors on series you own; one-click **★ Watch** promotes one onto the watchlist, or **✕ Not interested** dismisses one for good so it's never suggested again — a dismissed author shows an **Undo** banner on its author-detail page so the rejection is reversible. Backed by `GET /api/recommendations` (local data only, no OpenLibrary calls); reject/un-reject via `POST`/`DELETE /api/recommendations/{id}/reject` |
 | Series | `/series` | Hierarchical series tree with owned/total progress bars; create new series; inline edit of name, primary author, additional authors, parent series, and reading order position; deep-linkable via `?q=SeriesName` |
 | Series Completion | `/series-completion` | Series ranked by how close to complete you are (most-complete-but-unfinished first), each with an owned/total bar and a one-click **"Want N missing"** button that marks every not-owned volume in the series as Wanted. Optional "hide complete series" filter |
 | Collections | `/collections` | User-defined shelves (e.g. "To read 2026", "Favorites") that cut across authors/series — create / rename / delete, view a shelf's books. Books are added from the **shelf** button on any book row (author detail). Also shows **auto genre tags** derived from OpenLibrary subjects; clicking one opens `/genre/:genre`, a browse-by-genre book list (owned / missing filter) |
 | Stats | `/stats` | KPI cards, books-read-by-year chart, top genres, per-author coverage, file-format breakdown chart, files-acquired-by-month chart, plus **reading insights** (books read in the last 12 months, pace/month, owned-but-unread backlog, and years-to-clear-backlog at current pace) |
-| Duplicates | `/duplicates` | Books matched to more than one **real** local copy (a file, or a folder that actually holds an ebook — empty/stale title-folder rows are not counted). Each copy shows its integrity status (✓ ok / ✗ damaged / ? unchecked) and the **keeper is never a damaged copy** when a healthy one exists. Each copy also has an **Unlink** action (no confirm dialog) to detach a wrongly-matched file from the book (undo a false match) — the file stays on disk under its author, is marked `ManuallyUnmatched` so the classic sync matcher won't re-link it, and the exact (file, book) pair is **permanently blocked** (`BlockedBookLink` / `LinkBlocklist`) so *no* automated matching path or apply flow can ever re-add that specific wrong match either (`POST /api/books/files/{id}/unlink`) — see [Blocked book links](#blocked-book-links) |
+| Duplicates | `/duplicates` | Books matched to more than one **real** local copy (a file, or a folder that actually holds an ebook — empty/stale title-folder rows are not counted). Each copy shows its integrity status (✓ ok / ✗ damaged / ? unchecked) and the **keeper is never a damaged copy** when a healthy one exists. Each copy also has an **Unlink** action (no confirm dialog) to detach a wrongly-matched file from the book (undo a false match) — the file stays on disk under its author, is marked `ManuallyUnmatched` so the classic sync matcher won't re-link it, and the exact (file, book) pair is **permanently blocked** (`BlockedBookLink` / `LinkBlocklist`) so *no* automated matching path or apply flow can ever re-add that specific wrong match either (`POST /api/books/files/{id}/unlink`) — see [Blocked book links](#blocked-book-links). A per-group **Unlink all** button (confirm dialog) covers the case where the *whole* group — keeper included, not just the extras — is a wrong match: one click detaches and blocks every copy in the group, reusing the same bulk `POST /api/books/duplicates/actions` endpoint as **Archive extras** / **Delete extras** (`action: "unlink"`) |
 | Damaged | `/damaged` | Ebook files the integrity job couldn't open/convert, or that have fewer than 20 pages — **grouped by book**, with NZB replacement-search links, per-book "add to Wanted" + "archive all bad copies", per-file preview/mark-OK/recheck/remove/restore-from-archive, an on-demand **Check now**, a **★ Starred authors only** filter (starred authors are flagged with a ★ on each group), and a **backlog gauge** ("⏳ N still to check") showing how many files still await an integrity check (raise *Max files per run* on Settings to clear it faster). See [Book integrity check](#book-integrity-check) |
 | Identified | `/identified` | Author/title/series guessed from the front matter of unmatched & untracked files (the *Identify books from content* job), to review, preview, **Apply** (match to an OpenLibrary work), or dismiss. A per-row **Find on OL** opens the OpenLibrary title search and the selected work is **matched immediately** — author resolved/created, book ensured, file moved and linked, row retired — no separate Apply click. **Tracked** files (already in an author folder) show no "accept author" action — their author is fixed by the folder. Bulk **"do all"** actions at the top — Apply all ISBNs, Assign all untracked, Build all series, and **Dismiss all** (clears the whole list, respecting the author filter) — let you action the list without going row by row. Untracked rows also offer **Map to Unknown Author** (files the book under a catch-all "Unknown Author" so it leaves limbo — you can still match it to an OpenLibrary book afterwards and it stays under Unknown Author) and a per-row **🗑 Delete**. A top-level **+ Add author** button creates an author (OpenLibrary or manual) for files whose author isn't in the library yet, then jumps to their page to match their files. See [Identifying books from content](#identifying-books-from-content) |
 | Manual Books | `/manual-books` | Every manually-added book (works not on OpenLibrary), **grouped by author** with a filter per column (title, author, year, series, owned), inline edit and delete. Filtering and paging are **server-side** (100 per page) so the list stays fast even with 100k+ manual books — the filter boxes drive the query and any change jumps to page 1. Rows with **no ebook file** carry the **same external book-search links** (Z-Library / NZB indexers) an OpenLibrary book gets elsewhere — gated on the file, not the owned flag, so a manual book auto-marked "owned (other edition)" by the duplicate-editions job still offers the search. Since a manual book isn't on OL, those searches are the main way to go find it. The daily [promote-manual-books job](#promote-manual-books-job) links each one to its real OpenLibrary work once OL lists it |
@@ -76,7 +76,7 @@ and wishlist.
 | Unmatched physical | `/physical-unmatched` | Editable list of physical-books-import rows that couldn't be matched; "Re-run matching" re-tries the whole list against the current library |
 | Sync | `/sync` | Live sync dashboard with phase tracking and progress, plus a **Background jobs** panel with a **run-now** button and live status for **every** job, **grouped by category** |
 | Schedules | `/schedules` | Cron expressions and enabled/disabled flags for **every** background job, **grouped by category**; a collapsible **"What this job does"** explainer and a per-job last-N-run history panel. Both the Schedules and Sync pages render the same jobs from one shared catalog (`src/jobCatalog.js`) so they can't drift apart |
-| Settings | `/settings` | Library locations, incoming folder, custom quarantine (`__unknown`) folder override, Pushover credentials (+ "Send test"), ignored folders, title blacklist, author blacklist, NZB sites, reMarkable pairing, book integrity check (max files per run + replacement formats), **Background job run limits** (per-run caps for promote-manual-books, resolve-works, resolve-isbns, assign-authors, auto-replace-damaged, prune-authors — each defaults to the job's built-in cap), Goodreads + physical-books import |
+| Settings | `/settings` | Library locations, incoming folder, custom quarantine (`__unknown`) folder override, Pushover credentials (+ "Send test"), ignored folders, title blacklist, author blacklist, NZB sites, reMarkable pairing, book integrity check (max files per run + replacement formats), **Background job run limits** (per-run caps for promote-manual-books, resolve-works, resolve-isbns, retry-isbn-misses, assign-authors, auto-replace-damaged, prune-authors — each defaults to the job's built-in cap), Goodreads + physical-books import |
 
 ## How it works
 
@@ -551,7 +551,12 @@ The Duplicates page's **Unlink** action doesn't just detach a wrongly-matched fi
 from a book — it permanently blocks that exact **(file path, book id)** pair from
 ever being re-linked, so a bad match can't keep silently coming back. Recorded in
 the `BlockedBookLink` table, keyed by the file's `FullPath` (so the block survives
-the file being unmatched and rescanned) plus the `BookId`.
+the file being unmatched and rescanned) plus the `BookId`. The per-group **Unlink
+all** button does the same for every file in a duplicate group at once — for the
+case where the whole group (not just the extras) turns out to be the wrong book
+entirely — via `action: "unlink"` on the same bulk `POST /api/books/duplicates/actions`
+endpoint used by Archive/Delete extras; each file is blocked and detached
+independently, so a partial failure never leaves some files silently un-blocked.
 
 Every automated matching path checks this before setting `BookId` (`LinkBlocklist`):
 the classic sync title-matcher (preloaded once per sync — a per-file query would be
@@ -664,6 +669,12 @@ duplicates. This "is it a real ebook?" check is the single source of truth
 page's book list, for instance, will **never** mark a book owned, or show a
 "file", for a row that actually points at an empty folder, regardless of when
 the cleanup job last ran.
+
+The Settings page also exposes **Duplicate content match threshold**
+(`DuplicateContentMatchThreshold`, default **90%**) — the minimum text
+word-overlap percentage the `verify-archive-duplicates` scheduled job requires
+from every extra copy before it will archive them; see that job's row in the
+[Scheduled jobs](#scheduled-jobs) table for how it decides "matches".
 
 The **`prune-stale-files`** scheduled job (default `0 20 * * *`, also runnable on
 demand from the Sync page's *Background jobs* list) keeps the database and disk
@@ -1417,13 +1428,49 @@ catalogue. An **author-only** guess is shown **only for a file that isn't alread
 filed under an author** (an untracked `__unknown` file, where the author is the
 one useful lead); for a file already sitting in an author folder a bare author
 guess just re-confirms what's known, so it's hidden rather than cluttering the
-list with "accept author" rows that do nothing. A single **filter box** narrows
+list with "accept author" rows that do nothing. The list is split into two
+sections: **Untracked** (`__unknown` files — the small, high-priority set,
+returned in full up to a 10,000-row safety ceiling) and **Tracked** (files
+already in an author folder — can run into the tens of thousands). The Tracked
+section is **paged server-side, 100 rows per page, newest-scanned first**
+(`GET /api/identified?trackedPage=0`), with **Prev/Next** controls above the
+table; bulk actions (Apply all, Dismiss all, …) only ever act on the rows in the
+currently loaded page. A single **filter box** narrows
 the list to rows whose text matches in **any** column — path, author, title,
 series, ISBN, "also by", or anywhere in the series catalogue; a **Starred authors
 only** toggle further limits the list to files filed under a priority
-(`Priority >= 1`) author. Each row offers **Preview**,
+(`Priority >= 1`) author. An **ISBN status** dropdown filters on where each
+row's ISBN guess stands. Every ISBN-bearing unmatched row lands in exactly
+**one** of three buckets — no silent 4th "excluded" state: **Waiting for ISBN
+match** (Apply has nothing to use yet, for *any* reason — never attempted, a
+confirmed miss, or a fallback-provider title with no OpenLibrary work key —
+these are lumped together because from Apply's perspective they're all
+equally "not usable," and splitting them out just made the count of what's
+actually still outstanding look artificially small); **ISBN matched**
+(resolved to a work whose author agrees — Apply would succeed); and **Needs
+reassigned to other author** (resolved to a work by a different author — Apply
+refuses it; use **↪ Reassign to «author»** instead). This is computed
+**server-side from the already-cached `IsbnResolutions` table** in a couple of
+bulk queries (`GET /api/identified?isbnStatus=…`) — deliberately *not* the
+same lazy, one-row-at-a-time live OpenLibrary lookup that powers the
+title-column preview, which for a page of thousands of rows would only ever
+have resolved a handful by the time you looked at it. Crucially, this filter
+is applied to the Tracked query **before** the 100-row pagination, not
+after — the Tracked section can run to tens of thousands of rows and is
+dominated by series-catalogue-only entries whose `ScannedAt` gets bumped
+independently of any ISBN work, so a naive
+after-paging filter would only ever see whatever's on the currently-loaded
+page and could easily show zero results even when thousands of real matches
+exist further back in the backlog. `trackedTotal`/pagination reflect the
+filtered count when the filter is active.
+Each row offers **Preview**,
 **Dismiss** (mark reviewed), and **Apply** — which links the file to one of the
-author's books.
+author's books. Within each section, rows are grouped by author, then by title.
+**Untracked** groups by the *guessed* author (no folder exists yet); **Tracked**
+groups by the author's **current folder name on disk** — the link is
+folder-driven, so the folder name (not `Author.Name`, which can drift after a
+rename until the folder itself is renamed) is the ground truth for which author
+a tracked file is actually filed under right now.
 
 **Apply only ever touches a file that is *not yet* matched to a book.** Once a
 file is matched, its title is settled — that book (in the catalogue) is the
@@ -1447,7 +1494,15 @@ retried. If that work's author disagrees with the file's folder author it's flag
 below refuses it), and a **↪ Reassign to «author»** button is offered: it drives the
 same `use-work` flow to resolve/create that author, move the file into their folder
 and link the book — the explicit override for when the ISBN's author is the correct
-one.
+one. A page-level **Reassign all N to their ISBN author** button (shown whenever
+any loaded row has ISBN status "Needs reassigned to other author") does the same
+for every such row across the **whole backlog**, not just what's on screen — driven
+entirely from the cached `IsbnResolutions` table (no live OpenLibrary calls needed,
+since a "reassign" row is by definition already resolved), in capped batches like
+the other bulk actions (`POST /api/identified/reassign-all-isbn`). **One row's
+failure — a moved/deleted file, a blocked relink — is logged and skipped, not
+fatal**; it's left unreviewed for a later run while every other row in the batch
+still gets processed.
 
 The cache is warmed two ways: **content-scan resolves each file's ISBN inline as it
 scans** (going forward, so newly-scanned files are pre-resolved), and a
@@ -1526,22 +1581,31 @@ sources had already ruled it out.
 **Quota handling.** Google Books enforces ~100 requests/min and **1,000/day**. Calls
 are paced under the per-minute cap, and when Google signals the **daily quota is
 spent** (HTTP 429, or a 403 citing a quota/limit reason) the app **latches Google off
-for the rest of the UTC day** — further lookups short-circuit without an HTTP call,
-and the ISBNs that couldn't be resolved are left **uncached so they're re-attempted
-the next day** once the quota resets. **ISBNdb deliberately gets no such latch.**
-Two attempts at detecting an ISBNdb "quota spent" state from its HTTP status/body
-(first treating any 429 as the daily cap, then treating a 403 whose body mentioned
-"quota"/"limit" as the cap) both ended up misfiring — the account was demonstrably
-still working each time, but a single ambiguous error had disabled it for the rest
-of the day. ISBNdb's real quota-exhausted response format isn't reliably known, so
-guessing at it costs more (silently losing a whole day of a paid, working source)
-than it saves. Every ISBNdb failure — 429, 403, or a network error — is now just
-`Unavailable` for that one call, retried normally on the next lookup, the same way
-Hardcover and LoC already behave. The `resolve-isbns` job presses on past a
-quota-capped ISBN (counted as *deferred*, and skipped for the rest of the day — see
-above) rather than stopping the batch; ISBNs resolvable via another source in the same
-run are still cached (only the capped source is paused). Google's latch clears
-automatically at the UTC date rollover. On the Identified
+for the rest of the day** — further lookups short-circuit without an HTTP call, and
+the ISBNs that couldn't be resolved are left **uncached so they're re-attempted the
+next day** once the quota resets. The latch (`GoogleBooksRateLimiter`) is keyed to
+the **Pacific-time day, not UTC** — Google Cloud API quotas (Books API included)
+actually reset at **midnight Pacific Time** (~07:00 UTC in PDT / ~08:00 UTC in PST),
+confirmed against Google's own 429 response body. An earlier version tracked UTC
+days, which cleared the latch at 00:00 UTC while the quota itself stayed spent for
+several more hours — a job or lookup running in that window saw "not exhausted",
+spent a real call finding out otherwise, and re-latched; `retry-isbn-misses` running
+early at 03:10 UTC hit this on its very first attempt every single day and could
+never make progress. Fixed by tracking the Pacific day everywhere the latch is read
+or set, and by scheduling `retry-isbn-misses` at 08:30 UTC (see above) so it runs
+comfortably after the real reset in either DST state. **ISBNdb deliberately gets no
+such latch.** Two attempts at detecting an ISBNdb "quota spent" state from its HTTP
+status/body (first treating any 429 as the daily cap, then treating a 403 whose body
+mentioned "quota"/"limit" as the cap) both ended up misfiring — the account was
+demonstrably still working each time, but a single ambiguous error had disabled it
+for the rest of the day. ISBNdb's real quota-exhausted response format isn't
+reliably known, so guessing at it costs more (silently losing a whole day of a paid,
+working source) than it saves. Every ISBNdb failure — 429, 403, or a network error —
+is now just `Unavailable` for that one call, retried normally on the next lookup,
+the same way Hardcover and LoC already behave. The `resolve-isbns` job presses on
+past a quota-capped ISBN (counted as *deferred*, and skipped for the rest of the day
+— see above) rather than stopping the batch; ISBNs resolvable via another source in
+the same run are still cached (only the capped source is paused). On the Identified
 page an on-demand lookup that hits the spent quota shows a **⏳ Google quota — retry
 tomorrow** note (the `isbn-title` endpoint returns a retryable state, not an error)
 rather than a bare failure, and nothing is cached so the row resolves on a later load.
@@ -1565,6 +1629,25 @@ cached as a permanent miss — same outcome as a definitive miss, just reached b
 exhaustion instead of confirmation. A later real answer (a source coming back online,
 or a manual **Re-attempt failed ISBN lookups**) clears the counter, so it doesn't give
 up again after a single attempt.
+
+**`retry-isbn-misses` job** (Schedules page, off by default, `30 8 * * *`/08:30 UTC by
+default — see *Quota handling* below for why that specific time) automates the above
+without needing a manual reset + a later `resolve-isbns`
+pass: it walks `IsbnResolutions` rows with **no title** directly (confirmed misses and
+give-ups alike), **oldest `ResolvedAt` first**, deletes each stale row and re-resolves
+it through the exact same chain (OpenLibrary, then the fallback sources in the order
+above) — capped per run (Settings → *Background job run limits → Retry failed ISBN
+lookups*, default 1000). It's gated on **Google Books being configured** (no key = the
+job no-ops immediately — there's no point burning the other sources' calls on a pass
+whose whole reason for existing is giving Google a shot at what it hasn't seen), and
+**stops the moment Google's daily quota latches exhausted**, checked before every
+single row rather than once up front, so a run that burns through the quota partway
+still keeps whatever it resolved instead of grinding on pointlessly. OpenLibrary and
+the other fallback sources are still tried per row same as always — Google is only the
+run's *stop signal*, since it's the one source with a reliable daily-exhaustion latch
+(ISBNdb deliberately has none, per above). Unlike `resolve-isbns` (which discovers
+candidates by walking `BookContentScan.Isbn`), this job reads `IsbnResolutions`
+directly, so it also catches ISBNs whose scan row no longer exists.
 
 How the guess is resolved for
 an unmatched file is deliberately strict, because a title scraped from a book's
@@ -1957,10 +2040,13 @@ on every startup.
 | `index-fulltext` | `0 * * * *` (disabled by default) | Extract and index ebook text for [full-text search](#full-text-search). No-op unless the feature is enabled in Settings; indexes up to `FullTextIndexMaxPerRun` books per run. See [Full-text search](#full-text-search) |
 | `prune-authors` | `40 3 * * *` (disabled by default) | Delete **empty auto-created authors** — rows whose `CreationSource` is `same-name`/`assign`/`content-scan`/`adopt`, status Pending/NotFound, priority 0, with no books, no local files, no links and no notes. Never touches manual/restored/pre-existing authors. Capped 5000/run. Destructive, so opt-in |
 | `duplicate-auto-archive` | `30 3 * * *` (disabled by default) | For every book with more than one live copy, keep the best one (healthy beats damaged, then preferred format, then lowest id — same rule as the Duplicates page) and **archive the rest** — the automated "Archive extras". Moves files (forward-slash paths, source verified removed via `SafeMove`), so it ships **disabled**; opt in on the Schedules page |
+| `verify-archive-duplicates` | `50 3 * * *` (disabled by default) | A more cautious sibling of `duplicate-auto-archive`: before archiving anything, extracts and compares each copy's **text content** (front + back matter, via the same `BookTextReader` full-text search uses) against the keeper's, using word-overlap similarity (robust to reflow/OCR noise between formats). Only archives the extras when **every** copy matches within the configured threshold (Settings → *Duplicate content match threshold*, default **90%**); if even one copy can't be confirmed similar enough — including when text extraction fails or yields too little text to judge — **the whole book is left completely untouched** for manual review, never partially archived. **Every book it checks gets an Activity line with the actual percentage(s) computed** (`unreadable.epub: n/a`, `copy2.pdf: 62.4%`, ...) and whether that led to an archive or a hands-off skip — not just the ones it archived — so you can see how well the matcher is actually doing and tune the threshold accordingly. Capped 100 duplicate groups/run (`VerifyArchiveDuplicatesMaxPerRun`); heavier than `duplicate-auto-archive` (opens/converts every file) and moves files, so it ships **disabled** — opt in on the Schedules page |
 | `series-watch` | `0 14 * * *` (disabled by default) | When a series you **own a book in** gains a recently-added (≤14 days) volume you don't own, mark it **Wanted** and send one Pushover summary — the high-signal "next in a series I'm collecting" case. Acts on your collection, so it ships **disabled**; opt in on the Schedules page |
 | `auto-replace-damaged` | `0 15 * * *` (disabled by default) | Search the indexer and send the best replacement to SABnzbd for each damaged book (the automated "Grab"). Capped at 20/run; no-ops when Download automation isn't configured. Pulls downloads, so it ships **disabled**; opt in on the Schedules page. The Damaged page also has a per-book **⤓ Grab replacement** button |
 | `resolve-works` | `0 16 * * *` (disabled by default) | Link files that already know their **author** but not their **work**, using the ISBN we already extracted: ISBN → OpenLibrary work (the `/isbn/{isbn}.json` edition endpoint first — it resolves ~2× the ISBNs the search index does — then the ISBN search) → ensure the `Book` under the file's existing author → set `BookId`. A lenient title check rejects a mis-extracted ISBN. Closes the gap where the title-only matcher never consulted ISBN and the ISBN-aware assigner skipped author-linked files. DB-only candidate selection (no NAS reads), capped 200/run; makes OL calls + creates `Book` rows, so it ships **disabled** — opt in on the Schedules page or trigger once to work the backlog |
 | `resolve-isbns` | `30 16 * * *` (disabled by default) | Warm the shared **`IsbnResolutions`** cache for ISBNs that predate content-scan resolving them inline. Walks the distinct ISBNs on `BookContentScan` rows, resolves any not yet cached against OpenLibrary (`search.json?isbn=`, **one call per unique code** — shared by every file that carries it), and stores title/author/work-key so the Identified page never looks them up on demand. Never-attempted ISBNs are prioritized first, then previously-failed ones by fewest failures so far; one that keeps failing past the configured limit is given up on (see [Identifying books from content](#identifying-books-from-content)). DB-only candidate selection, capped 200/run (`ResolveIsbnsMaxPerRun`); makes OL calls, so it ships **disabled** — new scans populate the cache without it, this just backfills the pre-existing backlog |
+| `retry-isbn-misses` | `30 8 * * *` (disabled by default) | Reprocess **`IsbnResolutions`** rows with **no title** (confirmed misses / give-ups), **oldest `ResolvedAt` first** — deletes the stale row and re-resolves through the same chain (OpenLibrary, then Google/Hardcover/LoC/ISBNdb). Gated on a **Google Books API key being configured** (no-ops immediately otherwise) and **stops the instant Google's daily quota latches exhausted** — checked before every row, not just once. 08:30 UTC is deliberately *after* Google's real reset (midnight **Pacific** time, ~07:00-08:00 UTC depending on DST — not UTC midnight, see *Quota handling* above), so it actually has fresh quota to spend instead of immediately rediscovering yesterday's exhaustion. OpenLibrary and the other sources are still tried per row as usual; Google is only the run's stop signal (the one source with a reliable daily-exhaustion latch). Capped 1000/run (`RetryIsbnMissesMaxPerRun`); ships **disabled** — opt in on the Schedules page or trigger once to work the backlog |
+| `review-unapplicable-scans` | `30 6 * * *` (**enabled** by default) | Marks a tracked, unmatched **`BookContentScan`** row *reviewed* (removing it from the Identified page) once it's confirmed neither its ISBN nor its title can resolve to any of its author's known books — clearing backlog clutter that Apply could never clear on its own. ISBN takes priority, using only the cached `IsbnResolutions` lookup (no live OpenLibrary call): a code with no cached resolution yet is left alone for `resolve-isbns`/`retry-isbn-misses` to finish first, and one that resolves to an author-matching work is left for `apply-all` to actually link. The title fallback calls the **exact same matcher** `apply-content-guess` uses (`SyncService.FindBestKnownBookAsync`) rather than a separate copy, so this job and Apply can never silently disagree on what counts as a match. Capped 500/run (`ReviewUnapplicableScansMaxPerRun`) |
 | `llm-identify` | `0 17 * * *` (disabled by default) | **Last-resort, paid** identification of opaque `__unknown` files (no author the deterministic + filename paths could find). Sends the signals we already hold — filename, embedded metadata, ISBN, a front-matter snippet — to the configured LLM (**Claude or ChatGPT**, set in Settings → *AI identification*), then feeds the guessed title/author through the **same OpenLibrary validation + assignment** as everything else, so a hallucination is rejected, never filed. No-ops unless enabled with an API key. Cost is bounded by a **per-run cap and a hard rolling daily cap**, and each file is marked `LlmAttemptedAt` so a hopeless file is never re-sent. When the LLM finds a title/author/ISBN but OpenLibrary can't confirm it, the guess is **kept on the scan row and shown on the Identified page** for manual review (not discarded). Settings → *AI identification* has a **Re-attempt untracked files** button (`POST /api/settings/reset-llm-attempts`) that clears the `LlmAttemptedAt` marker so the job re-tries them (e.g. after raising the cap or switching model). Ships **disabled** |
 | `llm-title-match` | `30 17 * * *` (disabled by default) | For **unmatched files under starred authors**, sends the same signals to the configured LLM, but instead of an OpenLibrary lookup it matches the guessed title against that **author's existing book catalogue** by normalized title — so it only ever links to a book already known locally, never invents one. Shares the **same paid per-run/daily budget** as `llm-identify` (one pooled usage counter), and marks each file `LlmTitleMatchAttemptedAt` so a hopeless file is never re-sent. Ships **disabled** |
 | `mark-other-editions` | `0 19 * * *` (**enabled** by default) | Where the same author has several catalogue entries for the **same title** (`NormalizedTitle`) and **at least one** of them has an ebook file linked, mark every fileless sibling **Owned (other edition)** (`OwnedDifferentEdition`) — you own the work, just a different edition than that row — so the duplicate entries drop off the **Missing / Wanted** lists. "Has an ebook" is `LocalFiles.Any()`, the same predicate used for ownership everywhere else, so the job is a single set-based `UPDATE` with no NAS reads. **Idempotent** (rows already flagged are skipped) and **reversible** (untick *Other edition* on a book to undo) |

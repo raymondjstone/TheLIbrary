@@ -1123,6 +1123,32 @@ public class AuthorsControllerIntegrationTests
         Assert.Equal(2, row.BookCount);
         Assert.Equal(1, row.EbookCount);
         Assert.Equal(1, row.UnmatchedCount);
+        // "Owned Ebook" is ebook-owned (a file is linked), "Physical" is
+        // owned via ManuallyOwned with no file — both count toward "obtained by
+        // any manner", so all 2 publications are obtained and 0 are not.
+        Assert.Equal(2, row.OwnedCount);
+        Assert.Equal(0, row.UnobtainedCount);
+    }
+
+    [Fact]
+    public async Task Starred_UnobtainedCount_Counts_Publications_With_No_File_And_Not_Manually_Owned()
+    {
+        using var factory = new LibraryApiFactory();
+        await SeedAsync(factory, db =>
+        {
+            db.Authors.Add(new Author { Id = 1, Name = "Starred", Priority = 1 });
+            db.Books.Add(new Book { Id = 10, AuthorId = 1, OpenLibraryWorkKey = "OL10W", Title = "Have It", NormalizedTitle = "have it" });
+            db.Books.Add(new Book { Id = 11, AuthorId = 1, OpenLibraryWorkKey = "OL11W", Title = "Don't Have It", NormalizedTitle = "dont have it" });
+            db.LocalBookFiles.Add(new LocalBookFile { Id = 50, AuthorId = 1, BookId = 10, AuthorFolder = "Starred", TitleFolder = "Have It", FullPath = "/lib/Starred/Have It/book.epub" });
+        });
+        using var client = factory.CreateClient();
+
+        var rows = await client.GetFromJsonAsync<List<AuthorsController.StarredAuthorRow>>("/api/authors/starred");
+
+        var row = Assert.Single(rows!);
+        Assert.Equal(2, row.BookCount);
+        Assert.Equal(1, row.OwnedCount);
+        Assert.Equal(1, row.UnobtainedCount); // "Don't Have It" — no file, not ManuallyOwned
     }
 
     [Fact]

@@ -106,7 +106,7 @@ public sealed class ManualBookPromotionService
             .Take(maxPerRun)
             .Select(b => b.Id)
             .ToListAsync(ct);
-        var checkedAt = DateTime.UtcNow;
+        var batchStartTime = DateTime.UtcNow;
 
         int examined = 0, promoted = 0, notFound = 0, errors = 0;
         var merged = dbMerged; // total includes the DB-only merges above
@@ -121,6 +121,10 @@ public sealed class ManualBookPromotionService
             // Stamp the attempt up front so the row rotates to the back of the queue
             // whatever the outcome (found, not found, or error) — every code path below
             // either saves the row or, on error, re-stamps it.
+            // Use incremental timestamps (1 second per record) so records don't share
+            // the same timestamp; otherwise if the entire batch fails, the next run
+            // would re-select the same records (same timestamp, same ID order).
+            var checkedAt = batchStartTime.AddSeconds(i);
             book.PromoteCheckedAt = checkedAt;
             _currentMessage = $"Checking {i + 1}/{toAttempt.Count}: {book.Author.Name} — {book.Title}"
                 + $" ({promoted + merged} linked)";
@@ -235,7 +239,7 @@ public sealed class ManualBookPromotionService
             .ToListAsync(ct);
 
         int examined = 0, promoted = 0;
-        var checkedAt = DateTime.UtcNow;
+        var batchStartTime = DateTime.UtcNow;
         foreach (var aid in toAttempt)
         {
             ct.ThrowIfCancellationRequested();
@@ -244,6 +248,10 @@ public sealed class ManualBookPromotionService
 
             examined++;
             _currentMessage = $"Checking author {examined}/{toAttempt.Count}: {author.Name}";
+            // Use incremental timestamps (1 second per record) so records don't share
+            // the same timestamp; otherwise if the entire batch fails, the next run
+            // would re-select the same records (same timestamp, same ID order).
+            var checkedAt = batchStartTime.AddSeconds(examined - 1);
             author.NextFetchAt = checkedAt;   // rotate to the back whatever the outcome
             try
             {
@@ -432,9 +440,20 @@ public sealed class ManualBookPromotionService
         target.CoverUrl ??= manual.CoverUrl;
         target.Isbn ??= manual.Isbn;
 
-        // Primary file links follow the merge.
+        // Primary file links follow the merge — except a file explicitly unlinked
+        // (and blocked) from the target book before: that pairing must never be
+        // silently re-created, even by an automated merge landing on it.
         var files = await db.LocalBookFiles.Where(f => f.BookId == manual.Id).ToListAsync(ct);
-        foreach (var f in files) f.BookId = target.Id;
+        foreach (var f in files)
+        {
+            if (await LinkBlocklist.IsBlockedAsync(db, f.FullPath, target.Id, ct))
+            {
+                f.BookId = null;
+                f.ManuallyUnmatched = true;
+                continue;
+            }
+            f.BookId = target.Id;
+        }
 
         // Omnibus references (CSV of extra book ids) get rewritten too. The SQL
         // Contains is a coarse prefilter ("12" also matches "112"); the precise

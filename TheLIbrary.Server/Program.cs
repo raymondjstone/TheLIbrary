@@ -126,6 +126,9 @@ builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.SeriesWatchService
 builder.Services.AddSingleton<TheLibrary.Server.Services.Download.AutoReplaceDamagedService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.WorkResolutionService>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.IsbnResolutionCatchupService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.IsbnMissRetryService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.DuplicateContentArchiveService>();
+builder.Services.AddSingleton<TheLibrary.Server.Services.Sync.ReviewUnapplicableScansService>();
 builder.Services.AddHttpClient<TheLibrary.Server.Services.Llm.LlmMetadataClient>();
 builder.Services.AddHttpClient<TheLibrary.Server.Services.Llm.LlmSpendClient>();
 builder.Services.AddSingleton<TheLibrary.Server.Services.Llm.LlmIdentificationService>();

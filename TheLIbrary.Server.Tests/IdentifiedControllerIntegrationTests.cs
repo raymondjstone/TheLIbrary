@@ -81,7 +81,7 @@ public class IdentifiedControllerIntegrationTests
             await s.SaveChangesAsync();
         }
         await using var db = rdb.NewContext();
-        var rows = await new IdentifiedController(db, NullLogger<IdentifiedController>.Instance).Get(null, default);
+        var rows = (await new IdentifiedController(db, NullLogger<IdentifiedController>.Instance).Get(null, default)).Rows;
         // The older untracked row must come first despite the tracked row being newer.
         Assert.Equal(2, rows[0].Id);
         Assert.Equal("Marc Brandle", rows[0].Author);
@@ -113,7 +113,7 @@ public class IdentifiedControllerIntegrationTests
         }
         await using var db = rdb.NewContext();
         var ids = (await new IdentifiedController(db, NullLogger<IdentifiedController>.Instance).Get(null, default))
-            .Select(r => r.Id).ToHashSet();
+            .Rows.Select(r => r.Id).ToHashSet();
 
         Assert.DoesNotContain(1, ids);   // matched file → title suggestion hidden
         Assert.Contains(2, ids);          // unmatched file → title suggestion shown
@@ -142,10 +142,105 @@ public class IdentifiedControllerIntegrationTests
             await s.SaveChangesAsync();
         }
         await using var db = rdb.NewContext();
-        var ids = (await new IdentifiedController(db, NullLogger<IdentifiedController>.Instance).Get(null, default)).Select(r => r.Id).ToHashSet();
+        var ids = (await new IdentifiedController(db, NullLogger<IdentifiedController>.Instance).Get(null, default)).Rows.Select(r => r.Id).ToHashSet();
         Assert.DoesNotContain(1, ids);   // author-only hidden
         Assert.Contains(2, ids);         // title (unmatched file) shown
         Assert.Contains(3, ids);         // catalogue shown
+    }
+
+    // IsbnStatus must come from the ALREADY-CACHED IsbnResolutions table (bulk
+    // queries), not a live per-row OpenLibrary call — that's what makes the ISBN
+    // status filter usable on a page of thousands of rows instead of only ever
+    // showing however few a slow one-at-a-time client-side fetch has caught up to.
+    // Every ISBN-bearing unmatched row must land in exactly one of the three
+    // buckets — no silent 4th "excluded" state, which is what made "Waiting for
+    // ISBN match" appear near-empty even though most of the library's unresolved
+    // rows (misses, and fallback-only titles with no OL work key) were sitting
+    // right there, just invisible to every filter option.
+    [Fact]
+    public async Task Get_Computes_IsbnStatus_From_Cached_Resolutions()
+    {
+        using var rdb = new RelationalTestDb();
+        await using (var s = rdb.NewContext())
+        {
+            s.Authors.Add(new Author { Id = 1, Name = "Dayton Ward", OpenLibraryKey = "OL1386286A" });
+            s.BookContentScans.AddRange(
+                // 1: ISBN never resolved -> waiting
+                new BookContentScan { Id = 1, FullPath = "/lib/Dayton Ward/a.epub", Source = "unmatched", AuthorId = 1, Isbn = "123456789X", ScannedAt = DateTime.UtcNow },
+                // 2: resolved, author key agrees -> matched
+                new BookContentScan { Id = 2, FullPath = "/lib/Dayton Ward/b.epub", Source = "unmatched", AuthorId = 1, Isbn = "1111111111", ScannedAt = DateTime.UtcNow },
+                // 3: resolved, author key disagrees -> reassign
+                new BookContentScan { Id = 3, FullPath = "/lib/Dayton Ward/c.epub", Source = "unmatched", AuthorId = 1, Isbn = "2222222222", ScannedAt = DateTime.UtcNow },
+                // 4: resolved but no work key (fallback-only title) -> waiting (nothing Apply can use)
+                new BookContentScan { Id = 4, FullPath = "/lib/Dayton Ward/d.epub", Source = "unmatched", AuthorId = 1, Isbn = "3333333333", ScannedAt = DateTime.UtcNow });
+            s.LocalBookFiles.AddRange(
+                new LocalBookFile { Id = 1, FullPath = "/lib/Dayton Ward/a.epub", AuthorId = 1, BookId = null },
+                new LocalBookFile { Id = 2, FullPath = "/lib/Dayton Ward/b.epub", AuthorId = 1, BookId = null },
+                new LocalBookFile { Id = 3, FullPath = "/lib/Dayton Ward/c.epub", AuthorId = 1, BookId = null },
+                new LocalBookFile { Id = 4, FullPath = "/lib/Dayton Ward/d.epub", AuthorId = 1, BookId = null });
+            s.IsbnResolutions.AddRange(
+                new IsbnResolution { Isbn = "1111111111", ResolvedAt = DateTime.UtcNow, WorkKey = "OL1W", Title = "T2", AuthorKey = "OL1386286A", AuthorName = "Dayton Ward" },
+                new IsbnResolution { Isbn = "2222222222", ResolvedAt = DateTime.UtcNow, WorkKey = "OL2W", Title = "T3", AuthorKey = "OL999A", AuthorName = "Someone Else" },
+                new IsbnResolution { Isbn = "3333333333", ResolvedAt = DateTime.UtcNow, WorkKey = null, Title = "T4", AuthorKey = null, AuthorName = "Fallback Author" });
+            await s.SaveChangesAsync();
+        }
+        await using var db = rdb.NewContext();
+        var rows = (await new IdentifiedController(db, NullLogger<IdentifiedController>.Instance).Get(null, default))
+            .Rows.ToDictionary(r => r.Id);
+
+        Assert.Equal("waiting", rows[1].IsbnStatus);
+        Assert.Equal("matched", rows[2].IsbnStatus);
+        Assert.Equal("reassign", rows[3].IsbnStatus);
+        Assert.Equal("waiting", rows[4].IsbnStatus);
+    }
+
+    // The bug this regression-guards: the Tracked section is newest-scanned-first
+    // and can run to tens of thousands of rows, dominated by series-catalogue-only
+    // entries that get their ScannedAt bumped independently of any ISBN work. If
+    // the ISBN status filter were applied AFTER paging (on whichever page happens
+    // to be loaded), a matching row buried behind a wall of newer catalogue-only
+    // noise would never surface. It must be applied BEFORE paging instead.
+    [Fact]
+    public async Task Get_IsbnStatus_Filter_Finds_Rows_Buried_Behind_Newer_Catalogue_Only_Rows()
+    {
+        using var rdb = new RelationalTestDb();
+        await using (var s = rdb.NewContext())
+        {
+            s.Authors.Add(new Author { Id = 1, Name = "Dayton Ward", OpenLibraryKey = "OL1386286A" });
+
+            // A wall of newer, catalogue-only tracked rows (no ISBN) that would
+            // otherwise fill the first page under newest-scanned-first ordering.
+            for (var i = 0; i < 50; i++)
+            {
+                s.BookContentScans.Add(new BookContentScan
+                {
+                    Id = 100 + i, FullPath = $"/lib/Dayton Ward/noise{i}.epub", Source = "unmatched", AuthorId = 1,
+                    SeriesCatalogJson = "[]", ScannedAt = DateTime.UtcNow.AddMinutes(i), // newer than the target row
+                });
+            }
+
+            // The actual target: an older, ISBN-bearing, resolved-and-matched row.
+            s.BookContentScans.Add(new BookContentScan
+            {
+                Id = 1, FullPath = "/lib/Dayton Ward/target.epub", Source = "unmatched", AuthorId = 1,
+                Isbn = "1111111111", ScannedAt = DateTime.UtcNow.AddDays(-30),
+            });
+            s.LocalBookFiles.Add(new LocalBookFile { Id = 1, FullPath = "/lib/Dayton Ward/target.epub", AuthorId = 1, BookId = null });
+            s.IsbnResolutions.Add(new IsbnResolution
+            {
+                Isbn = "1111111111", ResolvedAt = DateTime.UtcNow, WorkKey = "OL1W", Title = "T",
+                AuthorKey = "OL1386286A", AuthorName = "Dayton Ward",
+            });
+            await s.SaveChangesAsync();
+        }
+        await using var db = rdb.NewContext();
+        var result = await new IdentifiedController(db, NullLogger<IdentifiedController>.Instance)
+            .Get(null, false, 0, "matched", default);
+
+        Assert.Equal(1, result.TrackedTotal); // only the target row matches "matched" — the 50 noise rows don't
+        Assert.Single(result.Rows);
+        Assert.Equal(1, result.Rows[0].Id);
+        Assert.Equal("matched", result.Rows[0].IsbnStatus);
     }
 
     [Fact]
@@ -266,6 +361,73 @@ public class IdentifiedControllerIntegrationTests
             Assert.Equal(file.FullPath, row.FullPath);
             Assert.Equal("The Glimmer Quest", row.Title);
             Assert.Equal(1, row.AuthorId);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    // "Reassign all" must (a) actually move the mismatched-author files using
+    // ONLY the cached IsbnResolutions data (no live OpenLibrary calls needed —
+    // there's no OL client wired into this test's DI at all, so a network call
+    // would fail the test), and (b) keep going past a row that fails (the
+    // explicit requirement: one file's failure doesn't stop the batch).
+    [Fact]
+    public async Task ReassignAllIsbn_Moves_Mismatched_Files_And_Continues_Past_A_Failure()
+    {
+        using var factory = new LibraryApiFactory();
+        var root = Path.Combine(Path.GetTempPath(), $"thelibrary-reassignall-{Guid.NewGuid():N}");
+        var folderA = Path.Combine(root, "Author A");
+        Directory.CreateDirectory(folderA);
+        var goodFile = Path.Combine(folderA, "good.epub");
+        await File.WriteAllTextAsync(goodFile, "test");
+        // missingFile is deliberately NEVER created on disk, so AssignToWorkAsync
+        // fails it with "File no longer exists on disk." — the batch must still
+        // process goodFile regardless of the order EF returns them in.
+        var missingFile = Path.Combine(folderA, "missing.epub");
+
+        try
+        {
+            await SeedAsync(factory, db =>
+            {
+                db.LibraryLocations.Add(new LibraryLocation { Id = 1, Label = "Default", Path = root, Enabled = true, IsPrimary = true, CreatedAt = DateTime.UtcNow });
+                db.Authors.Add(new Author { Id = 1, Name = "Author A", CalibreFolderName = "Author A", OpenLibraryKey = "OL1A" });
+                db.BookContentScans.AddRange(
+                    new BookContentScan { Id = 10, FullPath = goodFile, Source = "unmatched", AuthorId = 1, Isbn = "1111111111", ScannedAt = DateTime.UtcNow },
+                    new BookContentScan { Id = 11, FullPath = missingFile, Source = "unmatched", AuthorId = 1, Isbn = "2222222222", ScannedAt = DateTime.UtcNow });
+                db.LocalBookFiles.AddRange(
+                    new LocalBookFile { Id = 10, FullPath = goodFile, AuthorId = 1, BookId = null },
+                    new LocalBookFile { Id = 11, FullPath = missingFile, AuthorId = 1, BookId = null });
+                db.IsbnResolutions.AddRange(
+                    new IsbnResolution { Isbn = "1111111111", ResolvedAt = DateTime.UtcNow, WorkKey = "OL10W", Title = "Good Book", AuthorKey = "OL2A", AuthorName = "Author B" },
+                    new IsbnResolution { Isbn = "2222222222", ResolvedAt = DateTime.UtcNow, WorkKey = "OL11W", Title = "Missing Book", AuthorKey = "OL2A", AuthorName = "Author B" });
+            });
+
+            using var client = factory.CreateClient();
+            var response = await client.PostAsync("/api/identified/reassign-all-isbn", null);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var result = await response.Content.ReadFromJsonAsync<IdentifiedController.BulkReassignResult>();
+
+            Assert.Equal(1, result!.Reassigned); // goodFile
+            Assert.Equal(1, result.Failed);       // missingFile
+            // missingFile's scan is untouched by the failed attempt (nothing about
+            // its DB state changed), so it still resolves to "reassign" and remains.
+            Assert.Equal(1, result.Remaining);
+
+            using var scope = factory.Services.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+
+            var authorB = await db.Authors.SingleAsync(a => a.OpenLibraryKey == "OL2A");
+            var goodLocal = await db.LocalBookFiles.SingleAsync(f => f.Id == 10);
+            Assert.Equal(authorB.Id, goodLocal.AuthorId);
+            Assert.NotNull(goodLocal.BookId);
+            Assert.DoesNotContain("Author A", goodLocal.FullPath);
+            Assert.False(File.Exists(goodFile));
+
+            var missingLocal = await db.LocalBookFiles.SingleAsync(f => f.Id == 11);
+            Assert.Equal(1, missingLocal.AuthorId); // untouched — still under Author A
+            Assert.Null(missingLocal.BookId);
         }
         finally
         {
@@ -634,8 +796,8 @@ public class IdentifiedControllerIntegrationTests
         });
 
         using var client = factory.CreateClient();
-        var rows = await client.GetFromJsonAsync<List<IdentifiedController.IdentifiedRow>>("/api/identified");
-        var ids = rows!.Select(r => r.Id).OrderBy(i => i).ToList();
+        var result = await client.GetFromJsonAsync<IdentifiedController.IdentifiedListResult>("/api/identified");
+        var ids = result!.Rows.Select(r => r.Id).OrderBy(i => i).ToList();
 
         Assert.Equal(new[] { 2, 3 }, ids); // the author-only linked row (1) is dropped
     }

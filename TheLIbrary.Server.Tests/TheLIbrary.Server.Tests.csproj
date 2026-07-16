@@ -20,6 +20,12 @@
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.*" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.*" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.*" />
+    <!-- Microsoft.EntityFrameworkCore.Sqlite pulls in SQLitePCLRaw.lib.e_sqlite3
+         2.1.11, which bundles a vulnerable SQLite (GHSA-2m69-gcr7-jv3q, no patched
+         2.x release exists). Pinned to the 3.x bundle directly so NuGet's
+         nearest-wins resolution picks the newer native SQLite over the transitive
+         2.1.11 — test-only dependency, never ships to production. -->
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.*" />
     <PackageReference Include="xunit.v3" Version="3.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.*" />

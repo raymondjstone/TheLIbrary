@@ -57,6 +57,9 @@ export default function Settings() {
     const [archiveFolder, setArchiveFolder] = useState({ folderName: '__archive' })
     const [archiveFolderEdit, setArchiveFolderEdit] = useState('__archive')
     const [archiveFolderSaving, setArchiveFolderSaving] = useState(false)
+    const [dupMatchThreshold, setDupMatchThreshold] = useState({ percent: 90 })
+    const [dupMatchThresholdEdit, setDupMatchThresholdEdit] = useState('90')
+    const [dupMatchThresholdSaving, setDupMatchThresholdSaving] = useState(false)
     const [coverHover, setCoverHover] = useState(false)
     const [coverHoverScale, setCoverHoverScale] = useState(1)
     const [coverHoverSaving, setCoverHoverSaving] = useState(false)
@@ -203,6 +206,14 @@ export default function Settings() {
             const body = await r.json()
             setArchiveFolder(body)
             setArchiveFolderEdit(body.folderName ?? '__archive')
+        } catch (e) { setError(prev => prev ?? String(e)) }
+
+        try {
+            const r = await fetch('/api/settings/duplicate-content-match-threshold')
+            if (!r.ok) throw new Error(r.statusText)
+            const body = await r.json()
+            setDupMatchThreshold(body)
+            setDupMatchThresholdEdit(String(body.percent ?? 90))
         } catch (e) { setError(prev => prev ?? String(e)) }
 
         try {
@@ -552,6 +563,27 @@ export default function Settings() {
             setError(String(e.message ?? e))
         } finally {
             setArchiveFolderSaving(false)
+        }
+    }
+
+    const saveDupMatchThreshold = async () => {
+        setError(null)
+        setDupMatchThresholdSaving(true)
+        try {
+            const pct = Number(dupMatchThresholdEdit)
+            const r = await fetch('/api/settings/duplicate-content-match-threshold', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ percent: Number.isFinite(pct) ? pct : 90 }),
+            })
+            const body = await r.json().catch(() => ({}))
+            if (!r.ok) throw new Error(body.error || r.statusText)
+            setDupMatchThreshold(body)
+            setDupMatchThresholdEdit(String(body.percent))
+        } catch (e) {
+            setError(String(e.message ?? e))
+        } finally {
+            setDupMatchThresholdSaving(false)
         }
     }
 
@@ -1387,6 +1419,25 @@ export default function Settings() {
                 </span>
             </div>
 
+            <h2 style={{ marginTop: '1.5rem' }}>Duplicate content match threshold</h2>
+            <p className="subtle">
+                Minimum word-overlap percentage two duplicate copies' extracted text must reach
+                before the "Content-verify &amp; archive duplicates" job (Schedules page) will
+                archive them. If any copy in a book's duplicate set falls short, the whole book
+                is left untouched for manual review.
+            </p>
+            <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+                <input
+                    type="number" min="1" max="100" style={{ width: '6rem' }}
+                    value={dupMatchThresholdEdit}
+                    onChange={e => setDupMatchThresholdEdit(e.target.value)} />
+                <span className="subtle">%</span>
+                <button onClick={saveDupMatchThreshold} disabled={dupMatchThresholdSaving}>
+                    {dupMatchThresholdSaving ? 'Saving…' : 'Save'}
+                </button>
+                <span className="subtle">current: {dupMatchThreshold.percent}%</span>
+            </div>
+
             <h2 style={{ marginTop: '1.5rem' }}>Cover hover preview</h2>
             <p className="subtle">
                 When on, hovering any book cover thumbnail (anywhere except the in-book
@@ -1763,7 +1814,7 @@ function BlockedBookLinksSection() {
 // Per-run caps for the paced background jobs that don't have their own dedicated
 // Settings control. Mirrors the FullTextSearchSection load/save pattern.
 function JobLimitsSection() {
-    const fallback = { promoteManualBooks: 100, resolveWorks: 200, resolveIsbns: 200, assignAuthors: 1000, autoReplaceDamaged: 20, pruneAuthors: 5000 }
+    const fallback = { promoteManualBooks: 100, resolveWorks: 200, resolveIsbns: 200, retryIsbnMisses: 1000, assignAuthors: 1000, autoReplaceDamaged: 20, pruneAuthors: 5000, verifyArchiveDuplicates: 100, reviewUnapplicableScans: 500 }
     const [cfg, setCfg] = useState(null)
     const [saved, setSaved] = useState(null)
     const [busy, setBusy] = useState(false)
@@ -1800,9 +1851,12 @@ function JobLimitsSection() {
         ['promoteManualBooks', 'Promote manual books', 'OpenLibrary searches per run'],
         ['resolveWorks', 'Resolve works by ISBN', 'OpenLibrary lookups per run'],
         ['resolveIsbns', 'Cache ISBN title/author lookups', 'ISBN lookups per run'],
+        ['retryIsbnMisses', 'Retry failed ISBN lookups', 'ISBNs reprocessed per run'],
         ['assignAuthors', 'Assign untracked books to authors', 'OpenLibrary lookups per run'],
         ['autoReplaceDamaged', 'Auto-replace damaged books', 'indexer grabs per run'],
         ['pruneAuthors', 'Prune empty auto-created authors', 'deletions per run'],
+        ['verifyArchiveDuplicates', 'Content-verify & archive duplicates', 'duplicate groups checked per run'],
+        ['reviewUnapplicableScans', 'Review unapplicable identified scans', 'scans checked per run'],
     ]
 
     return (

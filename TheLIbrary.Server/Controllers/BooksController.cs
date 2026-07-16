@@ -754,7 +754,7 @@ public class BooksController : ControllerBase
     }
 
     public sealed record DuplicateActionRequest(IReadOnlyList<int> FileIds, string Action, string? ArchiveFolderName);
-    public sealed record DuplicateActionResult(int Deleted, int Archived, IReadOnlyList<string> Warnings);
+    public sealed record DuplicateActionResult(int Deleted, int Archived, int Unlinked, IReadOnlyList<string> Warnings);
 
     [HttpPost("duplicates/actions")]
     public async Task<ActionResult<DuplicateActionResult>> ApplyDuplicateAction(
@@ -765,8 +765,8 @@ public class BooksController : ControllerBase
             return BadRequest(new { error = "At least one file id is required." });
 
         var action = body.Action?.Trim().ToLowerInvariant();
-        if (action is not ("delete" or "archive"))
-            return BadRequest(new { error = "Action must be 'delete' or 'archive'." });
+        if (action is not ("delete" or "archive" or "unlink"))
+            return BadRequest(new { error = "Action must be 'delete', 'archive' or 'unlink'." });
 
         var files = await _db.LocalBookFiles
             .Where(f => body.FileIds.Contains(f.Id))
@@ -774,6 +774,35 @@ public class BooksController : ControllerBase
         if (files.Count == 0) return NotFound(new { error = "No matching files found." });
 
         var warnings = new List<string>();
+        var deleted = 0;
+        var archived = 0;
+        var unlinked = 0;
+
+        // Whole-group "this entire match is wrong" case: detach every given file
+        // from its (possibly differing, if the group is mixed) book — same effect
+        // per file as the single-file POST /api/books/files/{id}/unlink, just N at
+        // once. No filesystem I/O, so it's a separate loop from delete/archive below.
+        if (action == "unlink")
+        {
+            foreach (var file in files)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (file.BookId is null) continue; // already unlinked — quietly skip
+
+                var bookId = file.BookId.Value;
+                var bookTitle = await _db.Books.Where(b => b.Id == bookId).Select(b => b.Title).FirstOrDefaultAsync(ct);
+                await LinkBlocklist.BlockAsync(_db, file.FullPath, bookId, ct);
+                file.BookId = null;
+                file.ManuallyUnmatched = true;
+                Services.ActivityLogger.Record(_db, "unlink",
+                    $"Unlinked {System.IO.Path.GetFileName(file.FullPath)} (file #{file.Id}) from \"{bookTitle ?? "book #" + bookId}\" — false match undone, blocked from ever re-linking",
+                    bookId: bookId);
+                unlinked++;
+            }
+            await _db.SaveChangesAsync(ct);
+            return Ok(new DuplicateActionResult(0, 0, unlinked, warnings));
+        }
+
         var locations = await _db.LibraryLocations.AsNoTracking()
             .Where(l => l.Enabled)
             .Select(l => l.Path)
@@ -794,8 +823,6 @@ public class BooksController : ControllerBase
                 .FirstOrDefaultAsync(ct);
             archiveLeaf = string.IsNullOrWhiteSpace(stored) ? "__archive" : stored.Trim();
         }
-        var deleted = 0;
-        var archived = 0;
 
         foreach (var file in files)
         {
@@ -925,7 +952,7 @@ public class BooksController : ControllerBase
                 $"{verb} {n} duplicate file(s) via the Duplicates page" + (warnings.Count > 0 ? $" ({warnings.Count} warning(s))" : ""));
         }
         await _db.SaveChangesAsync(ct);
-        return Ok(new DuplicateActionResult(deleted, archived, warnings));
+        return Ok(new DuplicateActionResult(deleted, archived, 0, warnings));
     }
 
     public sealed record UnlinkFileResult(int FileId, bool Unlinked);

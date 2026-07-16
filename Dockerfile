@@ -19,6 +19,15 @@ RUN dotnet publish TheLIbrary.Server/TheLIbrary.Server.csproj -c Release -o /app
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
+# IANA timezone database — needed so TimeZoneInfo.FindSystemTimeZoneById can resolve
+# "America/Los_Angeles" (Google Books API quotas reset at midnight Pacific time, not
+# UTC; GoogleBooksRateLimiter uses this to track the daily-exhaustion latch
+# correctly). The app falls back to a fixed UTC-8 approximation if this is somehow
+# missing, so it won't crash without it — but that's off by an hour for half the year
+# (DST), so install it for real correctness.
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install Calibre so the reMarkable "Convert & send" path can run
 # `ebook-convert` for non-EPUB/PDF sources (MOBI, AZW3, FB2, DOCX, …).
 # Without this the container's `ebook-convert` shell-out fails with

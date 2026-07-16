@@ -80,4 +80,36 @@ public class GoogleBooksClientTests
         await Assert.ThrowsAsync<HttpRequestException>(
             () => client.ResolveByIsbnAsync("9780000000000", "k", default));
     }
+
+    // Regression test for the "retry-isbn-misses sticks after 1 item, forever" bug:
+    // Google Cloud API quotas (Books API included) reset at midnight PACIFIC time,
+    // not UTC — confirmed live against Google's own 429 response. The rate limiter
+    // must track the Pacific-time day for the exhaustion latch, not the UTC day; the
+    // earlier UTC-based version cleared the latch at 00:00 UTC while Google's quota
+    // stayed spent until the real reset (~07:00 UTC PDT / ~08:00 UTC PST), so a job
+    // running in that gap always "discovered" the still-exhausted quota fresh, one
+    // wasted call at a time, day after day.
+    [Fact]
+    public void PacificToday_Tracks_The_Pacific_Time_Day_Not_Utc()
+    {
+        var pacificZone = TimeZoneInfo.FindSystemTimeZoneById("America/Los_Angeles");
+        var offset = pacificZone.GetUtcOffset(DateTime.UtcNow);
+
+        // Sanity: this really is Pacific time (-7 PDT or -8 PST), not accidentally
+        // UTC (0) or some other zone that would silently reintroduce the bug.
+        Assert.True(offset == TimeSpan.FromHours(-7) || offset == TimeSpan.FromHours(-8),
+            $"expected Pacific UTC offset (-7 PDT or -8 PST), got {offset}");
+
+        var expected = DateOnly.FromDateTime(DateTime.UtcNow.Add(offset));
+        Assert.Equal(expected, GoogleBooksRateLimiter.PacificToday());
+    }
+
+    [Fact]
+    public void MarkExhausted_And_IsExhaustedToday_Agree_On_The_Pacific_Day()
+    {
+        var limiter = new GoogleBooksRateLimiter();
+        Assert.False(limiter.IsExhaustedToday);
+        limiter.MarkExhausted();
+        Assert.True(limiter.IsExhaustedToday);
+    }
 }

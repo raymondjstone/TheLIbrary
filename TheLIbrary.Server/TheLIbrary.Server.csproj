@@ -20,6 +20,11 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.*" />
+    <!-- Microsoft.AspNetCore.OpenApi 10.0.9 pulls in Microsoft.OpenApi 2.0.0, which
+         has a known high-severity vuln (GHSA-v5pm-xwqc-g5wc, circular schema refs
+         can hang the parser); fixed in 2.7.5. Pinned directly so NuGet's nearest-wins
+         resolution picks this over the transitive 2.0.0. -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.10.0" />
     <PackageReference Include="Microsoft.AspNetCore.SpaProxy" Condition="'$(SkipSpa)' != 'true'">
       <Version>10.*-*</Version>
     </PackageReference>

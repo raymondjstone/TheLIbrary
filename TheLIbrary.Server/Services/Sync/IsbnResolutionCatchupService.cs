@@ -83,9 +83,12 @@ public sealed class IsbnResolutionCatchupService
 
         var maxPerRun = await JobRunLimits.GetAsync(db, AppSettingKeys.ResolveIsbnsMaxPerRun, MaxPerRun, ct);
 
-        // Daily quotas (Google Books) reset with the UTC date — forget yesterday's
-        // deferred ISBNs so they become eligible again.
-        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        // Daily quotas (Google Books) reset at midnight PACIFIC time, not UTC — see
+        // GoogleBooksRateLimiter's own comment for why using the UTC date here was
+        // wrong (an up-to-8-hour window where this cleared before Google's quota
+        // actually had). Forget yesterday's (Pacific) deferred ISBNs so they become
+        // eligible again once the real reset has happened.
+        var today = GoogleBooksRateLimiter.PacificToday();
         if (today != _deferredDay) { _deferredToday.Clear(); _deferredDay = today; }
 
         // Already-cached ISBN keys, and every distinct ISBN on a scan row. Both are

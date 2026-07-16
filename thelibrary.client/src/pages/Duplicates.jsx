@@ -100,7 +100,7 @@ export default function Duplicates() {
             const r = await fetch(`/api/books/files/${fileId}/unlink`, { method: 'POST' })
             const body = await r.json().catch(() => null)
             if (!r.ok) throw new Error(body?.error ?? r.statusText)
-            setSendNotice('File unlinked — blocked from ever being re-linked to this book by any job.')
+            setSendNotice(`Unlinked from "${bookTitle}" — blocked from ever being re-linked to this book by any job.`)
             load()
         } catch (e) {
             setError(`Unlink failed: ${e.message ?? e}`)
@@ -129,6 +129,7 @@ export default function Duplicates() {
             return
         }
         if (action === 'delete' && !window.confirm(`Delete ${fileIds.length} selected file(s) from disk?`)) return
+        if (action === 'unlink' && !window.confirm(`Unlink ${fileIds.length} file(s) from this book? Each file stays on disk under its author, but is permanently blocked from ever being re-linked to this book again.`)) return
         setBusyAction(action)
         setError(null)
         try {
@@ -149,17 +150,15 @@ export default function Duplicates() {
         }
     }
 
-    // Returns ids of all EXTRA (non-keeper) files that are currently checked for a group.
-    const groupExtraIds = (g) => {
-        const keep = keeperId(g)
-        return (g.files ?? []).filter(f => f.id !== keep && selected[f.id]).map(f => f.id)
-    }
-
     // Returns ids of ALL extra (non-keeper) files in a group regardless of checkbox state.
     const allGroupExtraIds = (g) => {
         const keep = keeperId(g)
         return (g.files ?? []).filter(f => f.id !== keep).map(f => f.id)
     }
+
+    // Returns ids of EVERY file in a group, keeper included — for "Unlink all",
+    // where the whole group (not just the extras) is the wrong match.
+    const allGroupFileIds = (g) => (g.files ?? []).map(f => f.id)
 
     const previewableFormats = new Set(['epub', 'pdf', 'txt', 'mobi', 'azw', 'azw3', 'fb2', 'lit', 'docx', 'odt', 'cbz', 'cbr'])
     const canPreview = (fmt) => fmt && previewableFormats.has(fmt.toLowerCase())
@@ -376,23 +375,35 @@ export default function Duplicates() {
                                         <td style={{ verticalAlign: 'top', whiteSpace: 'nowrap' }}>
                                             {(() => {
                                                 const extras = allGroupExtraIds(g)
-                                                if (extras.length === 0) return null
+                                                const allFiles = allGroupFileIds(g)
                                                 return (
                                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
-                                                        <button
-                                                            style={{ fontSize: '0.78rem' }}
-                                                            disabled={busyAction !== null}
-                                                            title="Archive all extra copies of this book"
-                                                            onClick={() => applyAction('archive', extras)}>
-                                                            Archive extras
-                                                        </button>
+                                                        {extras.length > 0 && (
+                                                            <>
+                                                                <button
+                                                                    style={{ fontSize: '0.78rem' }}
+                                                                    disabled={busyAction !== null}
+                                                                    title="Archive all extra copies of this book"
+                                                                    onClick={() => applyAction('archive', extras)}>
+                                                                    Archive extras
+                                                                </button>
+                                                                <button
+                                                                    className="btn-danger"
+                                                                    style={{ fontSize: '0.78rem' }}
+                                                                    disabled={busyAction !== null}
+                                                                    title="Delete all extra copies of this book from disk"
+                                                                    onClick={() => applyAction('delete', extras)}>
+                                                                    Delete extras
+                                                                </button>
+                                                            </>
+                                                        )}
                                                         <button
                                                             className="btn-danger"
                                                             style={{ fontSize: '0.78rem' }}
                                                             disabled={busyAction !== null}
-                                                            title="Delete all extra copies of this book from disk"
-                                                            onClick={() => applyAction('delete', extras)}>
-                                                            Delete extras
+                                                            title="This whole group is the wrong match — unlink every file from this book (files stay on disk under their author; each is permanently blocked from ever re-linking to this book)"
+                                                            onClick={() => applyAction('unlink', allFiles)}>
+                                                            Unlink all
                                                         </button>
                                                     </div>
                                                 )
