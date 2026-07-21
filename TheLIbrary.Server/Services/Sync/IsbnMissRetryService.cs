@@ -145,6 +145,15 @@ public sealed class IsbnMissRetryService
                 else stillMissing++;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception) when (ct.IsCancellationRequested)
+            {
+                // Host shutdown cancelled the in-flight command. SqlClient surfaces
+                // this as a SqlException ("A severe error occurred on the current
+                // command"), not an OperationCanceledException — so normalize it to
+                // cancellation rather than mislogging a perfectly good ISBN as
+                // unprocessable (and wrongly counting it as deferred).
+                throw new OperationCanceledException(ct);
+            }
             catch (IsbnLookupUnavailableException)
             {
                 // Nothing resolved and a source was unavailable — the row is gone
