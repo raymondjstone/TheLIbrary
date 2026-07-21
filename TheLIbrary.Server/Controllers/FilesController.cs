@@ -229,10 +229,12 @@ public class FilesController : ControllerBase
 
         var roots = await GetPreviewRootsAsync(ct);
 
+        // Use the canonical containment check (trailing-separator boundary,
+        // handles the exact-root case) rather than a raw StartsWith, so a sibling
+        // root like "/Books/Col" can't authorize serving "/Books/Collection/...".
         var canonical = Path.GetFullPath(lbf.FullPath);
-        var belongs = roots.Any(r => canonical.StartsWith(Path.GetFullPath(r), StringComparison.OrdinalIgnoreCase));
-        if (!belongs)
-            return (null, StatusCode(403, new { error = "Refusing to serving a file outside enabled library locations" }));
+        if (!FilePreviewResolver.IsInsideAnyRoot(canonical, roots))
+            return (null, StatusCode(403, new { error = "Refusing to serve a file outside enabled library locations" }));
 
         if (!System.IO.File.Exists(canonical))
             return (null, NotFound(new { error = "File no longer exists on disk" }));

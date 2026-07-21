@@ -109,8 +109,13 @@ public partial class AuthorsController
             .Select(l => l.Path)
             .ToListAsync(ct);
 
+        // Project to just the four fields the grouping below reads. LocalBookFile
+        // is a 25-column row (several long strings); over the ~166k author-less
+        // rows this endpoint scans, pulling full entities wastes SQL→app transfer
+        // and change-tracker work for columns that are never touched here.
         var rows = await _db.LocalBookFiles.AsNoTracking()
             .Where(f => f.AuthorId == null)
+            .Select(f => new { f.AuthorFolder, f.FullPath, f.IntegrityOk, f.ModifiedAt })
             .ToListAsync(ct);
 
         return rows
@@ -553,8 +558,12 @@ public partial class AuthorsController
         if (!Directory.Exists(incomingPath))
             return BadRequest(new { error = $"Incoming folder does not exist: {incomingPath}" });
 
-        var allFiles = await _db.LocalBookFiles
+        // These rows are only used to drive disk moves below — never mutated or
+        // saved — so read them untracked and project to the four fields used.
+        // Avoids change-tracking ~166k full 25-column entities for a no-write path.
+        var allFiles = await _db.LocalBookFiles.AsNoTracking()
             .Where(f => f.AuthorId == null)
+            .Select(f => new { f.Id, f.FullPath, f.TitleFolder, f.AuthorFolder })
             .ToListAsync(ct);
 
         if (allFiles.Count == 0)
@@ -607,7 +616,10 @@ public partial class AuthorsController
             }
         }
 
-        _db.LocalBookFiles.RemoveRange(allFiles);
+        // Delete exactly the rows read above (by Id) via key-only stubs — EF needs
+        // only the primary key to issue the DELETEs, so there's no need to have
+        // materialized full tracked entities just to remove them.
+        _db.LocalBookFiles.RemoveRange(allFiles.Select(f => new LocalBookFile { Id = f.Id }));
         await _db.SaveChangesAsync(ct);
 
         if (moveWarnings.Count > 0)

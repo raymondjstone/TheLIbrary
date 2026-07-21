@@ -187,30 +187,32 @@ public partial class AuthorsController : ControllerBase
 
         var ids = authors.Select(a => a.Id).ToList();
 
-        // Three plain LINQ counts (translatable by every EF provider, including
-        // the InMemory one the HTTP integration tests run against — List()'s raw
-        // SqlQuery above isn't an option here, that path has no HTTP test
-        // coverage exercising it). "Obtained" mirrors List()'s OwnedCount
+        // One query instead of three GROUP BY scans over the same author set:
+        // pull a flag row per book and aggregate in memory. LocalFiles.Any() in a
+        // Select projects to a scalar EXISTS (cleanly translatable by every EF
+        // provider, including the InMemory one the HTTP integration tests run
+        // against); starred authors' books are a small set, so the in-memory
+        // grouping is negligible. "Obtained" mirrors List()'s OwnedCount
         // definition: ebook-owned (a file is linked) OR physical-owned
         // (ManuallyOwned / OwnedDifferentEdition, no file).
-        var bookCounts = await _db.Books.AsNoTracking()
+        var bookFlags = await _db.Books.AsNoTracking()
             .Where(b => ids.Contains(b.AuthorId))
-            .GroupBy(b => b.AuthorId)
-            .Select(g => new { AuthorId = g.Key, Count = g.Count() })
-            .ToDictionaryAsync(x => x.AuthorId, x => x.Count, ct);
+            .Select(b => new { b.AuthorId, HasFile = b.LocalFiles.Any(), b.ManuallyOwned, b.OwnedDifferentEdition })
+            .ToListAsync(ct);
 
-        var ebookCounts = await _db.Books.AsNoTracking()
-            .Where(b => ids.Contains(b.AuthorId) && b.LocalFiles.Any())
+        var bookCounts = bookFlags
             .GroupBy(b => b.AuthorId)
-            .Select(g => new { AuthorId = g.Key, Count = g.Count() })
-            .ToDictionaryAsync(x => x.AuthorId, x => x.Count, ct);
+            .ToDictionary(g => g.Key, g => g.Count());
 
-        var physicalCounts = await _db.Books.AsNoTracking()
-            .Where(b => ids.Contains(b.AuthorId) && !b.LocalFiles.Any()
-                        && (b.ManuallyOwned || b.OwnedDifferentEdition))
+        var ebookCounts = bookFlags
+            .Where(b => b.HasFile)
             .GroupBy(b => b.AuthorId)
-            .Select(g => new { AuthorId = g.Key, Count = g.Count() })
-            .ToDictionaryAsync(x => x.AuthorId, x => x.Count, ct);
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        var physicalCounts = bookFlags
+            .Where(b => !b.HasFile && (b.ManuallyOwned || b.OwnedDifferentEdition))
+            .GroupBy(b => b.AuthorId)
+            .ToDictionary(g => g.Key, g => g.Count());
 
         // Count only rows the author page would actually show as unmatched: an
         // ebook file (by extension), with a non-blank title, not under the archive

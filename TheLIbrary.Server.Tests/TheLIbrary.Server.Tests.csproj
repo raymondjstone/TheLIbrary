@@ -26,6 +26,11 @@
          nearest-wins resolution picks the newer native SQLite over the transitive
          2.1.11 — test-only dependency, never ships to production. -->
     <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
+    <!-- A test dependency drags in Newtonsoft.Json 11.0.1, flagged NU1903
+         (GHSA-5crp-9r3c-p9vr, ReDoS). Pin the patched 13.x directly so NuGet's
+         nearest-wins resolution supersedes the vulnerable transitive — test-only,
+         never ships to production. -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.*" />
     <PackageReference Include="xunit.v3" Version="3.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.*" />
